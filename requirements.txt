@@ -1,0 +1,5 @@
+fastapi
+pdfplumber
+psycopg[binary]
+python-multipart
+uvicorn[standard]

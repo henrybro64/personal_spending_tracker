@@ -1,0 +1,323 @@
+import type { AppLocale } from "./locale-provider";
+
+const en = {
+  reportPaneEyebrow: "Report Pane",
+  statementImportTitle: "Statement import",
+  statementImportBody:
+    "Treat this like the dataset refresh step in a BI report. Uploading a PDF refreshes the report canvas and the history panel together.",
+  fieldStatementPdfLabel: "Statement PDF",
+  fieldStatementPdfHint:
+    "Drag in a PDF or browse. A successful upload updates the report immediately.",
+  fieldPdfPasswordLabel: "PDF password (if the file is protected)",
+  fieldPdfPasswordHint:
+    "If the PDF opens with a password in Preview or Adobe, enter that password here.",
+  placeholderPdfPassword: "Document password",
+  dropZoneEmptyTitle: "Drop a PDF here or click to browse",
+  dropZoneReadyHint: "File selected — next: password if needed, then Process PDF.",
+  dropZoneIdleHint: "Click here or use Browse to choose a PDF.",
+  uploadNextStepTitle: "Process this statement",
+  uploadNextStepBody:
+    "If your PDF needs a password, enter it in the PDF password field below, then click Process PDF to upload and parse.",
+  btnProcessPdf: "Process PDF",
+  btnRefreshing: "Processing…",
+  btnBrowse: "Browse",
+  spinnerParsingLabel: "Parsing data",
+  badgeManualRefresh: "Manual refresh",
+  badgePdfSource: "PDF source",
+  badgePostgresModel: "PostgreSQL model",
+  msgRefreshFailedTitle: "Refresh failed",
+
+  slicersEyebrow: "Slicers",
+  filtersTitle: "Filters",
+  searchLabel: "Search",
+  searchPlaceholder: "Merchant, category, date, amount",
+  timeRangeLabel: "Time range",
+  rangeWeek: "Past week",
+  rangeMonth: "Past month",
+  rangeQuarter: "Past quarter",
+  rangeYear: "Past year",
+  range5Years: "Past 5 years",
+  rangeAll: "All time",
+  amountDirection: "Amount direction",
+  amountAll: "All",
+  amountSpend: "Spend",
+  amountRefunds: "Refunds",
+  sortLabel: "Sort visible rows",
+  sortAmountDesc: "Amount descending",
+  sortAmountAsc: "Amount ascending",
+  sortMerchant: "Merchant A-Z",
+  sortDate: "Date ascending",
+  merchantSlicerLabel: "Merchant",
+  merchantSlicerEmpty: "Upload a statement to activate merchant slicers.",
+  clearSlicers: "Clear slicers",
+  rowsInViewSuffix: "rows in view",
+
+  historyEyebrow: "Refresh History",
+  recentStatementsTitle: "Recent statements",
+  dashboardUnavailableTitle: "Dashboard data unavailable",
+  loadingHistoryLabel: "Loading history",
+  historyRowsWord: "rows",
+  noUploadsYet: "No uploaded statements yet.",
+
+  appTitle: "Personal Spending Tracker",
+  badgeCurrentFilePrefix: "Current file:",
+  overviewEyebrow: "Overview Report",
+  spendingOverviewTitle: "Spending Overview",
+  reportLeadBody:
+    "This canvas is now structured more like a BI report: slicers on the side, KPI tiles across the top, focused visuals in the body, and a denser detail matrix underneath.",
+  storedModelLabel: "Stored model",
+  lastRefreshLabel: "Last refresh",
+  waiting: "Waiting",
+
+  merchantSummaryPrefix: "Merchant:",
+  merchantAll: "All",
+  amountSummaryPrefix: "Amount:",
+  sortSummaryPrefix: "Sort:",
+  searchSummaryPrefix: "Search:",
+
+  metricNetInView: "Net in view",
+  metricNetInViewHint: "Current selection after slicers",
+  metricSpendOnly: "Spend only",
+  metricSpendOnlyHint: "Positive amounts in the active view",
+  metricRefunds: "Refunds",
+  metricRefundsHint: "Absolute value of negative amounts",
+  metricRowsInView: "Rows in view",
+  metricRowsHintTemplate: "{{pct}} of this upload visible",
+  metricModelTotal: "Model total",
+  metricModelTotalHintTemplate: "{{n}} statements stored",
+
+  merchantContributionTitle: "Merchant contribution",
+  badgeCrossFilter: "Click a merchant to cross-filter",
+  emptyMerchantVisual: "Upload a statement to populate the merchant visual.",
+
+  spendingByCategoryTitle: "Spending by category",
+  badgePositiveOnly: "Positive amounts only",
+  pieCenterSpendInView: "Spend in view",
+  shareOfVisibleSpend: "of visible spend",
+  emptyCategoryVisual:
+    "No positive spending is available for the current slicer state.",
+  categoryOther: "Other",
+
+  dailyNetTitle: "Daily net by date",
+  badgeBasedOnSelection: "Based on the current selection",
+  emptyDateBuckets: "No date buckets are available for the current slicer state.",
+
+  visual4Eyebrow: "Visual 4",
+  selectionDetailsTitle: "Selection details",
+  badgeReactiveSlicers: "Reactive to slicers",
+  insightCurrentStatement: "Current statement",
+  insightAvgTransaction: "Average transaction",
+  insightLargestAmount: "Largest absolute amount",
+  insightUploadNet: "Upload net total",
+  visibleShareTitle: "Visible share of uploaded rows",
+
+  modelContextEyebrow: "Model Context",
+  datasetSnapshotTitle: "Dataset snapshot",
+  badgeBackendAggregate: "Backend aggregate",
+  insightStatementsStored: "Statements stored",
+  insightRowsStored: "Rows stored",
+  insightAllTimeAvg: "All-time average",
+  insightMostRecentLoad: "Most recent load",
+  waitingForData: "Waiting for data",
+
+  detailMatrixEyebrow: "Detail Matrix",
+  transactionsTitle: "Transactions",
+  visibleSuffix: "visible",
+  storedFilePrefix: "Stored file:",
+  tableAriaLabel: "Parsed transactions",
+  colDate: "Date",
+  colMerchant: "Merchant",
+  colCategory: "Category",
+  colAmount: "Amount",
+  emptySlicerNoRows: "The current slicer combination returns no rows.",
+  emptyNoUpload: "Upload a statement to populate the visuals and the detail matrix.",
+  parseWarningTitle: "No transactions loaded",
+  parseReasonEmptyText:
+    "No text was extracted from this PDF. Image-only (scanned) statements without selectable text are not supported yet — open the PDF, export or print to PDF again, then try that file.",
+  parseReasonNoMatchingLines:
+    "Text was extracted, but no lines matched the expected pattern (typically: date, merchant description, then amount like $12.34 per line). Your bank's PDF layout may differ — try exporting from your bank's website or save as text-friendly PDF.",
+  emptyParsedZeroRows:
+    "This upload finished, but there are no parsed transactions to display.",
+
+  errOnlyPdf: "Only PDF files are allowed.",
+  errSelectPdf: "Select a PDF file before uploading.",
+  errUploadFailed: "Upload failed.",
+  errRequestFailed: "Request failed.",
+  errUnexpectedUpload: "Unexpected upload error.",
+  errDashboardUnavailable: "Dashboard data is unavailable.",
+  noStatementSelected: "No statement selected",
+
+  languageLabel: "Language",
+  languageEnglish: "English",
+  languageTraditionalChinese: "Traditional Chinese",
+} as const;
+
+const zhHant: Record<keyof typeof en, string> = {
+  reportPaneEyebrow: "報表面板",
+  statementImportTitle: "對帳單匯入",
+  statementImportBody:
+    "可將此視為 BI 報表中重新整理資料集的步驟。上傳 PDF 會同時更新報表畫布與歷程面板。",
+  fieldStatementPdfLabel: "對帳單 PDF",
+  fieldStatementPdfHint: "拖曳 PDF 或瀏覽檔案。成功上傳後會立即更新報表。",
+  fieldPdfPasswordLabel: "PDF 密碼（若檔案有保護）",
+  fieldPdfPasswordHint:
+    "若開啟 PDF 時需要密碼（如 Preview、Adobe），請在此輸入該密碼。",
+  placeholderPdfPassword: "文件密碼",
+  dropZoneEmptyTitle: "在此拖放 PDF，或點選瀏覽",
+  dropZoneReadyHint: "已選取檔案 — 必要時先填密碼，再按下方「處理 PDF」。",
+  dropZoneIdleHint: "點選此區或使用瀏覽來選擇 PDF。",
+  uploadNextStepTitle: "處理此對帳單",
+  uploadNextStepBody:
+    "若 PDF 需要密碼，請先在下方「PDF 密碼」欄位輸入，再按「處理 PDF」以上傳並解析交易。",
+  btnProcessPdf: "處理 PDF",
+  btnRefreshing: "處理中…",
+  btnBrowse: "瀏覽",
+  spinnerParsingLabel: "解析資料中",
+  badgeManualRefresh: "手動重新整理",
+  badgePdfSource: "PDF 來源",
+  badgePostgresModel: "PostgreSQL 模型",
+  msgRefreshFailedTitle: "重新整理失敗",
+
+  slicersEyebrow: "交叉分析篩選",
+  filtersTitle: "篩選",
+  searchLabel: "搜尋",
+  searchPlaceholder: "商家、類別、日期、金額",
+  timeRangeLabel: "時間範圍",
+  rangeWeek: "過去 1 週",
+  rangeMonth: "過去 1 個月",
+  rangeQuarter: "過去 1 季",
+  rangeYear: "過去 1 年",
+  range5Years: "過去 5 年",
+  rangeAll: "全部期間",
+  amountDirection: "金額方向",
+  amountAll: "全部",
+  amountSpend: "支出",
+  amountRefunds: "退款",
+  sortLabel: "排序（可見列）",
+  sortAmountDesc: "金額由高到低",
+  sortAmountAsc: "金額由低到高",
+  sortMerchant: "商家 A–Z",
+  sortDate: "日期由早到晚",
+  merchantSlicerLabel: "商家",
+  merchantSlicerEmpty: "請先上傳對帳單以啟用商家篩選。",
+  clearSlicers: "清除篩選",
+  rowsInViewSuffix: "筆顯示中",
+
+  historyEyebrow: "重新整理紀錄",
+  recentStatementsTitle: "最近對帳單",
+  dashboardUnavailableTitle: "無法載入儀表板資料",
+  loadingHistoryLabel: "載入紀錄中",
+  historyRowsWord: "筆",
+  noUploadsYet: "尚無已上傳的對帳單。",
+
+  appTitle: "個人支出追蹤",
+  badgeCurrentFilePrefix: "目前檔案：",
+  overviewEyebrow: "總覽報表",
+  spendingOverviewTitle: "支出總覽",
+  reportLeadBody:
+    "此畫布結構更接近 BI 報表：側邊為篩選、上方為 KPI 磚、主視覺集中於內文，下方為較細的交易明細表。",
+  storedModelLabel: "已儲存模型",
+  lastRefreshLabel: "上次重新整理",
+  waiting: "等待中",
+
+  merchantSummaryPrefix: "商家：",
+  merchantAll: "全部",
+  amountSummaryPrefix: "金額：",
+  sortSummaryPrefix: "排序：",
+  searchSummaryPrefix: "搜尋：",
+
+  metricNetInView: "檢視中淨額",
+  metricNetInViewHint: "套用篩選後的目前選取結果",
+  metricSpendOnly: "僅支出",
+  metricSpendOnlyHint: "目前檢視中的正金額加總",
+  metricRefunds: "退款",
+  metricRefundsHint: "負金額的絕對值加總",
+  metricRowsInView: "檢視中列數",
+  metricRowsHintTemplate: "佔此上傳的 {{pct}}",
+  metricModelTotal: "模型總計",
+  metricModelTotalHintTemplate: "已儲存 {{n}} 份對帳單",
+
+  merchantContributionTitle: "商家貢獻度",
+  badgeCrossFilter: "點選商家以交叉篩選",
+  emptyMerchantVisual: "請上傳對帳單以填入商家視覺效果。",
+
+  spendingByCategoryTitle: "依類別支出",
+  badgePositiveOnly: "僅正金額",
+  pieCenterSpendInView: "檢視中支出",
+  shareOfVisibleSpend: "佔可見支出",
+  emptyCategoryVisual: "目前篩選狀態下沒有可顯示的正向支出。",
+  categoryOther: "其他",
+
+  dailyNetTitle: "依日期每日淨額",
+  badgeBasedOnSelection: "依目前選取範圍",
+  emptyDateBuckets: "目前篩選狀態下沒有可顯示的日期區間。",
+
+  visual4Eyebrow: "視覺效果 4",
+  selectionDetailsTitle: "選取範圍詳情",
+  badgeReactiveSlicers: "隨篩選即時更新",
+  insightCurrentStatement: "目前對帳單",
+  insightAvgTransaction: "平均每筆交易",
+  insightLargestAmount: "絕對值最大金額",
+  insightUploadNet: "上傳淨額合計",
+  visibleShareTitle: "可見列佔上傳列數比例",
+
+  modelContextEyebrow: "模型內容",
+  datasetSnapshotTitle: "資料集快照",
+  badgeBackendAggregate: "後端彙總",
+  insightStatementsStored: "已儲存對帳單數",
+  insightRowsStored: "已儲存列數",
+  insightAllTimeAvg: "全期平均",
+  insightMostRecentLoad: "最近載入",
+  waitingForData: "等待資料",
+
+  detailMatrixEyebrow: "明細表",
+  transactionsTitle: "交易",
+  visibleSuffix: "筆可見",
+  storedFilePrefix: "已儲存檔案：",
+  tableAriaLabel: "已解析交易",
+  colDate: "日期",
+  colMerchant: "商家",
+  colCategory: "類別",
+  colAmount: "金額",
+  emptySlicerNoRows: "目前篩選組合沒有任何列。",
+  emptyNoUpload: "請上傳對帳單以填入視覺效果與明細表。",
+  parseWarningTitle: "未能載入交易",
+  parseReasonEmptyText:
+    "無法從此 PDF 擷取文字。若為僅有影像的掃描檔且無法選取文字，目前不支援 — 請用 PDF 軟體另存或重新列印成 PDF 後再上傳。",
+  parseReasonNoMatchingLines:
+    "已擷取文字，但沒有任何一行符合預期格式（通常為一行：日期、商家說明、金額如 $12.34）。各家銀行 PDF 版面不同 — 可試著從網銀另存 PDF，或輸出為較接近純文字的版本。",
+  emptyParsedZeroRows: "上傳已完成，但目前沒有可顯示的已解析交易。",
+
+  errOnlyPdf: "僅允許 PDF 檔案。",
+  errSelectPdf: "請先選擇 PDF 再上傳。",
+  errUploadFailed: "上傳失敗。",
+  errRequestFailed: "請求失敗。",
+  errUnexpectedUpload: "發生未預期的上傳錯誤。",
+  errDashboardUnavailable: "無法取得儀表板資料。",
+  noStatementSelected: "尚未選擇對帳單",
+
+  languageLabel: "語言",
+  languageEnglish: "English",
+  languageTraditionalChinese: "繁體中文",
+};
+
+export type MessageKey = keyof typeof en;
+
+export const messages: Record<AppLocale, Record<MessageKey, string>> = {
+  en: en,
+  "zh-Hant": zhHant,
+};
+
+export function translate(
+  locale: AppLocale,
+  key: MessageKey,
+  vars?: Record<string, string>
+): string {
+  let text = messages[locale][key];
+  if (vars) {
+    for (const [name, value] of Object.entries(vars)) {
+      text = text.replaceAll(`{{${name}}}`, value);
+    }
+  }
+  return text;
+}

@@ -1,0 +1,194 @@
+# Personal Spending Tracker
+
+Minimal full-stack app for uploading statement PDFs, parsing transactions, storing them in PostgreSQL, and reviewing the parsed results in a Next.js UI built with Microsoft Fluent UI.
+
+## Stack
+
+- Backend: FastAPI
+- Frontend: Next.js
+- Database: PostgreSQL
+- PDF parsing: `pdfplumber`
+
+## Project Layout
+
+```text
+backend/   FastAPI app and parsing/database helpers
+frontend/  Next.js app with Fluent UI
+storage/   Uploaded PDF files
+```
+
+## Prerequisites on macOS
+
+Install Homebrew if you do not already have it:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+Install the required tools:
+
+```bash
+brew install python@3.12 node postgresql@16
+```
+
+Start PostgreSQL:
+
+```bash
+brew services start postgresql@16
+```
+
+Create the local database:
+
+```bash
+createdb personal_spending_tracker
+```
+
+## 1. Start the Backend
+
+Create and activate a virtual environment from the repository root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Install Python dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Set the database connection string:
+
+```bash
+export DATABASE_URL="postgresql://$(whoami)@localhost:5432/personal_spending_tracker"
+```
+
+Run the FastAPI app:
+
+```bash
+uvicorn backend.main:app --reload
+```
+
+The backend will be available at `http://localhost:8000`.
+
+Useful endpoints:
+
+- `GET /health`
+- `GET /summary`
+- `GET /uploads/recent`
+- `POST /upload`
+
+## 2. Start the Frontend
+
+Open a second terminal window, then from the repository root:
+
+```bash
+cd frontend
+npm install
+export NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"
+npm run dev
+```
+
+The frontend will be available at `http://localhost:3000`.
+
+The backend is already configured to allow local browser requests from:
+
+- `http://localhost:3000`
+- `http://127.0.0.1:3000`
+
+## 3. Use the App
+
+1. Open `http://localhost:3000`.
+2. Choose a PDF file or drag one onto the upload panel.
+3. Click **Upload Statement**.
+4. The app will:
+   - save the PDF into `storage/`
+   - extract text from the PDF
+   - parse transactions
+   - insert those transactions into PostgreSQL
+   - refresh the dashboard cards, merchant insights, and recent statement history
+   - display the parsed transactions in the frontend
+
+You can also check the summary endpoint directly:
+
+```bash
+curl http://localhost:8000/summary
+```
+
+## API Response Examples
+
+`POST /upload`
+
+```json
+{
+  "file_path": "./storage/abc123.pdf",
+  "original_file_name": "April Statement.pdf",
+  "transactions": [
+    {
+      "date": "2019-04-19",
+      "merchant": "STARBUCKS",
+      "amount": 5.75,
+      "category": "Dining"
+    }
+  ]
+}
+```
+
+`GET /summary`
+
+```json
+{
+  "total_spending": 123.45,
+  "number_of_transactions": 7,
+  "average_transaction_amount": 17.64,
+  "number_of_statements": 2
+}
+```
+
+`GET /uploads/recent`
+
+```json
+{
+  "uploads": [
+    {
+      "file_name": "abc123.pdf",
+      "display_name": "April Statement.pdf",
+      "transaction_count": 7,
+      "total_amount": 123.45,
+      "uploaded_at": "2026-04-21T09:30:00+00:00"
+    }
+  ]
+}
+```
+
+## Troubleshooting
+
+If `createdb` fails, make sure PostgreSQL is running:
+
+```bash
+brew services list
+```
+
+If `pip install requirements.txt` fails with `No matching distribution found for requirements.txt`, use the requirements-file flag:
+
+```bash
+pip install -r requirements.txt
+```
+
+If the frontend shows a network error:
+
+- confirm the backend is running on `http://localhost:8000`
+- confirm `NEXT_PUBLIC_API_BASE_URL` is set correctly before `npm run dev`
+
+If the backend fails at startup with `DATABASE_URL environment variable is required`, export `DATABASE_URL` in the same shell where you run `uvicorn`.
+
+## Stop Services
+
+Stop the backend and frontend with `Ctrl+C`.
+
+If you want to stop PostgreSQL afterward:
+
+```bash
+brew services stop postgresql@16
+```
