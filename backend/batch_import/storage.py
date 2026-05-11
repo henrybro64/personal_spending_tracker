@@ -1,0 +1,514 @@
+from __future__ import annotations
+
+import csv
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import TypedDict
+
+from .category import (
+    UNKNOWN_CATEGORY,
+    CategoryRule,
+    normalize_merchant_key,
+    transaction_type_for_category,
+)
+from .models import NormalizedTransaction
+
+
+DEFAULT_BATCH_DATABASE_PATH = (
+    Path(__file__).resolve().parents[2] / "storage" / "batch_imports.sqlite3"
+)
+
+
+class BatchStoredTransaction(TypedDict):
+    id: int
+    import_run_id: int
+    statement_file: str
+    bank: str
+    card_last4: str | None
+    transaction_date: str
+    posted_date: str | None
+    merchant_raw: str
+    amount: float
+    currency: str
+    transaction_type: str
+    category: str
+    exclude_from_spending: bool
+    needs_review: bool
+
+
+class BatchImportRunSummary(TypedDict):
+    id: int
+    imported_at: str
+    statement_count: int
+    transaction_count: int
+    needs_review_count: int
+    csv_output_path: str
+    sqlite_output_path: str
+    pdf_source_dir: str
+    text_source_dir: str
+
+
+class BatchImportStore:
+    def __init__(self, database_path: str | Path = DEFAULT_BATCH_DATABASE_PATH):
+        self.database_path = Path(database_path)
+
+    def initialize(self) -> None:
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS import_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    imported_at TEXT NOT NULL,
+                    pdf_source_dir TEXT NOT NULL,
+                    text_source_dir TEXT NOT NULL,
+                    csv_output_path TEXT NOT NULL,
+                    sqlite_output_path TEXT NOT NULL,
+                    statement_count INTEGER NOT NULL,
+                    transaction_count INTEGER NOT NULL,
+                    needs_review_count INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS imported_transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    import_run_id INTEGER NOT NULL REFERENCES import_runs(id),
+                    statement_file TEXT NOT NULL,
+                    bank TEXT NOT NULL,
+                    card_last4 TEXT,
+                    transaction_date TEXT NOT NULL,
+                    posted_date TEXT,
+                    merchant_raw TEXT NOT NULL,
+                    merchant_key TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    currency TEXT NOT NULL,
+                    transaction_type TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    exclude_from_spending INTEGER NOT NULL,
+                    needs_review INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS merchant_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    merchant_pattern TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    exclude_from_spending INTEGER NOT NULL,
+                    priority INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_imported_transactions_run_id
+                ON imported_transactions (import_run_id, needs_review);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_merchant_rules_unique
+                ON merchant_rules (
+                    merchant_pattern,
+                    category,
+                    exclude_from_spending,
+                    priority
+                );
+                """
+            )
+
+    def load_learned_rules(self) -> list[CategoryRule]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    merchant_pattern,
+                    category,
+                    exclude_from_spending,
+                    priority
+                FROM merchant_rules
+                ORDER BY priority ASC, id ASC
+                """
+            ).fetchall()
+
+        return [
+            CategoryRule(
+                patterns=(str(row["merchant_pattern"]),),
+                category=str(row["category"]),
+                exclude_from_spending=bool(row["exclude_from_spending"]),
+                transaction_type=transaction_type_for_category(
+                    str(row["category"]),
+                    bool(row["exclude_from_spending"]),
+                ),
+                priority=int(row["priority"]),
+            )
+            for row in rows
+        ]
+
+    def record_import_run(
+        self,
+        transactions: list[NormalizedTransaction],
+        *,
+        pdf_source_dir: str,
+        text_source_dir: str,
+        csv_output_path: str,
+        statement_count: int,
+    ) -> tuple[int, str, int]:
+        imported_at = datetime.now(timezone.utc).isoformat()
+        needs_review_count = sum(
+            1 for transaction in transactions if transaction.needs_review
+        )
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO import_runs (
+                    imported_at,
+                    pdf_source_dir,
+                    text_source_dir,
+                    csv_output_path,
+                    sqlite_output_path,
+                    statement_count,
+                    transaction_count,
+                    needs_review_count
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    imported_at,
+                    pdf_source_dir,
+                    text_source_dir,
+                    csv_output_path,
+                    str(self.database_path),
+                    statement_count,
+                    len(transactions),
+                    needs_review_count,
+                ),
+            )
+            run_id = int(cursor.lastrowid)
+            connection.executemany(
+                """
+                INSERT INTO imported_transactions (
+                    import_run_id,
+                    statement_file,
+                    bank,
+                    card_last4,
+                    transaction_date,
+                    posted_date,
+                    merchant_raw,
+                    merchant_key,
+                    amount,
+                    currency,
+                    transaction_type,
+                    category,
+                    exclude_from_spending,
+                    needs_review
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        run_id,
+                        transaction.statement_file,
+                        transaction.bank,
+                        transaction.card_last4,
+                        transaction.transaction_date,
+                        transaction.posted_date,
+                        transaction.merchant_raw,
+                        normalize_merchant_key(transaction.merchant_raw),
+                        transaction.amount,
+                        transaction.currency,
+                        transaction.transaction_type,
+                        transaction.category,
+                        int(transaction.exclude_from_spending),
+                        int(transaction.needs_review),
+                    )
+                    for transaction in transactions
+                ],
+            )
+
+        return run_id, imported_at, needs_review_count
+
+    def export_csv(self, run_id: int, csv_path: str | Path) -> str:
+        resolved_path = Path(csv_path)
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    statement_file,
+                    bank,
+                    card_last4,
+                    transaction_date,
+                    posted_date,
+                    merchant_raw,
+                    amount,
+                    currency,
+                    transaction_type,
+                    category,
+                    exclude_from_spending,
+                    needs_review
+                FROM imported_transactions
+                WHERE import_run_id = ?
+                ORDER BY statement_file, transaction_date, merchant_raw, id
+                """,
+                (run_id,),
+            ).fetchall()
+
+        with resolved_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=[
+                    "statement_file",
+                    "bank",
+                    "card_last4",
+                    "transaction_date",
+                    "posted_date",
+                    "merchant_raw",
+                    "amount",
+                    "currency",
+                    "transaction_type",
+                    "category",
+                    "exclude_from_spending",
+                    "needs_review",
+                ],
+            )
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(
+                    {
+                        "statement_file": row["statement_file"],
+                        "bank": row["bank"],
+                        "card_last4": row["card_last4"],
+                        "transaction_date": row["transaction_date"],
+                        "posted_date": row["posted_date"],
+                        "merchant_raw": row["merchant_raw"],
+                        "amount": float(row["amount"]),
+                        "currency": row["currency"],
+                        "transaction_type": row["transaction_type"],
+                        "category": row["category"],
+                        "exclude_from_spending": bool(
+                            row["exclude_from_spending"]
+                        ),
+                        "needs_review": bool(row["needs_review"]),
+                    }
+                )
+
+        return str(resolved_path)
+
+    def get_latest_run(self) -> BatchImportRunSummary | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    id,
+                    imported_at,
+                    statement_count,
+                    transaction_count,
+                    needs_review_count,
+                    csv_output_path,
+                    sqlite_output_path,
+                    pdf_source_dir,
+                    text_source_dir
+                FROM import_runs
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "id": int(row["id"]),
+            "imported_at": str(row["imported_at"]),
+            "statement_count": int(row["statement_count"]),
+            "transaction_count": int(row["transaction_count"]),
+            "needs_review_count": int(row["needs_review_count"]),
+            "csv_output_path": str(row["csv_output_path"]),
+            "sqlite_output_path": str(row["sqlite_output_path"]),
+            "pdf_source_dir": str(row["pdf_source_dir"]),
+            "text_source_dir": str(row["text_source_dir"]),
+        }
+
+    def list_transactions(
+        self,
+        *,
+        needs_review_only: bool = False,
+        run_id: int | None = None,
+        limit: int = 500,
+    ) -> list[BatchStoredTransaction]:
+        effective_run_id = run_id or self._latest_run_id()
+        if effective_run_id is None:
+            return []
+
+        review_clause = "AND needs_review = 1" if needs_review_only else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    id,
+                    import_run_id,
+                    statement_file,
+                    bank,
+                    card_last4,
+                    transaction_date,
+                    posted_date,
+                    merchant_raw,
+                    amount,
+                    currency,
+                    transaction_type,
+                    category,
+                    exclude_from_spending,
+                    needs_review
+                FROM imported_transactions
+                WHERE import_run_id = ?
+                {review_clause}
+                ORDER BY needs_review DESC, transaction_date DESC, id DESC
+                LIMIT ?
+                """,
+                (effective_run_id, limit),
+            ).fetchall()
+
+        return [self._row_to_transaction(row) for row in rows]
+
+    def update_transaction_review(
+        self,
+        transaction_id: int,
+        *,
+        category: str,
+        exclude_from_spending: bool,
+        save_rule: bool,
+    ) -> BatchStoredTransaction:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    id,
+                    import_run_id,
+                    statement_file,
+                    bank,
+                    card_last4,
+                    transaction_date,
+                    posted_date,
+                    merchant_raw,
+                    amount,
+                    currency
+                FROM imported_transactions
+                WHERE id = ?
+                """,
+                (transaction_id,),
+            ).fetchone()
+
+            if row is None:
+                raise KeyError(transaction_id)
+
+            transaction_type = transaction_type_for_category(
+                category,
+                exclude_from_spending,
+            )
+            normalized_amount = (
+                -abs(float(row["amount"]))
+                if transaction_type == "payment_or_credit"
+                else abs(float(row["amount"]))
+            )
+            needs_review = category == UNKNOWN_CATEGORY
+
+            connection.execute(
+                """
+                UPDATE imported_transactions
+                SET
+                    amount = ?,
+                    category = ?,
+                    exclude_from_spending = ?,
+                    needs_review = ?,
+                    transaction_type = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized_amount,
+                    category,
+                    int(exclude_from_spending),
+                    int(needs_review),
+                    transaction_type,
+                    transaction_id,
+                ),
+            )
+
+            if save_rule:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO merchant_rules (
+                        merchant_pattern,
+                        category,
+                        exclude_from_spending,
+                        priority,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalize_merchant_key(str(row["merchant_raw"])),
+                        category,
+                        int(exclude_from_spending),
+                        10,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+
+            updated = connection.execute(
+                """
+                SELECT
+                    id,
+                    import_run_id,
+                    statement_file,
+                    bank,
+                    card_last4,
+                    transaction_date,
+                    posted_date,
+                    merchant_raw,
+                    amount,
+                    currency,
+                    transaction_type,
+                    category,
+                    exclude_from_spending,
+                    needs_review
+                FROM imported_transactions
+                WHERE id = ?
+                """,
+                (transaction_id,),
+            ).fetchone()
+
+        return self._row_to_transaction(updated)
+
+    def _latest_run_id(self) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM import_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return int(row["id"])
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def _row_to_transaction(
+        self, row: sqlite3.Row
+    ) -> BatchStoredTransaction:
+        return {
+            "id": int(row["id"]),
+            "import_run_id": int(row["import_run_id"]),
+            "statement_file": str(row["statement_file"]),
+            "bank": str(row["bank"]),
+            "card_last4": (
+                str(row["card_last4"]) if row["card_last4"] is not None else None
+            ),
+            "transaction_date": str(row["transaction_date"]),
+            "posted_date": (
+                str(row["posted_date"]) if row["posted_date"] is not None else None
+            ),
+            "merchant_raw": str(row["merchant_raw"]),
+            "amount": float(row["amount"]),
+            "currency": str(row["currency"]),
+            "transaction_type": str(row["transaction_type"]),
+            "category": str(row["category"]),
+            "exclude_from_spending": bool(row["exclude_from_spending"]),
+            "needs_review": bool(row["needs_review"]),
+        }

@@ -1,0 +1,7 @@
+AMERICAN EXPRESS
+Statement Date: 01/29/2026
+Card ending 1001
+Date Description Amount
+01/05 STARBUCKS 5.75
+01/08 THANK YOU PAYMENT 100.00
+Total New Charges 105.75
