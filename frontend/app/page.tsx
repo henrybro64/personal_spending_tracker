@@ -11,6 +11,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import Link from "next/link";
 import {
   Badge,
   Body1,
@@ -47,6 +48,7 @@ type Transaction = {
   merchant: string;
   amount: number;
   category: string;
+  currency?: "USD" | "TWD";
 };
 
 type UploadResponse = {
@@ -75,13 +77,87 @@ type RecentUploadsResponse = {
   uploads: RecentUpload[];
 };
 
-type TransactionsApiResponse = {
+type DisplayCurrency = "USD" | "TWD";
+
+type MerchantBreakdown = {
+  merchant: string;
+  total: number;
+  abs_total: number;
+};
+
+type DateBreakdown = {
+  date: string;
+  total: number;
+  abs_total: number;
+};
+
+type CategoryBreakdown = {
+  category: string;
+  total: number;
+  share: number;
+  color: string;
+};
+
+type DashboardViewResponse = {
+  active_currency: DisplayCurrency;
+  summary: SummaryResponse;
   transactions: Transaction[];
+  sorted_transactions: Transaction[];
+  merchant_breakdown: MerchantBreakdown[];
+  category_breakdown: Array<{
+    category: string;
+    total: number;
+    share: number;
+  }>;
+  date_breakdown: DateBreakdown[];
+  metrics: {
+    selection_net: number;
+    selection_spend: number;
+    selection_refunds: number;
+    selection_average: number;
+    upload_net: number;
+    largest_transaction_amount: number;
+    selection_coverage: number;
+    model_total_in_active_currency: number;
+  };
+};
+
+type ManualTransactionPayload = {
+  date: string;
+  merchant: string;
+  amount: number;
+  category: string | null;
+  payment_method: string | null;
 };
 
 type AmountFilter = "all" | "spend" | "refunds";
 type SortOption = "amount_desc" | "amount_asc" | "merchant" | "date";
 type TimeRange = "week" | "month" | "quarter" | "year" | "5years" | "all";
+
+const manualPaymentMethods = [
+  "Cash",
+  "PayPal",
+  "EasyCard (悠遊卡)",
+  "iCash",
+  "Bank transfer",
+  "Other",
+] as const;
+
+const manualCategories = [
+  "Auto",
+  "Dining",
+  "Groceries",
+  "Transport",
+  "Shopping",
+  "Bills & Utilities",
+  "Entertainment",
+  "Health & Wellness",
+  "Travel",
+  "Income & Transfers",
+  "Cash & Fees",
+  "Other Spending",
+  "Refunds & Credits",
+] as const;
 
 function sortOptionMessageKey(option: SortOption): MessageKey {
   switch (option) {
@@ -127,26 +203,6 @@ function timeRangeMessageKey(range: TimeRange): MessageKey {
   }
 }
 
-type MerchantBreakdown = {
-  merchant: string;
-  total: number;
-  absTotal: number;
-};
-
-type DateBreakdown = {
-  date: string;
-  label: string;
-  total: number;
-  absTotal: number;
-};
-
-type CategoryBreakdown = {
-  category: string;
-  total: number;
-  share: number;
-  color: string;
-};
-
 type MetricCard = {
   label: string;
   value: string;
@@ -172,11 +228,7 @@ const categoryPalette = [
 ];
 
 function createFormatters(intlLocale: string) {
-  const currencyFormatter = new Intl.NumberFormat(intlLocale, {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  });
+  const currencyFormatterByCode = new Map<string, Intl.NumberFormat>();
   const countFormatter = new Intl.NumberFormat(intlLocale);
   const percentFormatter = new Intl.NumberFormat(intlLocale, {
     style: "percent",
@@ -200,8 +252,19 @@ function createFormatters(intlLocale: string) {
   });
 
   return {
-    formatCurrency(amount: number) {
-      return currencyFormatter.format(amount);
+    formatCurrency(amount: number, currencyCode: string = "USD") {
+      const normalizedCode = currencyCode.toUpperCase();
+      if (!currencyFormatterByCode.has(normalizedCode)) {
+        currencyFormatterByCode.set(
+          normalizedCode,
+          new Intl.NumberFormat(intlLocale, {
+            style: "currency",
+            currency: normalizedCode,
+            maximumFractionDigits: 2,
+          })
+        );
+      }
+      return currencyFormatterByCode.get(normalizedCode)!.format(amount);
     },
     formatCount(value: number) {
       return countFormatter.format(value);
@@ -249,86 +312,8 @@ function parseIsoDate(dateValue: string) {
   return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
 }
 
-function buildMerchantBreakdown(
-  transactions: Transaction[],
-  limit = 8
-): MerchantBreakdown[] {
-  const totalsByMerchant = new Map<string, number>();
-
-  for (const transaction of transactions) {
-    const currentTotal = totalsByMerchant.get(transaction.merchant) ?? 0;
-    totalsByMerchant.set(transaction.merchant, currentTotal + transaction.amount);
-  }
-
-  return Array.from(totalsByMerchant.entries())
-    .map(([merchant, total]) => ({
-      merchant,
-      total,
-      absTotal: Math.abs(total),
-    }))
-    .sort((left, right) => right.absTotal - left.absTotal)
-    .slice(0, limit);
-}
-
-function buildDateBreakdown(
-  transactions: Transaction[],
-  formatTransactionDateShort: (dateValue: string) => string
-): DateBreakdown[] {
-  const totalsByDate = new Map<string, number>();
-
-  for (const transaction of transactions) {
-    const currentTotal = totalsByDate.get(transaction.date) ?? 0;
-    totalsByDate.set(transaction.date, currentTotal + transaction.amount);
-  }
-
-  return Array.from(totalsByDate.entries())
-    .map(([date, total]) => ({
-      date,
-      label: formatTransactionDateShort(date),
-      total,
-      absTotal: Math.abs(total),
-    }))
-    .sort((left, right) => left.date.localeCompare(right.date));
-}
-
-function buildCategoryBreakdown(
-  transactions: Transaction[],
-  limit = 6,
-  otherCategoryLabel = "Other"
-): CategoryBreakdown[] {
-  const totalsByCategory = new Map<string, number>();
-
-  for (const transaction of transactions) {
-    if (transaction.amount <= 0) {
-      continue;
-    }
-
-    const currentTotal = totalsByCategory.get(transaction.category) ?? 0;
-    totalsByCategory.set(transaction.category, currentTotal + transaction.amount);
-  }
-
-  const sortedCategories = Array.from(totalsByCategory.entries()).sort(
-    (left, right) => right[1] - left[1]
-  );
-  const topCategories = sortedCategories.slice(0, limit);
-  const remainingTotal = sortedCategories
-    .slice(limit)
-    .reduce((runningTotal, [, total]) => runningTotal + total, 0);
-  const normalizedCategories =
-    remainingTotal > 0
-      ? [...topCategories, [otherCategoryLabel, remainingTotal] as const]
-      : topCategories;
-  const totalSpend = normalizedCategories.reduce(
-    (runningTotal, [, total]) => runningTotal + total,
-    0
-  );
-
-  return normalizedCategories.map(([category, total], index) => ({
-    category,
-    total,
-    share: totalSpend > 0 ? total / totalSpend : 0,
-    color: categoryPalette[index % categoryPalette.length],
-  }));
+function getTodayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function buildPieChartBackground(categories: CategoryBreakdown[]) {
@@ -351,42 +336,10 @@ function buildPieChartBackground(categories: CategoryBreakdown[]) {
   return `conic-gradient(${stops.join(", ")})`;
 }
 
-function getLargestAbsoluteTransaction(transactions: Transaction[]) {
-  return transactions.reduce((largestValue, transaction) => {
-    const currentMagnitude = Math.abs(transaction.amount);
-    return currentMagnitude > largestValue ? currentMagnitude : largestValue;
-  }, 0);
-}
-
-function sortTransactions(
-  transactions: Transaction[],
-  sortOption: SortOption
-): Transaction[] {
-  const sortedTransactions = [...transactions];
-
-  sortedTransactions.sort((left, right) => {
-    switch (sortOption) {
-      case "amount_asc":
-        return left.amount - right.amount;
-      case "merchant":
-        return left.merchant.localeCompare(right.merchant);
-      case "date":
-        return left.date.localeCompare(right.date);
-      case "amount_desc":
-      default:
-        return right.amount - left.amount;
-    }
-  });
-
-  return sortedTransactions;
-}
-
 const useStyles = makeStyles({
   page: {
     minHeight: "100vh",
-    backgroundColor: tokens.colorNeutralBackground2,
-    backgroundImage:
-      "radial-gradient(circle at 20% 0%, rgba(77, 105, 205, 0.14), rgba(77, 105, 205, 0) 45%), radial-gradient(circle at 100% 10%, rgba(0, 120, 212, 0.1), rgba(0, 120, 212, 0) 42%)",
+    backgroundColor: "var(--page-surface)",
     color: tokens.colorNeutralForeground1,
   },
   shell: {
@@ -429,6 +382,27 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: "12px",
+  },
+  sidebarNavLinks: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+  },
+  sidebarNavLink: {
+    display: "block",
+    paddingTop: "10px",
+    paddingBottom: "10px",
+    paddingLeft: "12px",
+    paddingRight: "12px",
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground2,
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    ":hover": {
+      backgroundColor: tokens.colorSubtleBackgroundHover,
+      color: tokens.colorNeutralForeground1,
+    },
   },
   reportHeader: {
     display: "flex",
@@ -595,6 +569,25 @@ const useStyles = makeStyles({
     minWidth: "200px",
     fontWeight: tokens.fontWeightSemibold,
   },
+  manualForm: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+  },
+  manualInlineGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: "8px",
+    "@media (max-width: 520px)": {
+      gridTemplateColumns: "1fr",
+    },
+  },
+  amountInput: {
+    width: "100%",
+  },
+  manualButton: {
+    width: "100%",
+  },
   selectControl: {
     width: "100%",
     height: "40px",
@@ -749,12 +742,9 @@ const useStyles = makeStyles({
   },
   pieLayout: {
     display: "grid",
-    gridTemplateColumns: "minmax(220px, 260px) minmax(0, 1fr)",
-    gap: "16px",
-    alignItems: "center",
-    "@media (max-width: 720px)": {
-      gridTemplateColumns: "1fr",
-    },
+    gridTemplateColumns: "1fr",
+    gap: "12px",
+    alignItems: "start",
   },
   pieChartWrap: {
     width: "100%",
@@ -1091,6 +1081,7 @@ export default function HomePage() {
   const [recentUploads, setRecentUploads] = useState<RecentUpload[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
+  const [displayCurrency, setDisplayCurrency] = useState<DisplayCurrency>("USD");
   const [selectedMerchant, setSelectedMerchant] = useState<string | null>(null);
   const [amountFilter, setAmountFilter] = useState<AmountFilter>("all");
   const [sortOption, setSortOption] = useState<SortOption>("amount_desc");
@@ -1104,88 +1095,34 @@ export default function HomePage() {
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const [isTransitionPending, startTransition] = useTransition();
+  const [manualDate, setManualDate] = useState(getTodayIsoDate);
+  const [manualMerchant, setManualMerchant] = useState("");
+  const [manualAmount, setManualAmount] = useState("");
+  const [manualCategory, setManualCategory] = useState("Auto");
+  const [manualPaymentMethod, setManualPaymentMethod] = useState("Cash");
+  const [manualError, setManualError] = useState("");
+  const [isManualSaving, setIsManualSaving] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
-
-  const normalizedSearchQuery = deferredSearchQuery.trim().toLowerCase();
-
-  const baseFilteredTransactions = transactions.filter((transaction) => {
-    const matchesSearch =
-      normalizedSearchQuery.length === 0 ||
-      transaction.merchant.toLowerCase().includes(normalizedSearchQuery) ||
-      transaction.category.toLowerCase().includes(normalizedSearchQuery) ||
-      transaction.date.toLowerCase().includes(normalizedSearchQuery) ||
-      transaction.amount.toFixed(2).includes(normalizedSearchQuery);
-
-    const matchesAmountFilter =
-      amountFilter === "all" ||
-      (amountFilter === "spend" && transaction.amount >= 0) ||
-      (amountFilter === "refunds" && transaction.amount < 0);
-
-    return matchesSearch && matchesAmountFilter;
-  });
-
-  useEffect(() => {
-    if (
-      selectedMerchant &&
-      !baseFilteredTransactions.some(
-        (transaction) => transaction.merchant === selectedMerchant
-      )
-    ) {
-      setSelectedMerchant(null);
-    }
-  }, [baseFilteredTransactions, selectedMerchant]);
-
-  const filteredTransactions = selectedMerchant
-    ? baseFilteredTransactions.filter(
-        (transaction) => transaction.merchant === selectedMerchant
-      )
-    : baseFilteredTransactions;
-
-  const sortedTransactions = sortTransactions(filteredTransactions, sortOption);
-  const merchantBreakdown = buildMerchantBreakdown(baseFilteredTransactions, 7);
-  const categoryBreakdown = buildCategoryBreakdown(
-    filteredTransactions,
-    6,
-    translate(locale, "categoryOther")
+  const [dashboardView, setDashboardView] = useState<DashboardViewResponse | null>(null);
+  const sortedTransactions = dashboardView?.sorted_transactions ?? [];
+  const merchantBreakdown = dashboardView?.merchant_breakdown ?? [];
+  const categoryBreakdown = useMemo(
+    () =>
+      (dashboardView?.category_breakdown ?? []).map((item, index) => ({
+        ...item,
+        color: categoryPalette[index % categoryPalette.length],
+      })),
+    [dashboardView]
   );
-  const dateBreakdown = buildDateBreakdown(filteredTransactions, (dateValue) =>
-    fm.formatTransactionDate(dateValue, true)
-  ).slice(-10);
-  const merchantBarMaximum = merchantBreakdown[0]?.absTotal ?? 0;
   const categorySpendTotal = categoryBreakdown.reduce(
     (runningTotal, categoryItem) => runningTotal + categoryItem.total,
     0
   );
   const categoryPieBackground = buildPieChartBackground(categoryBreakdown);
-  const dateBarMaximum = dateBreakdown.reduce(
-    (currentMaximum, currentItem) =>
-      currentItem.absTotal > currentMaximum ? currentItem.absTotal : currentMaximum,
-    0
-  );
-
-  const selectionNet = filteredTransactions.reduce(
-    (runningTotal, transaction) => runningTotal + transaction.amount,
-    0
-  );
-  const selectionSpend = filteredTransactions.reduce(
-    (runningTotal, transaction) =>
-      runningTotal + (transaction.amount > 0 ? transaction.amount : 0),
-    0
-  );
-  const selectionRefunds = filteredTransactions.reduce(
-    (runningTotal, transaction) =>
-      runningTotal + (transaction.amount < 0 ? Math.abs(transaction.amount) : 0),
-    0
-  );
-  const selectionAverage =
-    filteredTransactions.length > 0 ? selectionNet / filteredTransactions.length : 0;
-  const uploadNet = transactions.reduce(
-    (runningTotal, transaction) => runningTotal + transaction.amount,
-    0
-  );
-  const largestTransactionAmount = getLargestAbsoluteTransaction(filteredTransactions);
-  const selectionCoverage =
-    transactions.length > 0 ? filteredTransactions.length / transactions.length : 0;
+  const merchantBarMaximum = merchantBreakdown[0]?.abs_total ?? 0;
+  const activeCurrency = dashboardView?.active_currency ?? displayCurrency;
+  const visibleRowsCount = sortedTransactions.length;
+  const metrics = dashboardView?.metrics;
   const currentStatementLabel =
     uploadedFileName ||
     selectedFile?.name ||
@@ -1196,29 +1133,32 @@ export default function HomePage() {
     () => [
       {
         label: translate(locale, "metricNetInView"),
-        value: fm.formatCurrency(selectionNet),
+        value: fm.formatCurrency(metrics?.selection_net ?? 0, activeCurrency),
         hint: translate(locale, "metricNetInViewHint"),
       },
       {
         label: translate(locale, "metricSpendOnly"),
-        value: fm.formatCurrency(selectionSpend),
+        value: fm.formatCurrency(metrics?.selection_spend ?? 0, activeCurrency),
         hint: translate(locale, "metricSpendOnlyHint"),
       },
       {
         label: translate(locale, "metricRefunds"),
-        value: fm.formatCurrency(selectionRefunds),
+        value: fm.formatCurrency(metrics?.selection_refunds ?? 0, activeCurrency),
         hint: translate(locale, "metricRefundsHint"),
       },
       {
         label: translate(locale, "metricRowsInView"),
-        value: fm.formatCount(filteredTransactions.length),
+        value: fm.formatCount(visibleRowsCount),
         hint: translate(locale, "metricRowsHintTemplate", {
-          pct: fm.formatPercent(selectionCoverage),
+          pct: fm.formatPercent(metrics?.selection_coverage ?? 0),
         }),
       },
       {
         label: translate(locale, "metricModelTotal"),
-        value: fm.formatCurrency(summary.total_spending),
+        value: fm.formatCurrency(
+          metrics?.model_total_in_active_currency ?? 0,
+          activeCurrency
+        ),
         hint: translate(locale, "metricModelTotalHintTemplate", {
           n: fm.formatCount(summary.number_of_statements),
         }),
@@ -1227,12 +1167,13 @@ export default function HomePage() {
     [
       locale,
       fm,
-      selectionNet,
-      selectionSpend,
-      selectionRefunds,
-      filteredTransactions.length,
-      selectionCoverage,
-      summary.total_spending,
+      metrics?.selection_net,
+      metrics?.selection_spend,
+      metrics?.selection_refunds,
+      activeCurrency,
+      visibleRowsCount,
+      metrics?.selection_coverage,
+      metrics?.model_total_in_active_currency,
       summary.number_of_statements,
     ]
   );
@@ -1243,18 +1184,10 @@ export default function HomePage() {
     }
 
     try {
-      const [summaryData, recentUploadsData] = await Promise.all([
-        fetchJson<SummaryResponse>(
-          `/summary?range=${encodeURIComponent(timeRange)}`,
-          translate(locale, "errRequestFailed")
-        ),
-        fetchJson<RecentUploadsResponse>(
-          "/uploads/recent?limit=6",
-          translate(locale, "errRequestFailed")
-        ),
-      ]);
-
-      setSummary(summaryData);
+      const recentUploadsData = await fetchJson<RecentUploadsResponse>(
+        "/uploads/recent?limit=6",
+        translate(locale, "errRequestFailed")
+      );
       setRecentUploads(recentUploadsData.uploads);
       setDashboardError("");
     } catch (dashboardLoadError) {
@@ -1276,13 +1209,26 @@ export default function HomePage() {
     }
 
     try {
-      const transactionData = await fetchJson<TransactionsApiResponse>(
-        `/transactions?range=${encodeURIComponent(timeRange)}&limit=5000`,
+      const dashboardData = await fetchJson<DashboardViewResponse>(
+        `/dashboard/view?range=${encodeURIComponent(
+          timeRange
+        )}&search=${encodeURIComponent(
+          deferredSearchQuery
+        )}&amount_filter=${encodeURIComponent(
+          amountFilter
+        )}&selected_merchant=${encodeURIComponent(
+          selectedMerchant ?? ""
+        )}&sort=${encodeURIComponent(sortOption)}&currency=${encodeURIComponent(
+          displayCurrency
+        )}&limit=5000`,
         translate(locale, "errRequestFailed")
       );
-      setTransactions(transactionData.transactions);
+      setDashboardView(dashboardData);
+      setSummary(dashboardData.summary);
+      setTransactions(dashboardData.transactions);
       setError("");
     } catch (transactionLoadError) {
+      setDashboardView(null);
       setTransactions([]);
       setError(
         transactionLoadError instanceof Error
@@ -1298,7 +1244,14 @@ export default function HomePage() {
 
   useEffect(() => {
     void Promise.all([loadDashboardData(true), loadTransactionsData(true)]);
-  }, [timeRange]);
+  }, [
+    timeRange,
+    displayCurrency,
+    amountFilter,
+    sortOption,
+    selectedMerchant,
+    deferredSearchQuery,
+  ]);
 
   function handleNextFile(nextFile: File | null) {
     if (!nextFile) {
@@ -1413,137 +1366,82 @@ export default function HomePage() {
     }
   }
 
+  async function handleAddManualTransaction() {
+    const merchant = manualMerchant.trim();
+    const amountValue = Number(manualAmount);
+    if (!merchant) {
+      setManualError(translate(locale, "errManualMerchantRequired"));
+      return;
+    }
+    if (!manualDate) {
+      setManualError(translate(locale, "errManualDateRequired"));
+      return;
+    }
+    if (!Number.isFinite(amountValue) || amountValue === 0) {
+      setManualError(translate(locale, "errManualAmountInvalid"));
+      return;
+    }
+
+    const payload: ManualTransactionPayload = {
+      date: manualDate,
+      merchant,
+      amount: amountValue,
+      category: manualCategory === "Auto" ? null : manualCategory,
+      payment_method: manualPaymentMethod || null,
+    };
+
+    setIsManualSaving(true);
+    setManualError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/transactions/manual`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      const responseBody = (await response.json()) as { detail?: string };
+      if (!response.ok) {
+        throw new Error(responseBody.detail || translate(locale, "errUploadFailed"));
+      }
+      setManualMerchant("");
+      setManualAmount("");
+      setManualCategory("Auto");
+      setManualPaymentMethod("Cash");
+      setManualDate(getTodayIsoDate());
+      await Promise.all([loadDashboardData(false), loadTransactionsData(false)]);
+    } catch (manualSaveError) {
+      setManualError(
+        manualSaveError instanceof Error
+          ? manualSaveError.message
+          : translate(locale, "errUnexpectedUpload")
+      );
+    } finally {
+      setIsManualSaving(false);
+    }
+  }
+
   return (
     <main className={styles.page}>
       <div className={styles.shell}>
         <aside className={styles.sidebar}>
-          <Card className={mergeClasses(styles.panel, styles.sidebarPanel, styles.uploadCard)}>
+          <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
             <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
-              {translate(locale, "reportPaneEyebrow")}
+              {translate(locale, "navTitle")}
             </div>
-            <Title2>{translate(locale, "statementImportTitle")}</Title2>
-            <Body1 className={styles.emptyState}>
-              {translate(locale, "statementImportBody")}
-            </Body1>
-
-            <Field
-              label={translate(locale, "fieldStatementPdfLabel")}
-              hint={translate(locale, "fieldStatementPdfHint")}
-            >
-              <>
-                <input
-                  accept="application/pdf,.pdf"
-                  className={styles.hiddenInput}
-                  onChange={handleFileChange}
-                  ref={fileInputRef}
-                  type="file"
-                />
-                <div
-                  className={mergeClasses(
-                    styles.dropZone,
-                    isDragging && styles.dropZoneActive
-                  )}
-                  onClick={openFilePicker}
-                  onDragEnter={() => setIsDragging(true)}
-                  onDragLeave={() => setIsDragging(false)}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    setIsDragging(true);
-                  }}
-                  onDrop={handleDrop}
-                  onKeyDown={handleDropZoneKeyDown}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <div className={styles.dropZoneTitle}>
-                    {selectedFile
-                      ? selectedFile.name
-                      : translate(locale, "dropZoneEmptyTitle")}
-                  </div>
-                  <Body1 className={styles.dropZoneHint}>
-                    {selectedFile
-                      ? translate(locale, "dropZoneReadyHint")
-                      : translate(locale, "dropZoneIdleHint")}
-                  </Body1>
-                </div>
-              </>
-            </Field>
-
-            {selectedFile && !isLoading ? (
-              <MessageBar className={styles.uploadNextBar} intent="info">
-                <MessageBarBody>
-                  <MessageBarTitle>
-                    {translate(locale, "uploadNextStepTitle")}
-                  </MessageBarTitle>
-                  {translate(locale, "uploadNextStepBody")}
-                </MessageBarBody>
-              </MessageBar>
-            ) : null}
-
-            <Field
-              hint={translate(locale, "fieldPdfPasswordHint")}
-              label={translate(locale, "fieldPdfPasswordLabel")}
-            >
-              <Input
-                appearance="outline"
-                autoComplete="off"
-                className={styles.searchField}
-                onChange={(_, data) => setPdfPassword(data.value)}
-                placeholder={translate(locale, "placeholderPdfPassword")}
-                type="password"
-                value={pdfPassword}
-              />
-            </Field>
-
-            {isLoading ? <ProgressBar /> : null}
-
-            <div className={styles.processActions}>
-              <Button
-                appearance="primary"
-                className={styles.processPrimaryButton}
-                disabled={isLoading}
-                onClick={handleUpload}
-                size="large"
-              >
-                {isLoading
-                  ? translate(locale, "btnRefreshing")
-                  : translate(locale, "btnProcessPdf")}
-              </Button>
-              <Button
-                appearance="secondary"
-                disabled={isLoading}
-                onClick={openFilePicker}
-                size="large"
-              >
-                {translate(locale, "btnBrowse")}
-              </Button>
-              {isLoading ? (
-                <Spinner label={translate(locale, "spinnerParsingLabel")} size="tiny" />
-              ) : null}
+            <Title2>{translate(locale, "navTitle")}</Title2>
+            <Body1 className={styles.emptyState}>{translate(locale, "navHint")}</Body1>
+            <div className={styles.sidebarNavLinks}>
+              <Link className={styles.sidebarNavLink} href="/">
+                {translate(locale, "navDashboard")}
+              </Link>
+              <Link className={styles.sidebarNavLink} href="/data-entry">
+                {translate(locale, "navDataEntry")}
+              </Link>
+              <Link className={styles.sidebarNavLink} href="/transactions">
+                {translate(locale, "navTransactions")}
+              </Link>
             </div>
-
-            <div className={styles.helperRow}>
-              <Badge appearance="filled" color="warning">
-                {translate(locale, "badgeManualRefresh")}
-              </Badge>
-              <Badge appearance="outline" color="brand">
-                {translate(locale, "badgePdfSource")}
-              </Badge>
-              <Badge appearance="outline" color="informative">
-                {translate(locale, "badgePostgresModel")}
-              </Badge>
-            </div>
-
-            {error ? (
-              <MessageBar intent="error">
-                <MessageBarBody>
-                  <MessageBarTitle>
-                    {translate(locale, "msgRefreshFailedTitle")}
-                  </MessageBarTitle>
-                  {error}
-                </MessageBarBody>
-              </MessageBar>
-            ) : null}
           </Card>
 
           <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
@@ -1677,64 +1575,12 @@ export default function HomePage() {
                 {translate(locale, "clearSlicers")}
               </Button>
               <Badge appearance="outline" color="brand">
-                {fm.formatCount(filteredTransactions.length)}{" "}
+                {fm.formatCount(visibleRowsCount)}{" "}
                 {translate(locale, "rowsInViewSuffix")}
               </Badge>
             </div>
           </Card>
 
-          <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
-            <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
-              {translate(locale, "historyEyebrow")}
-            </div>
-            <Title2>{translate(locale, "recentStatementsTitle")}</Title2>
-
-            {dashboardError ? (
-              <MessageBar intent="warning">
-                <MessageBarBody>
-                  <MessageBarTitle>
-                    {translate(locale, "dashboardUnavailableTitle")}
-                  </MessageBarTitle>
-                  {dashboardError}
-                </MessageBarBody>
-              </MessageBar>
-            ) : null}
-
-            {isDashboardLoading ? (
-              <Spinner label={translate(locale, "loadingHistoryLabel")} />
-            ) : recentUploads.length > 0 ? (
-              <div className={styles.historyList}>
-                {recentUploads.map((upload) => (
-                  <div className={styles.historyItem} key={upload.file_name}>
-                    <div className={styles.historyTop}>
-                      <div>
-                        <div className={styles.historyName}>{upload.display_name}</div>
-                        <div className={styles.historyMeta}>
-                          {fm.formatUploadDate(upload.uploaded_at)}
-                        </div>
-                      </div>
-                      <Badge appearance="outline" color="brand">
-                        {fm.formatCount(upload.transaction_count)}{" "}
-                        {translate(locale, "historyRowsWord")}
-                      </Badge>
-                    </div>
-                    <div className={styles.historyStats}>
-                      <Badge appearance="filled" color="informative">
-                        {fm.formatCurrency(upload.total_amount)}
-                      </Badge>
-                      <Badge appearance="outline" color="success">
-                        {upload.file_name}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <Body1 className={styles.emptyState}>
-                {translate(locale, "noUploadsYet")}
-              </Body1>
-            )}
-          </Card>
         </aside>
 
         <section className={styles.reportArea}>
@@ -1748,6 +1594,21 @@ export default function HomePage() {
                   {translate(locale, "badgeCurrentFilePrefix")}{" "}
                   {currentStatementLabel}
                 </Badge>
+                <div className={styles.languageRow}>
+                  <Body1 className={styles.languageOption}>
+                    {translate(locale, "currencyUsd")}
+                  </Body1>
+                  <Switch
+                    aria-label={translate(locale, "currencyLabel")}
+                    checked={displayCurrency === "TWD"}
+                    onChange={(_, data) =>
+                      setDisplayCurrency(data.checked ? "TWD" : "USD")
+                    }
+                  />
+                  <Body1 className={styles.languageOption}>
+                    {translate(locale, "currencyTwd")}
+                  </Body1>
+                </div>
                 <div className={styles.languageRow}>
                   <Body1 className={styles.languageOption}>
                     {translate(locale, "languageEnglish")}
@@ -1787,7 +1648,10 @@ export default function HomePage() {
                     {translate(locale, "storedModelLabel")}
                   </div>
                   <div className={styles.headerHighlightValue}>
-                    {fm.formatCurrency(summary.total_spending)}
+                    {fm.formatCurrency(
+                      metrics?.model_total_in_active_currency ?? 0,
+                      activeCurrency
+                    )}
                   </div>
                 </div>
                 <div className={styles.headerHighlight}>
@@ -1804,28 +1668,8 @@ export default function HomePage() {
             </div>
           </Card>
 
-          <div className={styles.filterSummary}>
-            <Badge appearance="outline" color="brand">
-              {translate(locale, "merchantSummaryPrefix")}{" "}
-              {selectedMerchant ?? translate(locale, "merchantAll")}
-            </Badge>
-            <Badge appearance="outline" color="informative">
-              {translate(locale, "amountSummaryPrefix")}{" "}
-              {translate(locale, amountFilterMessageKey(amountFilter))}
-            </Badge>
-            <Badge appearance="outline" color="success">
-              {translate(locale, "sortSummaryPrefix")}{" "}
-              {translate(locale, sortOptionMessageKey(sortOption))}
-            </Badge>
-            {searchQuery ? (
-              <Badge appearance="outline" color="brand">
-                {translate(locale, "searchSummaryPrefix")} {searchQuery}
-              </Badge>
-            ) : null}
-          </div>
-
           <div className={styles.metricGrid}>
-            {metricCards.map((metricCard) => (
+            {metricCards.slice(0, 3).map((metricCard) => (
               <div className={styles.metricCard} key={metricCard.label}>
                 <div className={styles.metricAccent} />
                 <div className={styles.metricLabel}>{metricCard.label}</div>
@@ -1841,9 +1685,6 @@ export default function HomePage() {
                 <div className={styles.cardHeaderTitle}>
                   <Title2>{translate(locale, "merchantContributionTitle")}</Title2>
                 </div>
-                <Badge appearance="outline" color="brand">
-                  {translate(locale, "badgeCrossFilter")}
-                </Badge>
               </div>
 
               {merchantBreakdown.length > 0 ? (
@@ -1877,7 +1718,7 @@ export default function HomePage() {
                             style={{
                               width: `${
                                 merchantBarMaximum > 0
-                                  ? (merchantItem.absTotal / merchantBarMaximum) * 100
+                                  ? (merchantItem.abs_total / merchantBarMaximum) * 100
                                   : 0
                               }%`,
                             }}
@@ -1885,7 +1726,7 @@ export default function HomePage() {
                         </div>
                       </div>
                       <div className={styles.merchantValue}>
-                        {fm.formatCurrency(merchantItem.total)}
+                        {fm.formatCurrency(merchantItem.total, activeCurrency)}
                       </div>
                     </div>
                   ))}
@@ -1916,7 +1757,7 @@ export default function HomePage() {
                     >
                       <div className={styles.pieChartHole}>
                         <div className={styles.pieCenterValue}>
-                          {fm.formatCurrency(categorySpendTotal)}
+                          {fm.formatCurrency(categorySpendTotal, activeCurrency)}
                         </div>
                         <div className={styles.pieCenterLabel}>
                           {translate(locale, "pieCenterSpendInView")}
@@ -1945,7 +1786,7 @@ export default function HomePage() {
                           </div>
                         </div>
                         <div className={styles.categoryLegendValue}>
-                          {fm.formatCurrency(categoryItem.total)}
+                          {fm.formatCurrency(categoryItem.total, activeCurrency)}
                         </div>
                       </div>
                     ))}
@@ -1958,278 +1799,8 @@ export default function HomePage() {
               )}
             </Card>
 
-            <Card className={mergeClasses(styles.panel, styles.columnsCard)}>
-              <div className={styles.cardHeader}>
-                <div className={styles.cardHeaderTitle}>
-                  <Title2>{translate(locale, "dailyNetTitle")}</Title2>
-                </div>
-                <Badge appearance="outline" color="informative">
-                  {translate(locale, "badgeBasedOnSelection")}
-                </Badge>
-              </div>
-
-              {dateBreakdown.length > 0 ? (
-                <div className={styles.columnChart}>
-                  {dateBreakdown.map((dateItem) => (
-                    <div className={styles.columnItem} key={dateItem.date}>
-                      <div className={styles.columnValue}>
-                        {fm.formatCurrency(dateItem.total)}
-                      </div>
-                      <div className={styles.columnTrack}>
-                        <div
-                          className={mergeClasses(
-                            styles.columnBar,
-                            dateItem.total < 0 && styles.columnBarNegative
-                          )}
-                          style={{
-                            height: `${
-                              dateBarMaximum > 0
-                                ? Math.max(
-                                    (dateItem.absTotal / dateBarMaximum) * 100,
-                                    6
-                                  )
-                                : 6
-                            }%`,
-                          }}
-                        />
-                      </div>
-                      <div className={styles.columnLabel}>{dateItem.label}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <Body1 className={styles.emptyState}>
-                  {translate(locale, "emptyDateBuckets")}
-                </Body1>
-              )}
-            </Card>
           </div>
 
-          <div className={styles.visualsGrid}>
-            <Card className={mergeClasses(styles.panel, styles.visualCard)}>
-              <div className={styles.cardHeader}>
-                <div className={styles.cardHeaderTitle}>
-                  <div
-                    className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}
-                  >
-                    {translate(locale, "visual4Eyebrow")}
-                  </div>
-                  <Title2>{translate(locale, "selectionDetailsTitle")}</Title2>
-                </div>
-                <Badge appearance="outline" color="warning">
-                  {translate(locale, "badgeReactiveSlicers")}
-                </Badge>
-              </div>
-
-              <div className={styles.insightsList}>
-                <div className={styles.insightCell}>
-                  <div className={styles.insightLabel}>
-                    {translate(locale, "insightCurrentStatement")}
-                  </div>
-                  <div className={styles.insightValue}>{currentStatementLabel}</div>
-                </div>
-                <div className={styles.insightCell}>
-                  <div className={styles.insightLabel}>
-                    {translate(locale, "insightAvgTransaction")}
-                  </div>
-                  <div className={styles.insightValue}>
-                    {fm.formatCurrency(selectionAverage)}
-                  </div>
-                </div>
-                <div className={styles.insightCell}>
-                  <div className={styles.insightLabel}>
-                    {translate(locale, "insightLargestAmount")}
-                  </div>
-                  <div className={styles.insightValue}>
-                    {fm.formatCurrency(largestTransactionAmount)}
-                  </div>
-                </div>
-                <div className={styles.insightCell}>
-                  <div className={styles.insightLabel}>
-                    {translate(locale, "insightUploadNet")}
-                  </div>
-                  <div className={styles.insightValue}>{fm.formatCurrency(uploadNet)}</div>
-                </div>
-              </div>
-
-              <div className={styles.coverageBlock}>
-                <div className={styles.cardHeader}>
-                  <Body1>{translate(locale, "visibleShareTitle")}</Body1>
-                  <Body1>{fm.formatPercent(selectionCoverage)}</Body1>
-                </div>
-                <div className={styles.coverageTrack}>
-                  <div
-                    className={styles.coverageFill}
-                    style={{ width: `${selectionCoverage * 100}%` }}
-                  />
-                </div>
-              </div>
-            </Card>
-
-            <Card className={mergeClasses(styles.panel, styles.visualCard)}>
-              <div className={styles.cardHeader}>
-                <div className={styles.cardHeaderTitle}>
-                  <div
-                    className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}
-                  >
-                    {translate(locale, "modelContextEyebrow")}
-                  </div>
-                  <Title2>{translate(locale, "datasetSnapshotTitle")}</Title2>
-                </div>
-                <Badge appearance="outline" color="brand">
-                  {translate(locale, "badgeBackendAggregate")}
-                </Badge>
-              </div>
-
-              <div className={styles.insightsList}>
-                <div className={styles.insightCell}>
-                  <div className={styles.insightLabel}>
-                    {translate(locale, "insightStatementsStored")}
-                  </div>
-                  <div className={styles.insightValue}>
-                    {fm.formatCount(summary.number_of_statements)}
-                  </div>
-                </div>
-                <div className={styles.insightCell}>
-                  <div className={styles.insightLabel}>
-                    {translate(locale, "insightRowsStored")}
-                  </div>
-                  <div className={styles.insightValue}>
-                    {fm.formatCount(summary.number_of_transactions)}
-                  </div>
-                </div>
-                <div className={styles.insightCell}>
-                  <div className={styles.insightLabel}>
-                    {translate(locale, "insightAllTimeAvg")}
-                  </div>
-                  <div className={styles.insightValue}>
-                    {fm.formatCurrency(summary.average_transaction_amount)}
-                  </div>
-                </div>
-                <div className={styles.insightCell}>
-                  <div className={styles.insightLabel}>
-                    {translate(locale, "insightMostRecentLoad")}
-                  </div>
-                  <div className={styles.insightValue}>
-                    {latestUpload
-                      ? latestUpload.display_name
-                      : translate(locale, "waitingForData")}
-                  </div>
-                </div>
-              </div>
-            </Card>
-          </div>
-
-          <Card className={mergeClasses(styles.panel, styles.tableCard)}>
-            <div className={styles.tableHeader}>
-              <div className={styles.cardHeaderTitle}>
-                <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
-                  {translate(locale, "detailMatrixEyebrow")}
-                </div>
-                <Title2>{translate(locale, "transactionsTitle")}</Title2>
-              </div>
-              <div className={styles.tableTools}>
-                <Badge appearance="filled" color="brand">
-                  {fm.formatCount(sortedTransactions.length)}{" "}
-                  {translate(locale, "visibleSuffix")}
-                </Badge>
-                <Badge appearance="outline" color="informative">
-                  {translate(locale, "merchantSummaryPrefix")}{" "}
-                  {selectedMerchant ?? translate(locale, "merchantAll")}
-                </Badge>
-              </div>
-            </div>
-
-            {filePath ? (
-              <Body1 className={styles.filePath}>
-                {translate(locale, "storedFilePrefix")} {filePath}
-              </Body1>
-            ) : null}
-
-            {isTransitionPending ? <ProgressBar /> : null}
-
-            {transactions.length > 0 ? (
-              sortedTransactions.length > 0 ? (
-                <div className={styles.tableWrap}>
-                  <Table
-                    aria-label={translate(locale, "tableAriaLabel")}
-                    className={styles.dataTable}
-                  >
-                    <TableHeader>
-                      <TableRow>
-                        <TableHeaderCell className={styles.tableHeaderCell}>
-                          {translate(locale, "colDate")}
-                        </TableHeaderCell>
-                        <TableHeaderCell className={styles.tableHeaderCell}>
-                          {translate(locale, "colMerchant")}
-                        </TableHeaderCell>
-                        <TableHeaderCell className={styles.tableHeaderCell}>
-                          {translate(locale, "colCategory")}
-                        </TableHeaderCell>
-                        <TableHeaderCell className={styles.tableHeaderCell}>
-                          {translate(locale, "colAmount")}
-                        </TableHeaderCell>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sortedTransactions.map((transaction, index) => (
-                        <TableRow
-                          className={index % 2 === 1 ? styles.rowAlt : undefined}
-                          key={`${transaction.date}-${transaction.merchant}-${index}`}
-                        >
-                          <TableCell className={styles.tableCell}>
-                            {fm.formatTransactionDate(transaction.date)}
-                          </TableCell>
-                          <TableCell
-                            className={mergeClasses(styles.tableCell, styles.merchantCell)}
-                          >
-                            {transaction.merchant}
-                          </TableCell>
-                          <TableCell className={styles.tableCell}>
-                            {transaction.category}
-                          </TableCell>
-                          <TableCell
-                            className={mergeClasses(
-                              styles.tableCell,
-                              transaction.amount < 0
-                                ? styles.amountNegative
-                                : styles.amountPositive
-                            )}
-                          >
-                            {fm.formatCurrency(transaction.amount)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              ) : (
-                <Body1 className={styles.emptyState}>
-                  {translate(locale, "emptySlicerNoRows")}
-                </Body1>
-              )
-            ) : filePath ? (
-              <>
-                <MessageBar intent="warning">
-                  <MessageBarBody>
-                    <MessageBarTitle>
-                      {translate(locale, "parseWarningTitle")}
-                    </MessageBarTitle>
-                    {lastUploadParseReason === "empty_text"
-                      ? translate(locale, "parseReasonEmptyText")
-                      : translate(locale, "parseReasonNoMatchingLines")}
-                  </MessageBarBody>
-                </MessageBar>
-                <Body1 className={styles.emptyState}>
-                  {translate(locale, "emptyParsedZeroRows")}
-                </Body1>
-              </>
-            ) : (
-              <Body1 className={styles.emptyState}>
-                {translate(locale, "emptyNoUpload")}
-              </Body1>
-            )}
-          </Card>
         </section>
       </div>
     </main>

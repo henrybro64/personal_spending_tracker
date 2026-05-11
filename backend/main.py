@@ -1,9 +1,10 @@
 import sys
-from hashlib import sha256
+from datetime import date
+from hashlib import sha1, sha256
 from contextlib import asynccontextmanager
 from pathlib import Path
 from shutil import copyfileobj
-from typing import TypedDict
+from typing import Literal, TypedDict
 from uuid import uuid4
 
 # Repo root on sys.path so `from backend.*` works when running
@@ -23,6 +24,7 @@ from fastapi import (  # noqa: E402
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
 
 from backend.database import (  # noqa: E402
     RecentUpload,
@@ -34,6 +36,7 @@ from backend.database import (  # noqa: E402
     get_transactions,
     get_transactions_summary,
     init_db,
+    insert_manual_transaction,
     insert_transactions,
 )
 from backend.parser import Transaction, parse_transactions  # noqa: E402
@@ -70,6 +73,63 @@ class TransactionsResponse(TypedDict):
     transactions: list[StoredTransaction]
 
 
+AmountFilter = Literal["all", "spend", "refunds"]
+SortOption = Literal["amount_desc", "amount_asc", "merchant", "date"]
+DisplayCurrency = Literal["USD", "TWD"]
+
+
+class MerchantBreakdownItem(TypedDict):
+    merchant: str
+    total: float
+    abs_total: float
+
+
+class CategoryBreakdownItem(TypedDict):
+    category: str
+    total: float
+    share: float
+
+
+class DateBreakdownItem(TypedDict):
+    date: str
+    total: float
+    abs_total: float
+
+
+class DashboardMetrics(TypedDict):
+    selection_net: float
+    selection_spend: float
+    selection_refunds: float
+    selection_average: float
+    upload_net: float
+    largest_transaction_amount: float
+    selection_coverage: float
+    model_total_in_active_currency: float
+
+
+class DashboardViewResponse(TypedDict):
+    active_currency: DisplayCurrency
+    summary: SummaryResponse
+    transactions: list[StoredTransaction]
+    sorted_transactions: list[StoredTransaction]
+    merchant_breakdown: list[MerchantBreakdownItem]
+    category_breakdown: list[CategoryBreakdownItem]
+    date_breakdown: list[DateBreakdownItem]
+    metrics: DashboardMetrics
+
+
+class ManualTransactionRequest(BaseModel):
+    date: str
+    merchant: str
+    amount: float
+    category: str | None = None
+    payment_method: str | None = None
+
+
+class ManualTransactionResponse(TypedDict):
+    transaction: StoredTransaction
+
+
 VALID_TIME_RANGES: tuple[TimeRange, ...] = (
     "week",
     "month",
@@ -78,6 +138,15 @@ VALID_TIME_RANGES: tuple[TimeRange, ...] = (
     "5years",
     "all",
 )
+VALID_AMOUNT_FILTERS: tuple[AmountFilter, ...] = ("all", "spend", "refunds")
+VALID_SORT_OPTIONS: tuple[SortOption, ...] = (
+    "amount_desc",
+    "amount_asc",
+    "merchant",
+    "date",
+)
+VALID_DISPLAY_CURRENCIES: tuple[DisplayCurrency, ...] = ("USD", "TWD")
+USD_TO_TWD_RATE = 32.0
 
 
 def _resolve_time_range(range_key: str) -> TimeRange:
@@ -90,6 +159,68 @@ def _resolve_time_range(range_key: str) -> TimeRange:
             + ", ".join(VALID_TIME_RANGES)
         ),
     )
+
+
+def _resolve_amount_filter(filter_key: str) -> AmountFilter:
+    if filter_key in VALID_AMOUNT_FILTERS:
+        return filter_key
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Invalid amount filter. Use one of: "
+            + ", ".join(VALID_AMOUNT_FILTERS)
+        ),
+    )
+
+
+def _resolve_sort_option(sort_key: str) -> SortOption:
+    if sort_key in VALID_SORT_OPTIONS:
+        return sort_key
+    raise HTTPException(
+        status_code=400,
+        detail=("Invalid sort option. Use one of: " + ", ".join(VALID_SORT_OPTIONS)),
+    )
+
+
+def _resolve_display_currency(currency_code: str) -> DisplayCurrency:
+    normalized_code = currency_code.upper()
+    if normalized_code in VALID_DISPLAY_CURRENCIES:
+        return normalized_code  # type: ignore[return-value]
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Invalid display currency. Use one of: "
+            + ", ".join(VALID_DISPLAY_CURRENCIES)
+        ),
+    )
+
+
+def _convert_amount(
+    amount: float, source_currency: str, target_currency: DisplayCurrency
+) -> float:
+    normalized_source = source_currency.upper()
+    if normalized_source == target_currency:
+        return amount
+    if normalized_source == "USD" and target_currency == "TWD":
+        return amount * USD_TO_TWD_RATE
+    if normalized_source == "TWD" and target_currency == "USD":
+        return amount / USD_TO_TWD_RATE
+    return amount
+
+
+def _sort_transactions(
+    transactions: list[StoredTransaction], sort_option: SortOption
+) -> list[StoredTransaction]:
+    sorted_transactions = list(transactions)
+    if sort_option == "amount_asc":
+        sorted_transactions.sort(key=lambda item: item["amount"])
+    elif sort_option == "merchant":
+        sorted_transactions.sort(key=lambda item: item["merchant"].lower())
+    elif sort_option == "date":
+        sorted_transactions.sort(key=lambda item: item["date"])
+    else:
+        sorted_transactions.sort(key=lambda item: item["amount"], reverse=True)
+    return sorted_transactions
 
 
 @asynccontextmanager
@@ -147,6 +278,206 @@ async def transactions(
     }
 
 
+@app.get("/dashboard/view")
+async def dashboard_view(
+    range: str = Query(default="all"),
+    search: str = Query(default=""),
+    amount_filter: str = Query(default="all"),
+    selected_merchant: str = Query(default=""),
+    sort: str = Query(default="amount_desc"),
+    currency: str = Query(default="USD"),
+    limit: int = Query(default=5000, ge=1, le=20000),
+) -> DashboardViewResponse:
+    resolved_range = _resolve_time_range(range)
+    resolved_amount_filter = _resolve_amount_filter(amount_filter)
+    resolved_sort_option = _resolve_sort_option(sort)
+    resolved_currency = _resolve_display_currency(currency)
+
+    all_transactions = get_transactions(range_key=resolved_range, limit=limit)
+    converted_transactions: list[StoredTransaction] = [
+        {
+            **transaction,
+            "amount": _convert_amount(
+                transaction["amount"], transaction.get("currency", "USD"), resolved_currency
+            ),
+            "currency": resolved_currency,
+        }
+        for transaction in all_transactions
+    ]
+
+    normalized_search = search.strip().lower()
+    base_filtered = []
+    for transaction in converted_transactions:
+        matches_search = (
+            not normalized_search
+            or normalized_search in transaction["merchant"].lower()
+            or normalized_search in transaction["category"].lower()
+            or normalized_search in transaction["date"].lower()
+            or normalized_search in f"{transaction['amount']:.2f}"
+        )
+        matches_amount_filter = (
+            resolved_amount_filter == "all"
+            or (
+                resolved_amount_filter == "spend"
+                and transaction["amount"] >= 0
+            )
+            or (
+                resolved_amount_filter == "refunds"
+                and transaction["amount"] < 0
+            )
+        )
+        if matches_search and matches_amount_filter:
+            base_filtered.append(transaction)
+
+    normalized_selected_merchant = selected_merchant.strip()
+    filtered_transactions = (
+        [
+            transaction
+            for transaction in base_filtered
+            if transaction["merchant"] == normalized_selected_merchant
+        ]
+        if normalized_selected_merchant
+        else base_filtered
+    )
+    sorted_transactions = _sort_transactions(filtered_transactions, resolved_sort_option)
+
+    merchant_totals: dict[str, float] = {}
+    for transaction in base_filtered:
+        merchant = transaction["merchant"]
+        merchant_totals[merchant] = merchant_totals.get(merchant, 0.0) + transaction["amount"]
+    merchant_breakdown = sorted(
+        [
+            {
+                "merchant": merchant,
+                "total": total,
+                "abs_total": abs(total),
+            }
+            for merchant, total in merchant_totals.items()
+        ],
+        key=lambda item: item["abs_total"],
+        reverse=True,
+    )[:7]
+
+    category_totals: dict[str, float] = {}
+    for transaction in filtered_transactions:
+        if transaction["amount"] <= 0:
+            continue
+        category = transaction["category"]
+        category_totals[category] = category_totals.get(category, 0.0) + transaction["amount"]
+    category_total_spend = sum(category_totals.values())
+    category_breakdown = [
+        {
+            "category": category,
+            "total": total,
+            "share": (total / category_total_spend) if category_total_spend > 0 else 0.0,
+        }
+        for category, total in sorted(
+            category_totals.items(), key=lambda item: item[1], reverse=True
+        )
+    ]
+
+    date_totals: dict[str, float] = {}
+    for transaction in filtered_transactions:
+        date_key = transaction["date"]
+        date_totals[date_key] = date_totals.get(date_key, 0.0) + transaction["amount"]
+    date_breakdown = [
+        {
+            "date": date_key,
+            "total": total,
+            "abs_total": abs(total),
+        }
+        for date_key, total in sorted(date_totals.items(), key=lambda item: item[0])[-10:]
+    ]
+
+    selection_net = sum(transaction["amount"] for transaction in filtered_transactions)
+    selection_spend = sum(
+        transaction["amount"]
+        for transaction in filtered_transactions
+        if transaction["amount"] > 0
+    )
+    selection_refunds = sum(
+        abs(transaction["amount"])
+        for transaction in filtered_transactions
+        if transaction["amount"] < 0
+    )
+    selection_average = (
+        selection_net / len(filtered_transactions) if filtered_transactions else 0.0
+    )
+    upload_net = sum(transaction["amount"] for transaction in converted_transactions)
+    largest_transaction_amount = (
+        max(abs(transaction["amount"]) for transaction in filtered_transactions)
+        if filtered_transactions
+        else 0.0
+    )
+    selection_coverage = (
+        (len(filtered_transactions) / len(converted_transactions))
+        if converted_transactions
+        else 0.0
+    )
+    model_total_in_active_currency = sum(
+        transaction["amount"] for transaction in converted_transactions
+    )
+
+    summary_data: TransactionsSummary = get_transactions_summary(range_key=resolved_range)
+    summary_converted: SummaryResponse = {
+        "total_spending": _convert_amount(
+            summary_data["total_spending"], "USD", resolved_currency
+        ),
+        "number_of_transactions": summary_data["number_of_transactions"],
+        "average_transaction_amount": _convert_amount(
+            summary_data["average_transaction_amount"], "USD", resolved_currency
+        ),
+        "number_of_statements": summary_data["number_of_statements"],
+    }
+
+    return {
+        "active_currency": resolved_currency,
+        "summary": summary_converted,
+        "transactions": converted_transactions,
+        "sorted_transactions": sorted_transactions,
+        "merchant_breakdown": merchant_breakdown,
+        "category_breakdown": category_breakdown,
+        "date_breakdown": date_breakdown,
+        "metrics": {
+            "selection_net": selection_net,
+            "selection_spend": selection_spend,
+            "selection_refunds": selection_refunds,
+            "selection_average": selection_average,
+            "upload_net": upload_net,
+            "largest_transaction_amount": largest_transaction_amount,
+            "selection_coverage": selection_coverage,
+            "model_total_in_active_currency": model_total_in_active_currency,
+        },
+    }
+
+
+@app.post("/transactions/manual", status_code=status.HTTP_201_CREATED)
+async def create_manual_transaction(
+    payload: ManualTransactionRequest,
+) -> ManualTransactionResponse:
+    transaction_date = payload.date.strip()
+    merchant = payload.merchant.strip()
+    if not merchant:
+        raise HTTPException(status_code=400, detail="Merchant is required.")
+
+    if payload.amount == 0:
+        raise HTTPException(status_code=400, detail="Amount must be non-zero.")
+
+    try:
+        date.fromisoformat(transaction_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Date must be YYYY-MM-DD.") from None
+
+    created = insert_manual_transaction(
+        transaction_date=transaction_date,
+        merchant=merchant,
+        amount=payload.amount,
+        category=payload.category,
+        payment_method=payload.payment_method,
+    )
+    return {"transaction": created}
+
+
 @app.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_pdf(
     file: UploadFile = File(...),
@@ -171,8 +502,12 @@ async def upload_pdf(
     finally:
         await file.close()
 
-    file_fingerprint = sha256(saved_path.read_bytes()).hexdigest()
-    existing_upload = get_existing_upload_by_fingerprint(file_fingerprint)
+    file_bytes = saved_path.read_bytes()
+    sha1_fingerprint = sha1(file_bytes).hexdigest()
+    sha256_fingerprint = sha256(file_bytes).hexdigest()
+    existing_upload = get_existing_upload_by_fingerprint(
+        [sha1_fingerprint, sha256_fingerprint]
+    )
     if existing_upload:
         raise HTTPException(
             status_code=409,
@@ -205,7 +540,7 @@ async def upload_pdf(
     insert_transactions(
         transactions,
         saved_name,
-        file_fingerprint=file_fingerprint,
+        file_fingerprint=sha1_fingerprint,
         original_file_name=display_name,
     )
 

@@ -12,9 +12,12 @@ Minimal full-stack app for uploading statement PDFs, parsing transactions, stori
 ## Project Layout
 
 ```text
-backend/   FastAPI app and parsing/database helpers
-frontend/  Next.js app with Fluent UI
-storage/   Uploaded PDF files
+backend/
+  app/main.py        FastAPI entrypoint (Layout B)
+  main.py            Compatibility wrapper for imports/runtime
+  *.py               Parsing/database helpers
+frontend/            Next.js app with Fluent UI
+storage/             Uploaded PDF files
 ```
 
 ## Prerequisites on macOS
@@ -67,7 +70,7 @@ export DATABASE_URL="postgresql://$(whoami)@localhost:5432/personal_spending_tra
 Run the FastAPI app:
 
 ```bash
-uvicorn backend.main:app --reload
+uvicorn app.main:app --reload --app-dir backend
 ```
 
 The backend will be available at `http://localhost:8000`.

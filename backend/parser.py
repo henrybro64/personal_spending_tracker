@@ -8,6 +8,7 @@ class Transaction(TypedDict):
     merchant: str
     amount: float
     category: str
+    currency: str
 
 
 CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
@@ -59,6 +60,15 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "TEXACO",
             "TRAIN",
             "UBER",
+            "UBIKE",
+            "TAXI",
+            "台鐵",
+            "高鐵",
+            "捷運",
+            "計程車",
+            "中油",
+            "台灣中油",
+            "停車",
         ),
     ),
     (
@@ -73,6 +83,12 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "SPROUTS",
             "TRADER JOE",
             "WHOLE FOODS",
+            "PX MART",
+            "全聯",
+            "家樂福",
+            "CARREFOUR",
+            "大潤發",
+            "好市多",
         ),
     ),
     (
@@ -96,6 +112,14 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "STARBUCKS",
             "TEA",
             "UBER EATS",
+            "FOODPANDA",
+            "熊貓",
+            "麥當勞",
+            "摩斯",
+            "肯德基",
+            "咖啡",
+            "餐廳",
+            "便當",
         ),
     ),
     (
@@ -113,6 +137,11 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "SEPHORA",
             "TARGET",
             "WALMART",
+            "PCHOME",
+            "MOMO",
+            "SHOPEE",
+            "蝦皮",
+            "博客來",
         ),
     ),
     (
@@ -133,6 +162,12 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "VERIZON",
             "WATER",
             "WIFI",
+            "台電",
+            "台水",
+            "瓦斯",
+            "中華電信",
+            "遠傳",
+            "台灣大哥大",
         ),
     ),
     (
@@ -149,6 +184,10 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "STEAM",
             "TICKETMASTER",
             "YOUTUBE",
+            "威秀",
+            "秀泰",
+            "KTV",
+            "NET",
         ),
     ),
     (
@@ -166,6 +205,57 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "THERAPY",
             "URGENT CARE",
             "WALGREENS",
+            "藥局",
+            "診所",
+            "醫院",
+            "健身",
+        ),
+    ),
+    (
+        "Education",
+        (
+            "UDEMY",
+            "COURSERA",
+            "SKILLSHARE",
+            "TUITION",
+            "SCHOOL",
+            "補習班",
+            "學費",
+            "課程",
+            "書局",
+        ),
+    ),
+    (
+        "Home",
+        (
+            "IKEA",
+            "HOLA",
+            "HOMEBOX",
+            "特力屋",
+            "家具",
+            "家居",
+            "寢具",
+            "家電",
+        ),
+    ),
+    (
+        "Digital Services",
+        (
+            "APPLE.COM/BILL",
+            "GOOGLE",
+            "ICLOUD",
+            "OPENAI",
+            "CHATGPT",
+            "NOTION",
+            "FIGMA",
+            "GITHUB",
+            "MICROSOFT",
+            "MSBILL",
+            "MSBILL.INFO",
+            "微軟",
+            "台灣微軟",
+            "ADOBE",
+            "CANVA",
         ),
     ),
     (
@@ -178,6 +268,10 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "INTEREST",
             "LATE FEE",
             "SERVICE CHARGE",
+            "手續費",
+            "年費",
+            "違約金",
+            "利息",
         ),
     ),
 ]
@@ -221,12 +315,180 @@ _TRANSACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     TRANSACTION_PATTERN_ISO,
 )
 
+TWD_STATEMENT_MARKERS: tuple[str, ...] = (
+    "中國信託",
+    "CTBC",
+    "玉山",
+    "E SUN",
+    "ESUN",
+    "星展",
+    "DBS",
+    "台新",
+    "TAISHIN",
+    "國泰",
+    "CATHAY",
+    "富邦",
+    "FUBON",
+    "永豐",
+    "SINOPAC",
+    "兆豐",
+    "MEGA",
+    "第一銀行",
+    "FIRST BANK",
+    "華南",
+    "HUA NAN",
+    "合作金庫",
+    "土地銀行",
+    "聯邦",
+    "UNION BANK OF TAIWAN",
+    "新光",
+    "彰化銀行",
+    "CHB",
+)
+
+USD_STATEMENT_MARKERS: tuple[str, ...] = (
+    "CHASE",
+    "JPMORGAN CHASE",
+    "AMERICAN EXPRESS",
+    "AMEX",
+)
+
+OTHER_SPENDING_GRANULAR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    (
+        "Convenience Stores",
+        (
+            "7-ELEVEN",
+            "7 11",
+            "FAMILYMART",
+            "OK MART",
+            "HI-LIFE",
+            "全家",
+            "統一超商",
+            "萊爾富",
+            "OK便利商店",
+        ),
+    ),
+    (
+        "Beauty & Personal Care",
+        (
+            "WATSONS",
+            "COSMED",
+            "POYA",
+            "寶雅",
+            "屈臣氏",
+            "康是美",
+            "SALON",
+            "BARBER",
+            "SPA",
+            "美甲",
+            "美容",
+            "理髮",
+        ),
+    ),
+    (
+        "Kids & Family",
+        (
+            "TOYS",
+            "BABY",
+            "MOTHERCARE",
+            "KID",
+            "媽咪",
+            "婦幼",
+            "玩具",
+            "托嬰",
+            "保母",
+        ),
+    ),
+    (
+        "Pets",
+        (
+            "PET",
+            "VET",
+            "ANIMAL HOSPITAL",
+            "寵物",
+            "獸醫",
+            "毛孩",
+            "飼料",
+        ),
+    ),
+    (
+        "Gifts & Donations",
+        (
+            "DONATION",
+            "CHARITY",
+            "CHURCH",
+            "TEMPLE",
+            "GIFT",
+            "FLOWER",
+            "禮物",
+            "捐款",
+            "香油錢",
+            "花店",
+        ),
+    ),
+    (
+        "Repair & Maintenance",
+        (
+            "REPAIR",
+            "MAINTENANCE",
+            "FIX",
+            "SERVICE CENTER",
+            "維修",
+            "保養",
+            "修車",
+            "機車行",
+            "汽車保養",
+        ),
+    ),
+    (
+        "Professional Services",
+        (
+            "ACCOUNTING",
+            "LEGAL",
+            "CONSULTING",
+            "AGENCY",
+            "INTUIT",
+            "TURBOTAX",
+            "TAX PREP",
+            "手續代辦",
+            "代書",
+            "律師",
+            "會計",
+            "顧問",
+        ),
+    ),
+    (
+        "Subscriptions",
+        (
+            "SUBSCRIPTION",
+            "MONTHLY",
+            "PATREON",
+            "MEDIUM",
+            "YOUTUBE PREMIUM",
+            "SPOTIFY",
+            "NETFLIX",
+            "DISNEY+",
+        ),
+    ),
+]
+
 
 def categorize_merchant(merchant: str, amount: float | None = None) -> str:
-    normalized_merchant = re.sub(r"[^A-Z0-9]+", " ", merchant.upper()).strip()
+    merchant_upper = " ".join(merchant.upper().split())
+    normalized_merchant = re.sub(r"[^A-Z0-9]+", " ", merchant_upper).strip()
 
     for category, keywords in CATEGORY_KEYWORDS:
-        if any(keyword in normalized_merchant for keyword in keywords):
+        if any(
+            keyword in normalized_merchant or keyword in merchant_upper
+            for keyword in keywords
+        ):
+            return category
+
+    for category, keywords in OTHER_SPENDING_GRANULAR_KEYWORDS:
+        if any(
+            keyword in normalized_merchant or keyword in merchant_upper
+            for keyword in keywords
+        ):
             return category
 
     # Ensure every transaction has an explicit, user-meaningful fallback.
@@ -361,6 +623,7 @@ def _parse_dbs_tw_line(line: str) -> Transaction | None:
         "merchant": " ".join(merchant.split()),
         "amount": amount_value,
         "category": categorize_merchant(merchant, amount_value),
+        "currency": "TWD",
     }
 
 
@@ -415,6 +678,7 @@ def _parse_ctbc_tw_line(line: str) -> Transaction | None:
         "merchant": merchant,
         "amount": amount_value,
         "category": categorize_merchant(merchant, amount_value),
+        "currency": "TWD",
     }
 
 
@@ -428,6 +692,32 @@ def parse_transactions(text: str) -> list[Transaction]:
     )
     statement_period = _extract_statement_period(normalized)
     statement_date = _extract_statement_date(normalized)
+    statement_upper = normalized.upper()
+    has_tw_bank_marker = any(marker in statement_upper for marker in TWD_STATEMENT_MARKERS)
+    has_us_bank_marker = any(marker in statement_upper for marker in USD_STATEMENT_MARKERS)
+    has_twd_token = any(
+        token in normalized
+        for token in (
+            "新台幣",
+            "台幣",
+            "NT$",
+            "NTD",
+            "TWD",
+        )
+    ) or any(
+        token in statement_upper
+        for token in (
+            "NT$",
+            "NTD",
+            "TWD",
+        )
+    )
+    if has_tw_bank_marker:
+        statement_currency = "TWD"
+    elif has_us_bank_marker:
+        statement_currency = "USD"
+    else:
+        statement_currency = "TWD" if has_twd_token else "USD"
 
     for raw_line in normalized.splitlines():
         line = raw_line.strip()
@@ -451,6 +741,7 @@ def parse_transactions(text: str) -> list[Transaction]:
                     "merchant": merchant,
                     "amount": amount_value,
                     "category": categorize_merchant(merchant, amount_value),
+                    "currency": statement_currency,
                 }
             )
             continue

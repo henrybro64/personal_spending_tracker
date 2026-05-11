@@ -1,6 +1,27 @@
 import type { AppLocale } from "./locale-provider";
 
 const en = {
+  navTitle: "Navigation",
+  navHint: "Switch between dashboard, data entry, and transactions.",
+  navDashboard: "Dashboard",
+  navDataEntry: "Data Entry",
+  navTransactions: "Transactions",
+
+  dataEntryTitle: "Data Entry",
+  dataEntryBody: "Use this page to import statements and add manual spending records.",
+  choosePdf: "Choose PDF",
+  uploadStatement: "Upload statement",
+  uploading: "Uploading...",
+  uploadDoneTitle: "Done",
+  uploadDoneMessageTemplate: "Uploaded {{name}}",
+  dataEntryManualTitle: "Add spending manually",
+  addSpending: "Add spending",
+  saving: "Saving...",
+  dataEntryManualSuccess: "Manual spending added.",
+  errSelectPdfFirst: "Select a PDF file first.",
+  errAddManualFailed: "Failed to add manual spending.",
+  filtersPinnedHint: "Filters stay pinned in the left sidebar. Adjust them on the dashboard page.",
+
   reportPaneEyebrow: "Report Pane",
   statementImportTitle: "Statement import",
   statementImportBody:
@@ -26,6 +47,19 @@ const en = {
   badgePdfSource: "PDF source",
   badgePostgresModel: "PostgreSQL model",
   msgRefreshFailedTitle: "Refresh failed",
+  manualEntryEyebrow: "Manual Entry",
+  manualEntryTitle: "Add spending manually",
+  manualEntryBody:
+    "Use this for cash, PayPal, EasyCard (悠遊卡), iCash, or any spending not in card statements.",
+  manualDateLabel: "Date",
+  manualAmountLabel: "Amount",
+  manualMerchantLabel: "Merchant / description",
+  manualMerchantPlaceholder: "e.g. Night market, bus top-up, friend transfer",
+  manualCategoryLabel: "Category",
+  manualCategoryAuto: "Auto-detect",
+  manualPaymentMethodLabel: "Payment method",
+  manualAddButton: "Add manual transaction",
+  manualAddSaving: "Saving…",
 
   slicersEyebrow: "Slicers",
   filtersTitle: "Filters",
@@ -145,14 +179,41 @@ const en = {
   errRequestFailed: "Request failed.",
   errUnexpectedUpload: "Unexpected upload error.",
   errDashboardUnavailable: "Dashboard data is unavailable.",
+  errManualMerchantRequired: "Merchant/description is required.",
+  errManualDateRequired: "Date is required.",
+  errManualAmountInvalid: "Amount must be a non-zero number.",
   noStatementSelected: "No statement selected",
 
   languageLabel: "Language",
   languageEnglish: "English",
   languageTraditionalChinese: "Traditional Chinese",
+  currencyLabel: "Display currency",
+  currencyUsd: "USD",
+  currencyTwd: "TWD",
 } as const;
 
 const zhHant: Record<keyof typeof en, string> = {
+  navTitle: "導覽",
+  navHint: "在儀表板、資料輸入與交易頁面間切換。",
+  navDashboard: "儀表板",
+  navDataEntry: "資料輸入",
+  navTransactions: "交易",
+
+  dataEntryTitle: "資料輸入",
+  dataEntryBody: "此頁可用於匯入對帳單與手動新增支出紀錄。",
+  choosePdf: "選擇 PDF",
+  uploadStatement: "上傳對帳單",
+  uploading: "上傳中...",
+  uploadDoneTitle: "完成",
+  uploadDoneMessageTemplate: "已上傳 {{name}}",
+  dataEntryManualTitle: "手動新增支出",
+  addSpending: "新增支出",
+  saving: "儲存中...",
+  dataEntryManualSuccess: "已新增手動支出。",
+  errSelectPdfFirst: "請先選擇 PDF 檔案。",
+  errAddManualFailed: "新增手動支出失敗。",
+  filtersPinnedHint: "篩選器會固定在左側欄位；可在儀表板頁面進行調整。",
+
   reportPaneEyebrow: "報表面板",
   statementImportTitle: "對帳單匯入",
   statementImportBody:
@@ -177,6 +238,19 @@ const zhHant: Record<keyof typeof en, string> = {
   badgePdfSource: "PDF 來源",
   badgePostgresModel: "PostgreSQL 模型",
   msgRefreshFailedTitle: "重新整理失敗",
+  manualEntryEyebrow: "手動輸入",
+  manualEntryTitle: "手動新增支出",
+  manualEntryBody:
+    "可用於現金、PayPal、悠遊卡、iCash，或任何未出現在信用卡對帳單中的支出。",
+  manualDateLabel: "日期",
+  manualAmountLabel: "金額",
+  manualMerchantLabel: "商家／說明",
+  manualMerchantPlaceholder: "例如：夜市、捷運加值、朋友轉帳",
+  manualCategoryLabel: "分類",
+  manualCategoryAuto: "自動判斷",
+  manualPaymentMethodLabel: "付款方式",
+  manualAddButton: "新增手動交易",
+  manualAddSaving: "儲存中…",
 
   slicersEyebrow: "交叉分析篩選",
   filtersTitle: "篩選",
@@ -294,11 +368,17 @@ const zhHant: Record<keyof typeof en, string> = {
   errRequestFailed: "請求失敗。",
   errUnexpectedUpload: "發生未預期的上傳錯誤。",
   errDashboardUnavailable: "無法取得儀表板資料。",
+  errManualMerchantRequired: "請填寫商家或說明。",
+  errManualDateRequired: "請選擇日期。",
+  errManualAmountInvalid: "金額必須是非 0 的數字。",
   noStatementSelected: "尚未選擇對帳單",
 
   languageLabel: "語言",
   languageEnglish: "English",
   languageTraditionalChinese: "繁體中文",
+  currencyLabel: "顯示幣別",
+  currencyUsd: "美元 USD",
+  currencyTwd: "新台幣 TWD",
 };
 
 export type MessageKey = keyof typeof en;

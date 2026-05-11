@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 from typing import Literal, TypedDict
 
 import psycopg
-from backend.parser import Transaction
+from backend.parser import Transaction, categorize_merchant
 
 
 class TransactionsSummary(TypedDict):
@@ -32,6 +32,8 @@ class StoredTransaction(TypedDict):
     merchant: str
     amount: float
     category: str
+    currency: str
+    payment_method: str | None
     file_name: str
     original_file_name: str
 
@@ -39,7 +41,9 @@ class StoredTransaction(TypedDict):
 TimeRange = Literal["week", "month", "quarter", "year", "5years", "all"]
 
 
-def _normalize_category_for_storage(category: str | None, amount: float) -> str:
+def _normalize_category_for_storage(
+    category: str | None, amount: float
+) -> str:
     raw = (category or "").strip()
     if raw and raw.lower() != "miscellaneous":
         return raw
@@ -105,6 +109,19 @@ def init_db(database_url: str | None = None) -> str:
             )
             cursor.execute(
                 """
+                ALTER TABLE transactions
+                ADD COLUMN IF NOT EXISTS payment_method TEXT
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE transactions
+                ADD COLUMN IF NOT EXISTS currency TEXT
+                NOT NULL DEFAULT 'USD'
+                """
+            )
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_transactions_file_fingerprint
                 ON transactions (file_fingerprint)
                 """
@@ -138,9 +155,11 @@ def insert_transactions(
                     file_name,
                     original_file_name,
                     category,
-                    file_fingerprint
+                    file_fingerprint,
+                    payment_method,
+                    currency
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
@@ -153,6 +172,8 @@ def insert_transactions(
                             transaction.get("category"), transaction["amount"]
                         ),
                         file_fingerprint,
+                        None,
+                        transaction.get("currency", "USD"),
                     )
                     for transaction in transactions
                 ],
@@ -160,6 +181,79 @@ def insert_transactions(
         connection.commit()
 
     return len(transactions)
+
+
+def insert_manual_transaction(
+    transaction_date: str,
+    merchant: str,
+    amount: float,
+    category: str | None = None,
+    payment_method: str | None = None,
+    database_url: str | None = None,
+) -> StoredTransaction:
+    resolved_database_url = init_db(database_url)
+    normalized_merchant = " ".join(merchant.split())
+    inferred_category = (
+        category.strip()
+        if category and category.strip()
+        else categorize_merchant(normalized_merchant, amount)
+    )
+    normalized_category = _normalize_category_for_storage(
+        inferred_category, amount
+    )
+    normalized_payment_method = (
+        payment_method.strip()
+        if payment_method and payment_method.strip()
+        else None
+    )
+    file_name = "manual-entry"
+    original_file_name = (
+        f"Manual entry ({normalized_payment_method})"
+        if normalized_payment_method
+        else "Manual entry"
+    )
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO transactions (
+                    date,
+                    merchant,
+                    amount,
+                    file_name,
+                    original_file_name,
+                    category,
+                    file_fingerprint,
+                    payment_method,
+                    currency
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    transaction_date,
+                    normalized_merchant,
+                    amount,
+                    file_name,
+                    original_file_name,
+                    normalized_category,
+                    None,
+                    normalized_payment_method,
+                    "USD",
+                ),
+            )
+        connection.commit()
+
+    return {
+        "date": transaction_date,
+        "merchant": normalized_merchant,
+        "amount": amount,
+        "category": normalized_category,
+        "currency": "USD",
+        "payment_method": normalized_payment_method,
+        "file_name": file_name,
+        "original_file_name": original_file_name,
+    }
 
 
 def _since_date_for_range(range_key: TimeRange) -> date | None:
@@ -177,7 +271,9 @@ def _since_date_for_range(range_key: TimeRange) -> date | None:
     return None
 
 
-def _build_date_filter_clause(range_key: TimeRange) -> tuple[str, tuple[str, ...]]:
+def _build_date_filter_clause(
+    range_key: TimeRange,
+) -> tuple[str, tuple[str, ...]]:
     since_date = _since_date_for_range(range_key)
     if since_date is None:
         return "", ()
@@ -286,13 +382,18 @@ def get_transactions(
                     merchant,
                     amount,
                     COALESCE(category, '') AS category,
+                    COALESCE(currency, 'USD') AS currency,
+                    payment_method,
                     file_name,
-                    COALESCE(original_file_name, file_name) AS original_file_name
+                    COALESCE(
+                        original_file_name, file_name
+                    ) AS original_file_name
                 FROM transactions
                 {date_filter_clause}
                 ORDER BY
                     CASE
-                        WHEN date ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$' THEN date::date
+                        WHEN date ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
+                            THEN date::date
                         ELSE NULL
                     END DESC,
                     id DESC
@@ -310,17 +411,24 @@ def get_transactions(
             "date": str(row[0]),
             "merchant": str(row[1]),
             "amount": float(row[2]),
-            "category": _normalize_category_for_storage(str(row[3]), float(row[2])),
-            "file_name": str(row[4]),
-            "original_file_name": str(row[5]),
+            "category": _normalize_category_for_storage(
+                str(row[3]), float(row[2])
+            ),
+            "currency": str(row[4]),
+            "payment_method": str(row[5]) if row[5] is not None else None,
+            "file_name": str(row[6]),
+            "original_file_name": str(row[7]),
         }
         for row in rows
     ]
 
 
 def get_existing_upload_by_fingerprint(
-    file_fingerprint: str, database_url: str | None = None
+    file_fingerprints: list[str], database_url: str | None = None
 ) -> ExistingUpload | None:
+    if not file_fingerprints:
+        return None
+
     resolved_database_url = init_db(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
@@ -333,12 +441,12 @@ def get_existing_upload_by_fingerprint(
                     AS display_name,
                     MAX(uploaded_at) AS uploaded_at
                 FROM transactions
-                WHERE file_fingerprint = %s
+                WHERE file_fingerprint = ANY(%s)
                 GROUP BY file_name
                 ORDER BY MAX(uploaded_at) DESC, MAX(id) DESC
                 LIMIT 1
                 """,
-                (file_fingerprint,),
+                (file_fingerprints,),
             )
             row = cursor.fetchone()
 
