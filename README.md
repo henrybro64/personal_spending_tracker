@@ -18,6 +18,7 @@ backend/
   *.py               Parsing/database helpers
 frontend/            Next.js app with Fluent UI
 storage/             Uploaded PDF files
+k8s/                 Single-node k3s manifests and deployment guide
 ```
 
 ## Prerequisites on macOS
@@ -67,6 +68,12 @@ Set the database connection string:
 export DATABASE_URL="postgresql://$(whoami)@localhost:5432/personal_spending_tracker"
 ```
 
+Optional: override the upload directory if you do not want local files written into `storage/`:
+
+```bash
+export UPLOAD_DIR="$(pwd)/storage"
+```
+
 Run the FastAPI app:
 
 ```bash
@@ -89,16 +96,18 @@ Open a second terminal window, then from the repository root:
 ```bash
 cd frontend
 npm install
-export NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"
 npm run dev
 ```
 
 The frontend will be available at `http://localhost:3000`.
 
-The backend is already configured to allow local browser requests from:
+By default the frontend proxies same-origin `/api/*` requests to `http://localhost:8000`.
+If your backend is running somewhere else, set one of these before `npm run dev`:
 
-- `http://localhost:3000`
-- `http://127.0.0.1:3000`
+```bash
+export API_PROXY_TARGET="http://localhost:8000"
+export NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"
+```
 
 ## 3. Use the App
 
@@ -106,7 +115,7 @@ The backend is already configured to allow local browser requests from:
 2. Choose a PDF file or drag one onto the upload panel.
 3. Click **Upload Statement**.
 4. The app will:
-   - save the PDF into `storage/`
+   - save the PDF into the configured upload directory (`storage/` by default)
    - extract text from the PDF
    - parse transactions
    - insert those transactions into PostgreSQL
@@ -125,7 +134,7 @@ curl http://localhost:8000/summary
 
 ```json
 {
-  "file_path": "./storage/abc123.pdf",
+  "file_path": "/absolute/path/to/storage/abc123.pdf",
   "original_file_name": "April Statement.pdf",
   "transactions": [
     {
@@ -182,9 +191,13 @@ pip install -r requirements.txt
 If the frontend shows a network error:
 
 - confirm the backend is running on `http://localhost:8000`
-- confirm `NEXT_PUBLIC_API_BASE_URL` is set correctly before `npm run dev`
+- confirm `API_PROXY_TARGET` or `NEXT_PUBLIC_API_BASE_URL` is set correctly before `npm run dev`
 
 If the backend fails at startup with `DATABASE_URL environment variable is required`, export `DATABASE_URL` in the same shell where you run `uvicorn`.
+
+## Kubernetes
+
+For the single-node k3s deployment path, see [k8s/README-k3s.md](k8s/README-k3s.md).
 
 ## Stop Services
 

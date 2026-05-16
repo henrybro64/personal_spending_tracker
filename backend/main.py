@@ -1,3 +1,4 @@
+import os
 import sys
 from datetime import date
 from hashlib import sha1, sha256
@@ -47,7 +48,7 @@ from backend.pdf_utils import (  # noqa: E402
 )
 
 
-STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
+DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
 LOCAL_FRONTEND_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
@@ -147,6 +148,13 @@ VALID_SORT_OPTIONS: tuple[SortOption, ...] = (
 )
 VALID_DISPLAY_CURRENCIES: tuple[DisplayCurrency, ...] = ("USD", "TWD")
 USD_TO_TWD_RATE = 32.0
+
+
+def _get_upload_dir() -> Path:
+    configured_upload_dir = os.getenv("UPLOAD_DIR")
+    if not configured_upload_dir:
+        return DEFAULT_STORAGE_DIR
+    return Path(configured_upload_dir).expanduser()
 
 
 def _resolve_time_range(range_key: str) -> TimeRange:
@@ -492,9 +500,10 @@ async def upload_pdf(
 
     password_clean = password.strip() if password else None
 
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    upload_dir = _get_upload_dir()
+    upload_dir.mkdir(parents=True, exist_ok=True)
     saved_name = f"{uuid4().hex}.pdf"
-    saved_path = STORAGE_DIR / saved_name
+    saved_path = upload_dir / saved_name
 
     try:
         with saved_path.open("wb") as buffer:
@@ -551,7 +560,7 @@ async def upload_pdf(
         )
 
     return {
-        "file_path": f"./storage/{saved_name}",
+        "file_path": str(saved_path),
         "original_file_name": display_name,
         "transactions": transactions,
         "parse_reason": parse_reason,
