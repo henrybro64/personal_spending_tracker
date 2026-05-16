@@ -100,6 +100,27 @@ The backend is already configured to allow local browser requests from:
 - `http://localhost:3000`
 - `http://127.0.0.1:3000`
 
+## Automated Checks
+
+Run the backend tests from the repository root:
+
+```bash
+python3 -m pytest
+```
+
+Run the frontend verification check:
+
+```bash
+cd frontend
+npm run build
+```
+
+Current automated coverage is intentionally small:
+
+- backend `pytest` covers parser fixtures and lightweight API validation paths
+- frontend CI currently uses a production build check only
+- Playwright/browser E2E tests are not added yet in this repository
+
 ## 3. Use the App
 
 1. Open `http://localhost:3000`.
