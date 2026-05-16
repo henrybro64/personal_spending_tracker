@@ -115,11 +115,20 @@ cd frontend
 npm run build
 ```
 
+Run the local Playwright smoke tests:
+
+```bash
+cd frontend
+npx playwright install chromium
+npm run test:e2e
+```
+
 Current automated coverage is intentionally small:
 
 - backend `pytest` covers parser fixtures and lightweight API validation paths
 - frontend CI currently uses a production build check only
-- Playwright/browser E2E tests are not added yet in this repository
+- local Playwright smoke tests cover dashboard and data-entry flows with mocked `/api/*` responses
+- Playwright is local-only for now and does not require the backend or PostgreSQL
 
 ## 3. Use the App
 

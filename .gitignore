@@ -19,6 +19,8 @@ pnpm-debug.log*
 
 .next/
 frontend/.next/
+frontend/playwright-report/
+frontend/test-results/
 out/
 dist/
 build/

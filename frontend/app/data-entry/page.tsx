@@ -270,15 +270,15 @@ export default function DataEntryPage() {
     const merchant = manualMerchant.trim();
     const amount = Number(manualAmount);
     if (!manualDate) {
-      setManualError("Date is required.");
+      setManualError(translate(locale, "errManualDateRequired"));
       return;
     }
     if (!merchant) {
-      setManualError("Merchant is required.");
+      setManualError(translate(locale, "errManualMerchantRequired"));
       return;
     }
     if (!Number.isFinite(amount) || amount === 0) {
-      setManualError("Amount must be a non-zero number.");
+      setManualError(translate(locale, "errManualAmountInvalid"));
       return;
     }
 
