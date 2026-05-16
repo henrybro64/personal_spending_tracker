@@ -53,7 +53,7 @@ type YearGroup = {
   months: MonthGroup[];
 };
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
 const useStyles = makeStyles({
   page: {

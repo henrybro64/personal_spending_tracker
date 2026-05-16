@@ -1,0 +1,17 @@
+.git
+.DS_Store
+.venv
+venv
+env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.next/
+frontend/.next/
+node_modules/
+frontend/node_modules/
+storage/
+tests/__pycache__/
+
