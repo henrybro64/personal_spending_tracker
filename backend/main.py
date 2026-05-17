@@ -40,6 +40,12 @@ from backend.database import (  # noqa: E402
     insert_manual_transaction,
     insert_transactions,
 )
+from backend.batch_import import (  # noqa: E402
+    BatchImportRunSummary,
+    BatchImportStore,
+    BatchStoredTransaction,
+    StatementImporter,
+)
 from backend.parser import Transaction, parse_transactions  # noqa: E402
 from backend.pdf_utils import (  # noqa: E402
     PdfDecryptError,
@@ -72,6 +78,22 @@ class RecentUploadsResponse(TypedDict):
 
 class TransactionsResponse(TypedDict):
     transactions: list[StoredTransaction]
+
+
+class BatchImportRunExecutionResponse(TypedDict):
+    run: dict[str, object]
+
+
+class BatchImportLatestResponse(TypedDict):
+    run: BatchImportRunSummary | None
+
+
+class BatchImportTransactionsResponse(TypedDict):
+    transactions: list[BatchStoredTransaction]
+
+
+class BatchImportReviewUpdateResponse(TypedDict):
+    transaction: BatchStoredTransaction
 
 
 AmountFilter = Literal["all", "spend", "refunds"]
@@ -125,6 +147,19 @@ class ManualTransactionRequest(BaseModel):
     amount: float
     category: str | None = None
     payment_method: str | None = None
+
+
+class BatchImportRequest(BaseModel):
+    pdf_source_dir: str | None = None
+    text_source_dir: str | None = None
+    csv_output_path: str | None = None
+    sqlite_output_path: str | None = None
+
+
+class BatchReviewUpdateRequest(BaseModel):
+    category: str
+    exclude_from_spending: bool
+    save_rule: bool = True
 
 
 class ManualTransactionResponse(TypedDict):
@@ -231,9 +266,19 @@ def _sort_transactions(
     return sorted_transactions
 
 
+def _get_batch_import_store(sqlite_path: str | None = None) -> BatchImportStore:
+    store = BatchImportStore(sqlite_path) if sqlite_path else BatchImportStore()
+    store.initialize()
+    return store
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    init_db()
+    try:
+        init_db()
+    except RuntimeError as exc:
+        if "DATABASE_URL environment variable is required" not in str(exc):
+            raise
     yield
 
 
@@ -484,6 +529,78 @@ async def create_manual_transaction(
         payment_method=payload.payment_method,
     )
     return {"transaction": created}
+
+
+@app.post("/batch-imports/run", status_code=status.HTTP_201_CREATED)
+async def run_batch_import(
+    payload: BatchImportRequest | None = None,
+) -> BatchImportRunExecutionResponse:
+    request_payload = payload or BatchImportRequest()
+    store = _get_batch_import_store(request_payload.sqlite_output_path)
+    importer = StatementImporter(
+        pdf_source_dir=request_payload.pdf_source_dir,
+        text_source_dir=request_payload.text_source_dir,
+        csv_output_path=request_payload.csv_output_path,
+        store=store,
+    )
+    try:
+        result = importer.import_transactions()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"run": result.to_payload()}
+
+
+@app.get("/batch-imports/latest")
+async def batch_import_latest(
+    sqlite_path: str | None = Query(default=None),
+) -> BatchImportLatestResponse:
+    store = _get_batch_import_store(sqlite_path)
+    return {"run": store.get_latest_run()}
+
+
+@app.get("/batch-imports/transactions")
+async def batch_import_transactions(
+    needs_review_only: bool = Query(default=False),
+    run_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=500, ge=1, le=5000),
+    sqlite_path: str | None = Query(default=None),
+) -> BatchImportTransactionsResponse:
+    store = _get_batch_import_store(sqlite_path)
+    return {
+        "transactions": store.list_transactions(
+            needs_review_only=needs_review_only,
+            run_id=run_id,
+            limit=limit,
+        )
+    }
+
+
+@app.patch("/batch-imports/transactions/{transaction_id}")
+async def update_batch_import_transaction(
+    transaction_id: int,
+    payload: BatchReviewUpdateRequest,
+    sqlite_path: str | None = Query(default=None),
+) -> BatchImportReviewUpdateResponse:
+    category = payload.category.strip()
+    if not category:
+        raise HTTPException(status_code=400, detail="Category is required.")
+
+    store = _get_batch_import_store(sqlite_path)
+    try:
+        updated_transaction = store.update_transaction_review(
+            transaction_id,
+            category=category,
+            exclude_from_spending=payload.exclude_from_spending,
+            save_rule=payload.save_rule,
+        )
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Batch-import transaction {transaction_id} was not found.",
+        ) from None
+
+    return {"transaction": updated_transaction}
 
 
 @app.post("/upload", status_code=status.HTTP_201_CREATED)

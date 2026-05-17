@@ -6,6 +6,7 @@ const en = {
   navDashboard: "Dashboard",
   navDataEntry: "Data Entry",
   navTransactions: "Transactions",
+  navBatchReview: "Batch Review",
 
   dataEntryTitle: "Data Entry",
   dataEntryBody: "Use this page to import statements and add manual spending records.",
@@ -198,6 +199,7 @@ const zhHant: Record<keyof typeof en, string> = {
   navDashboard: "儀表板",
   navDataEntry: "資料輸入",
   navTransactions: "交易",
+  navBatchReview: "批次審查",
 
   dataEntryTitle: "資料輸入",
   dataEntryBody: "此頁可用於匯入對帳單與手動新增支出紀錄。",

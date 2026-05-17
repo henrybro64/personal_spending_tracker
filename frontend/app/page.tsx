@@ -1441,6 +1441,9 @@ export default function HomePage() {
               <Link className={styles.sidebarNavLink} href="/transactions">
                 {translate(locale, "navTransactions")}
               </Link>
+              <Link className={styles.sidebarNavLink} href="/batch-review">
+                {translate(locale, "navBatchReview")}
+              </Link>
             </div>
           </Card>
 

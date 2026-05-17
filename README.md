@@ -15,6 +15,7 @@ Minimal full-stack app for uploading statement PDFs, parsing transactions, stori
 backend/
   app/main.py        FastAPI entrypoint (Layout B)
   main.py            Compatibility wrapper for imports/runtime
+  batch_import/      Offline batch importer, parser dispatch, categorization, export
   *.py               Parsing/database helpers
 frontend/            Next.js app with Fluent UI
 storage/             Uploaded PDF files
@@ -88,6 +89,10 @@ Useful endpoints:
 - `GET /summary`
 - `GET /uploads/recent`
 - `POST /upload`
+- `POST /batch-imports/run`
+- `GET /batch-imports/latest`
+- `GET /batch-imports/transactions`
+- `PATCH /batch-imports/transactions/{id}`
 
 ## 2. Start the Frontend
 
@@ -157,6 +162,53 @@ You can also check the summary endpoint directly:
 ```bash
 curl http://localhost:8000/summary
 ```
+
+## 4. Batch Statement Import
+
+The repo now includes a separate offline-first batch importer for archived
+statements. It walks these directories relative to the repo root:
+
+- `Credit_Card_PDF/*.pdf`
+- `credit_card_text/*.txt`
+
+Supported parser families:
+
+- AMEX
+- Chase
+- CTBC daily statements
+- CTBC card statements
+- DBS statements
+
+Run the importer from the command line:
+
+```bash
+python -m backend.import_statements
+```
+
+Optional paths:
+
+```bash
+python -m backend.import_statements \
+  --pdf-dir ./Credit_Card_PDF \
+  --text-dir ./credit_card_text \
+  --csv-out ./storage/batch_transactions.csv \
+  --sqlite-out ./storage/batch_imports.sqlite3
+```
+
+The batch workflow:
+
+- dispatches to bank-specific parsers by filename and statement metadata
+- normalizes every row into a single transaction schema
+- applies deterministic merchant rules only
+- marks unmatched merchants with `needs_review = true`
+- exports the latest run to both SQLite and CSV
+
+Use the frontend batch review page at `http://localhost:3000/batch-review` to:
+
+- run the batch import from the app
+- inspect flagged transactions
+- correct categories
+- save learned merchant rules for future imports
 
 ## API Response Examples
 

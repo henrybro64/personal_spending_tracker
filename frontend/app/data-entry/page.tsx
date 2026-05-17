@@ -352,6 +352,15 @@ export default function DataEntryPage() {
               >
                 {translate(locale, "navTransactions")}
               </Link>
+              <Link
+                className={mergeClasses(
+                  styles.sidebarNavLink,
+                  pathname === "/batch-review" && styles.sidebarNavLinkActive
+                )}
+                href="/batch-review"
+              >
+                {translate(locale, "navBatchReview")}
+              </Link>
             </div>
           </Card>
 
