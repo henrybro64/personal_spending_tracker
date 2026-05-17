@@ -75,6 +75,14 @@ Optional: override the upload directory if you do not want local files written i
 export UPLOAD_DIR="$(pwd)/storage"
 ```
 
+Optional batch-import directories (defaults shown):
+
+```bash
+export BATCH_DATA_DIR="$(pwd)/storage"
+export BATCH_PDF_SOURCE_DIR="$(pwd)/Credit_Card_PDF"
+export BATCH_TEXT_SOURCE_DIR="$(pwd)/credit_card_text"
+```
+
 Run the FastAPI app:
 
 ```bash
@@ -90,6 +98,7 @@ Useful endpoints:
 - `GET /uploads/recent`
 - `POST /upload`
 - `POST /batch-imports/run`
+- `POST /batch-imports/merge`
 - `GET /batch-imports/latest`
 - `GET /batch-imports/transactions`
 - `PATCH /batch-imports/transactions/{id}`
@@ -129,7 +138,7 @@ cd frontend
 npm run build
 ```
 
-Run the local Playwright smoke tests:
+Run the Playwright smoke tests locally:
 
 ```bash
 cd frontend
@@ -140,9 +149,11 @@ npm run test:e2e
 Current automated coverage is intentionally small:
 
 - backend `pytest` covers parser fixtures and lightweight API validation paths
-- frontend CI currently uses a production build check only
-- local Playwright smoke tests cover dashboard and data-entry flows with mocked `/api/*` responses
-- Playwright is local-only for now and does not require the backend or PostgreSQL
+- frontend CI runs a production build and Playwright smoke tests
+- Playwright covers dashboard, data-entry, and batch-review flows with mocked `/api/*` responses
+- Playwright does not require the backend or PostgreSQL
+
+The backend CORS policy allows only `http://localhost:3000` (local Next.js dev). Same-origin `/api` proxying and k8s ingress do not rely on CORS.
 
 ## 3. Use the App
 
@@ -209,6 +220,10 @@ Use the frontend batch review page at `http://localhost:3000/batch-review` to:
 - inspect flagged transactions
 - correct categories
 - save learned merchant rules for future imports
+- sync reviewed, non-excluded transactions into PostgreSQL for the main dashboard
+
+Batch-import API paths must stay within `BATCH_DATA_DIR`, `BATCH_PDF_SOURCE_DIR`, and `BATCH_TEXT_SOURCE_DIR`.
+Sync is idempotent per batch row via a `postgres_synced` flag in the batch SQLite database.
 
 ## API Response Examples
 

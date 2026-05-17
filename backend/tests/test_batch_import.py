@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -135,15 +136,32 @@ class StatementImporterTests(unittest.TestCase):
             csv_path = output_dir / "batch_transactions.csv"
             sqlite_path = output_dir / "batch_imports.sqlite3"
             store = BatchImportStore(sqlite_path)
-            importer = StatementImporter(
-                pdf_source_dir=pdf_dir,
-                text_source_dir=text_dir,
-                csv_output_path=csv_path,
-                store=store,
-                pdf_text_extractor=lambda path: Path(path).read_text(encoding="utf-8"),
-            )
-
-            result = importer.import_transactions()
+            env_overrides = {
+                "BATCH_DATA_DIR": str(output_dir),
+                "BATCH_PDF_SOURCE_DIR": str(pdf_dir),
+                "BATCH_TEXT_SOURCE_DIR": str(text_dir),
+            }
+            previous_values = {
+                key: os.environ.get(key) for key in env_overrides
+            }
+            os.environ.update(env_overrides)
+            try:
+                importer = StatementImporter(
+                    pdf_source_dir=pdf_dir,
+                    text_source_dir=text_dir,
+                    csv_output_path=csv_path,
+                    store=store,
+                    pdf_text_extractor=lambda path: Path(path).read_text(
+                        encoding="utf-8"
+                    ),
+                )
+                result = importer.import_transactions()
+            finally:
+                for key, value in previous_values.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
 
             self.assertEqual(5, result.statement_count)
             self.assertEqual(10, result.transaction_count)

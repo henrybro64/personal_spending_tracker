@@ -5,63 +5,34 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
+from backend.statement_parse_utils import (
+    extract_us_statement_date,
+    extract_us_statement_period,
+    infer_us_transaction_date,
+    normalize_statement_text,
+    parse_amount,
+    parse_us_date,
+    roc_date_to_iso,
+)
+
 from .category import CategoryEngine
 from .models import NormalizedTransaction
 
 
-US_STATEMENT_PERIOD_PATTERN = re.compile(
-    r"Opening/Closing Date\s+"
-    r"(?P<start>\d{2}/\d{2}/\d{2,4})"
-    r"\s*-\s*"
-    r"(?P<end>\d{2}/\d{2}/\d{2,4})",
-    re.IGNORECASE,
-)
-US_STATEMENT_DATE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(
-        r"Statement Date:\s*(?P<date>\d{2}/\d{2}/\d{2,4})",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"Closing Date\s*(?P<date>\d{2}/\d{2}/\d{2,4})",
-        re.IGNORECASE,
-    ),
-)
-
-
 def _normalize_text(text: str) -> str:
-    return (
-        text.replace("\ufeff", "")
-        .replace("\xa0", " ")
-        .replace("\u2009", " ")
-        .replace("\u202f", " ")
-    )
+    return normalize_statement_text(text)
 
 
 def _parse_us_date(date_text: str) -> date:
-    for date_format in ("%m/%d/%Y", "%m/%d/%y"):
-        try:
-            return datetime.strptime(date_text, date_format).date()
-        except ValueError:
-            continue
-    raise ValueError(f"Unsupported US date format: {date_text}")
+    return parse_us_date(date_text)
 
 
 def _extract_statement_period(text: str) -> tuple[date, date] | None:
-    match = US_STATEMENT_PERIOD_PATTERN.search(text)
-    if not match:
-        return None
-    return (
-        _parse_us_date(match.group("start")),
-        _parse_us_date(match.group("end")),
-    )
+    return extract_us_statement_period(text)
 
 
 def _extract_statement_date(text: str) -> date | None:
-    for pattern in US_STATEMENT_DATE_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            return _parse_us_date(match.group("date"))
-    return None
+    return extract_us_statement_date(text)
 
 
 def _infer_us_short_date(
@@ -69,51 +40,20 @@ def _infer_us_short_date(
     statement_period: tuple[date, date] | None,
     statement_date: date | None,
 ) -> str:
-    if transaction_date_text.count("/") == 2:
-        return _parse_us_date(transaction_date_text).isoformat()
-
-    month_text, day_text = transaction_date_text.split("/")
-    month = int(month_text)
-    day = int(day_text)
-
-    if statement_period:
-        period_start, period_end = statement_period
-        for candidate_year in (period_start.year, period_end.year):
-            try:
-                candidate = date(candidate_year, month, day)
-            except ValueError:
-                continue
-            if period_start <= candidate <= period_end:
-                return candidate.isoformat()
-
-        fallback_year = (
-            period_start.year
-            if period_start.year != period_end.year and month >= period_start.month
-            else period_end.year
-        )
-        return date(fallback_year, month, day).isoformat()
-
-    if statement_date:
-        inferred_year = (
-            statement_date.year - 1
-            if month > statement_date.month
-            else statement_date.year
-        )
-        return date(inferred_year, month, day).isoformat()
-
-    raise ValueError(f"Unable to infer year for US date: {transaction_date_text}")
+    return infer_us_transaction_date(
+        transaction_date_text,
+        statement_period,
+        statement_date,
+        strict=True,
+    )
 
 
 def _parse_amount(amount_text: str) -> float:
-    normalized = amount_text.replace("$", "").replace(",", "").strip()
-    if normalized.startswith("(") and normalized.endswith(")"):
-        return -float(normalized[1:-1])
-    return float(normalized)
+    return parse_amount(amount_text)
 
 
 def _roc_to_iso(date_text: str) -> str:
-    year_text, month_text, day_text = date_text.split("/")
-    return date(int(year_text) + 1911, int(month_text), int(day_text)).isoformat()
+    return roc_date_to_iso(date_text)
 
 
 def _extract_last4(text: str, patterns: tuple[re.Pattern[str], ...]) -> str | None:

@@ -45,6 +45,9 @@ from backend.batch_import import (  # noqa: E402
     BatchImportStore,
     BatchStoredTransaction,
     StatementImporter,
+    default_sqlite_output_path,
+    merge_run_to_postgres,
+    resolve_allowed_file,
 )
 from backend.parser import Transaction, parse_transactions  # noqa: E402
 from backend.pdf_utils import (  # noqa: E402
@@ -55,7 +58,7 @@ from backend.pdf_utils import (  # noqa: E402
 
 
 DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
-LOCAL_FRONTEND_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+LOCAL_FRONTEND_ORIGINS = ("http://localhost:3000",)
 
 
 class UploadResponse(TypedDict):
@@ -94,6 +97,12 @@ class BatchImportTransactionsResponse(TypedDict):
 
 class BatchImportReviewUpdateResponse(TypedDict):
     transaction: BatchStoredTransaction
+
+
+class BatchImportMergeResponse(TypedDict):
+    run_id: int | None
+    merged_count: int
+    skipped_count: int
 
 
 AmountFilter = Literal["all", "spend", "refunds"]
@@ -153,6 +162,13 @@ class BatchImportRequest(BaseModel):
     pdf_source_dir: str | None = None
     text_source_dir: str | None = None
     csv_output_path: str | None = None
+    sqlite_output_path: str | None = None
+
+
+class BatchImportMergeRequest(BaseModel):
+    run_id: int | None = None
+    include_needs_review: bool = False
+    include_excluded: bool = False
     sqlite_output_path: str | None = None
 
 
@@ -267,7 +283,11 @@ def _sort_transactions(
 
 
 def _get_batch_import_store(sqlite_path: str | None = None) -> BatchImportStore:
-    store = BatchImportStore(sqlite_path) if sqlite_path else BatchImportStore()
+    resolved_sqlite_path = resolve_allowed_file(
+        sqlite_path,
+        default=default_sqlite_output_path(),
+    )
+    store = BatchImportStore(resolved_sqlite_path)
     store.initialize()
     return store
 
@@ -285,7 +305,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Personal Spending Tracker API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=LOCAL_FRONTEND_ORIGINS,
+    allow_origins=list(LOCAL_FRONTEND_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -537,18 +557,44 @@ async def run_batch_import(
 ) -> BatchImportRunExecutionResponse:
     request_payload = payload or BatchImportRequest()
     store = _get_batch_import_store(request_payload.sqlite_output_path)
-    importer = StatementImporter(
-        pdf_source_dir=request_payload.pdf_source_dir,
-        text_source_dir=request_payload.text_source_dir,
-        csv_output_path=request_payload.csv_output_path,
-        store=store,
-    )
     try:
+        importer = StatementImporter(
+            pdf_source_dir=request_payload.pdf_source_dir,
+            text_source_dir=request_payload.text_source_dir,
+            csv_output_path=request_payload.csv_output_path,
+            store=store,
+        )
         result = importer.import_transactions()
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {"run": result.to_payload()}
+
+
+@app.post("/batch-imports/merge", status_code=status.HTTP_200_OK)
+async def merge_batch_import(
+    payload: BatchImportMergeRequest | None = None,
+) -> BatchImportMergeResponse:
+    request_payload = payload or BatchImportMergeRequest()
+    store = _get_batch_import_store(request_payload.sqlite_output_path)
+
+    try:
+        result = merge_run_to_postgres(
+            store,
+            run_id=request_payload.run_id,
+            include_needs_review=request_payload.include_needs_review,
+            include_excluded=request_payload.include_excluded,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {
+        "run_id": result["run_id"],
+        "merged_count": int(result["merged_count"]),
+        "skipped_count": int(result["skipped_count"]),
+    }
 
 
 @app.get("/batch-imports/latest")

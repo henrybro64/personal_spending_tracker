@@ -17,6 +17,16 @@ spec:
         app.kubernetes.io/name: backend
         app.kubernetes.io/part-of: personal-spending-tracker
     spec:
+      initContainers:
+        - name: batch-dir-init
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - mkdir -p /app/batch/data /app/batch/pdf /app/batch/text
+          volumeMounts:
+            - name: batch-data
+              mountPath: /app/batch
       containers:
         - name: backend
           image: ghcr.io/example/personal-spending-tracker-backend:latest
@@ -62,9 +72,26 @@ spec:
                 configMapKeyRef:
                   name: spending-tracker-config
                   key: UPLOAD_DIR
+            - name: BATCH_DATA_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: BATCH_DATA_DIR
+            - name: BATCH_PDF_SOURCE_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: BATCH_PDF_SOURCE_DIR
+            - name: BATCH_TEXT_SOURCE_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: BATCH_TEXT_SOURCE_DIR
           volumeMounts:
             - name: uploads-data
               mountPath: /app/uploads
+            - name: batch-data
+              mountPath: /app/batch
           readinessProbe:
             httpGet:
               path: /health
@@ -81,6 +108,9 @@ spec:
         - name: uploads-data
           persistentVolumeClaim:
             claimName: uploads-data
+        - name: batch-data
+          persistentVolumeClaim:
+            claimName: batch-data
 ---
 apiVersion: v1
 kind: Service

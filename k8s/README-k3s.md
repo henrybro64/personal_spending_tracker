@@ -5,7 +5,8 @@ This directory contains the smallest working Kubernetes setup for running the MV
 The manifests assume:
 
 - namespace: `spending-tracker`
-- ingress hostname: `spending.local`
+- frontend exposed on NodePort `30081` by default (`http://<node-ip>:30081`)
+- optional ingress hostname: `spending.local` (set `INGRESS_ENABLED=1` in `scripts/deploy-k3s.sh`)
 - default k3s `local-path` storage class
 - one backend pod, one frontend pod, one PostgreSQL pod
 - uploaded PDFs stored on a PVC mounted at `/app/uploads`
@@ -19,6 +20,27 @@ DB_PASSWORD='replace-me' \
 BACKEND_IMAGE='YOUR_REGISTRY/personal-spending-tracker-backend:TAG' \
 FRONTEND_IMAGE='YOUR_REGISTRY/personal-spending-tracker-frontend:TAG' \
 APP_HOST='spending.local' \
+bash scripts/deploy-k3s.sh
+```
+
+Access the UI at `http://<node-ip>:30081` (same pattern as a stock ticker on `30080`).
+
+To also enable ingress on port 80:
+
+```bash
+INGRESS_ENABLED=1 \
+DB_PASSWORD='replace-me' \
+BACKEND_IMAGE='YOUR_REGISTRY/personal-spending-tracker-backend:TAG' \
+FRONTEND_IMAGE='YOUR_REGISTRY/personal-spending-tracker-frontend:TAG' \
+APP_HOST='spending.local' \
+bash scripts/deploy-k3s.sh
+```
+
+Use a different NodePort if `30081` is taken:
+
+```bash
+FRONTEND_NODE_PORT=30082 \
+# ... other env vars ...
 bash scripts/deploy-k3s.sh
 ```
 
@@ -114,9 +136,11 @@ Apply the remaining manifests:
 ```bash
 kubectl apply -f k8s/20-postgres.yaml
 kubectl apply -f k8s/60-uploads-pvc.yaml
+kubectl apply -f k8s/61-batch-pvc.yaml
 kubectl apply -f k8s/30-backend.yaml
 kubectl apply -f k8s/40-frontend.yaml
-kubectl apply -f k8s/50-ingress.yaml
+# Optional ingress on port 80:
+# kubectl apply -f k8s/50-ingress.yaml
 ```
 
 Check rollout and resources:
@@ -128,22 +152,50 @@ kubectl -n spending-tracker rollout status deployment/backend
 kubectl -n spending-tracker rollout status deployment/frontend
 ```
 
-## 5. Point `spending.local` at the k3s node
+## 5. Open the app
 
-Add the node IP to your client machine’s `/etc/hosts`:
+### NodePort (default)
+
+```bash
+NODE_IP=192.168.1.50   # your k3s node IP
+
+curl http://$NODE_IP:30081/
+curl http://$NODE_IP:30081/api/health
+```
+
+Open `http://<node-ip>:30081` in a browser. The frontend proxies `/api/*` to the in-cluster backend service.
+
+### Optional ingress on port 80
+
+If you deployed with `INGRESS_ENABLED=1`, add the node IP to `/etc/hosts`:
 
 ```text
 NODE_IP spending.local
 ```
 
-Then test ingress and backend health:
+Then test:
 
 ```bash
 curl http://spending.local/api/health
 curl -I http://spending.local/
 ```
 
-The frontend calls the backend through `/api`, and the ingress strips the `/api` prefix before forwarding traffic to FastAPI.
+## 5.1 Batch import storage on the cluster
+
+The backend mounts a dedicated `batch-data` PVC at `/app/batch` with these defaults:
+
+- `/app/batch/pdf` for archived PDF statements
+- `/app/batch/text` for archived text statements
+- `/app/batch/data` for batch SQLite and CSV exports
+
+Copy statements onto the node or into the mounted volume before running batch import from the UI. Example:
+
+```bash
+kubectl -n spending-tracker cp ./Credit_Card_PDF backend-XXXX:/app/batch/pdf
+kubectl -n spending-tracker cp ./credit_card_text backend-XXXX:/app/batch/text
+```
+
+After reviewing flagged merchants in `/batch-review`, use **Sync to dashboard** to insert eligible rows into PostgreSQL.
 
 ## 6. Verify each component
 
@@ -166,7 +218,7 @@ Verify the frontend:
 kubectl -n spending-tracker logs deployment/frontend
 ```
 
-Then open `http://spending.local` in a browser.
+Then open `http://<node-ip>:30081` in a browser (or `http://spending.local` if ingress is enabled).
 
 Verify upload persistence:
 

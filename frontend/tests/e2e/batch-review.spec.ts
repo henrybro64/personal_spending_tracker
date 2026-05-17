@@ -1,0 +1,122 @@
+import { expect, test } from "@playwright/test";
+
+
+const sampleRun = {
+  id: 7,
+  imported_at: "2026-05-17T10:00:00+00:00",
+  statement_count: 2,
+  transaction_count: 3,
+  needs_review_count: 1,
+  csv_output_path: "/app/batch/data/batch_transactions.csv",
+  sqlite_output_path: "/app/batch/data/batch_imports.sqlite3",
+  pdf_source_dir: "/app/batch/pdf",
+  text_source_dir: "/app/batch/text",
+};
+
+const sampleTransactions = [
+  {
+    id: 11,
+    import_run_id: 7,
+    statement_file: "2026-01-29.pdf",
+    bank: "AMEX",
+    card_last4: "1001",
+    transaction_date: "2026-01-05",
+    posted_date: null,
+    merchant_raw: "STARBUCKS",
+    amount: 5.75,
+    currency: "USD",
+    transaction_type: "purchase",
+    category: "Dining / Food",
+    exclude_from_spending: false,
+    needs_review: false,
+  },
+  {
+    id: 12,
+    import_run_id: 7,
+    statement_file: "2026-01-29.pdf",
+    bank: "AMEX",
+    card_last4: "1001",
+    transaction_date: "2026-01-08",
+    posted_date: null,
+    merchant_raw: "UNKNOWN MERCHANT",
+    amount: 12.34,
+    currency: "USD",
+    transaction_type: "purchase",
+    category: "Unknown / Needs Review",
+    exclude_from_spending: false,
+    needs_review: true,
+  },
+];
+
+
+test("batch review page loads queue, runs import, and syncs to dashboard", async ({
+  page,
+}) => {
+  let mergePayload: Record<string, unknown> | null = null;
+
+  await page.route("**/api/batch-imports/latest", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ run: sampleRun }),
+    });
+  });
+
+  await page.route("**/api/batch-imports/transactions**", async (route) => {
+    const url = new URL(route.request().url());
+    const reviewOnly = url.searchParams.get("needs_review_only") === "true";
+    const transactions = reviewOnly
+      ? sampleTransactions.filter((transaction) => transaction.needs_review)
+      : sampleTransactions;
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ transactions }),
+    });
+  });
+
+  await page.route("**/api/batch-imports/run", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run: {
+          ...sampleRun,
+          transaction_count: 4,
+          needs_review_count: 2,
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/batch-imports/merge", async (route) => {
+    mergePayload = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run_id: sampleRun.id,
+        merged_count: 1,
+        skipped_count: 1,
+      }),
+    });
+  });
+
+  await page.goto("/batch-review");
+
+  await expect(page.getByText("Batch Statement Review")).toBeVisible();
+  await expect(page.getByText("UNKNOWN MERCHANT")).toBeVisible();
+
+  await page.getByRole("switch", { name: "Show only flagged rows" }).uncheck();
+  await expect(page.getByText("STARBUCKS")).toBeVisible();
+
+  await page.getByRole("button", { name: "Run batch import" }).click();
+  await expect(
+    page.getByText("Imported 4 transactions from 2 statements.")
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Sync to dashboard" }).click();
+  await expect(page.getByText("Synced 1 transaction(s) to the dashboard.")).toBeVisible();
+  expect(mergePayload).toMatchObject({ run_id: sampleRun.id });
+});

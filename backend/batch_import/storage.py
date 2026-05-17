@@ -13,11 +13,10 @@ from .category import (
     transaction_type_for_category,
 )
 from .models import NormalizedTransaction
+from .paths import default_sqlite_output_path
 
 
-DEFAULT_BATCH_DATABASE_PATH = (
-    Path(__file__).resolve().parents[2] / "storage" / "batch_imports.sqlite3"
-)
+DEFAULT_BATCH_DATABASE_PATH = default_sqlite_output_path()
 
 
 class BatchStoredTransaction(TypedDict):
@@ -85,7 +84,8 @@ class BatchImportStore:
                     transaction_type TEXT NOT NULL,
                     category TEXT NOT NULL,
                     exclude_from_spending INTEGER NOT NULL,
-                    needs_review INTEGER NOT NULL
+                    needs_review INTEGER NOT NULL,
+                    postgres_synced INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS merchant_rules (
@@ -107,6 +107,20 @@ class BatchImportStore:
                     exclude_from_spending,
                     priority
                 );
+                """
+            )
+            self._ensure_postgres_synced_column(connection)
+
+    def _ensure_postgres_synced_column(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(imported_transactions)")
+        }
+        if "postgres_synced" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE imported_transactions
+                ADD COLUMN postgres_synced INTEGER NOT NULL DEFAULT 0
                 """
             )
 
@@ -365,6 +379,78 @@ class BatchImportStore:
             ).fetchall()
 
         return [self._row_to_transaction(row) for row in rows]
+
+    def list_transactions_for_merge(
+        self,
+        *,
+        run_id: int,
+        include_needs_review: bool = False,
+        include_excluded: bool = False,
+    ) -> list[BatchStoredTransaction]:
+        filters = ["import_run_id = ?"]
+        params: list[object] = [run_id]
+
+        if not include_needs_review:
+            filters.append("needs_review = 0")
+        if not include_excluded:
+            filters.append("exclude_from_spending = 0")
+
+        where_clause = " AND ".join(filters)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    id,
+                    import_run_id,
+                    statement_file,
+                    bank,
+                    card_last4,
+                    transaction_date,
+                    posted_date,
+                    merchant_raw,
+                    amount,
+                    currency,
+                    transaction_type,
+                    category,
+                    exclude_from_spending,
+                    needs_review
+                FROM imported_transactions
+                WHERE {where_clause}
+                ORDER BY statement_file, transaction_date, id
+                """,
+                params,
+            ).fetchall()
+
+        return [self._row_to_transaction(row) for row in rows]
+
+    def is_transaction_synced(self, transaction_id: int) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT postgres_synced
+                FROM imported_transactions
+                WHERE id = ?
+                """,
+                (transaction_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        return bool(row["postgres_synced"])
+
+    def mark_transactions_synced(self, transaction_ids: list[int]) -> None:
+        if not transaction_ids:
+            return
+
+        placeholders = ", ".join("?" for _ in transaction_ids)
+        with self._connect() as connection:
+            connection.execute(
+                f"""
+                UPDATE imported_transactions
+                SET postgres_synced = 1
+                WHERE id IN ({placeholders})
+                """,
+                transaction_ids,
+            )
 
     def update_transaction_review(
         self,

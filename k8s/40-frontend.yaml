@@ -46,10 +46,12 @@ metadata:
     app.kubernetes.io/name: frontend
     app.kubernetes.io/part-of: personal-spending-tracker
 spec:
+  type: NodePort
   selector:
     app.kubernetes.io/name: frontend
   ports:
     - name: http
       port: 3000
       targetPort: http
+      nodePort: 30081
 

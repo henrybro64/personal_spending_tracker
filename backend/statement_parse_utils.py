@@ -1,0 +1,148 @@
+"""Shared statement text normalization and parsing helpers."""
+
+from __future__ import annotations
+
+import re
+from datetime import date, datetime
+
+US_STATEMENT_PERIOD_PATTERN = re.compile(
+    r"Opening/Closing Date\s+"
+    r"(?P<start>\d{2}/\d{2}/\d{2,4})"
+    r"\s*-\s*"
+    r"(?P<end>\d{2}/\d{2}/\d{2,4})",
+    re.IGNORECASE,
+)
+
+US_STATEMENT_DATE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"Statement Date:\s*(?P<date>\d{2}/\d{2}/\d{2,4})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"Closing Date\s*(?P<date>\d{2}/\d{2}/\d{2,4})",
+        re.IGNORECASE,
+    ),
+)
+
+
+def normalize_statement_text(text: str) -> str:
+    return (
+        text.replace("\ufeff", "")
+        .replace("\xa0", " ")
+        .replace("\u2009", " ")
+        .replace("\u202f", " ")
+    )
+
+
+def parse_us_date(date_text: str) -> date:
+    for date_format in ("%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(date_text, date_format).date()
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported US date format: {date_text}")
+
+
+def parse_amount(amount_text: str) -> float:
+    normalized = amount_text.replace("$", "").replace(",", "").strip()
+    is_negative = normalized.startswith("(") and normalized.endswith(")")
+
+    if is_negative:
+        normalized = normalized[1:-1]
+
+    amount = float(normalized)
+    return -amount if is_negative else amount
+
+
+def roc_date_string_to_iso(roc_date: str) -> str | None:
+    """Convert Taiwan ROC calendar Y/M/D to ISO Gregorian date string."""
+    parts = roc_date.strip().split("/")
+    if len(parts) != 3:
+        return None
+    try:
+        roc_year, month, day = (int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+    try:
+        return date(roc_year + 1911, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def roc_date_to_iso(date_text: str) -> str:
+    """Strict ROC conversion used by batch parsers."""
+    iso_date = roc_date_string_to_iso(date_text)
+    if iso_date is None:
+        raise ValueError(f"Unsupported ROC date format: {date_text}")
+    return iso_date
+
+
+def extract_us_statement_period(text: str) -> tuple[date, date] | None:
+    match = US_STATEMENT_PERIOD_PATTERN.search(text)
+    if not match:
+        return None
+    return (
+        parse_us_date(match.group("start")),
+        parse_us_date(match.group("end")),
+    )
+
+
+def extract_us_statement_date(text: str) -> date | None:
+    for pattern in US_STATEMENT_DATE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return parse_us_date(match.group("date"))
+    return None
+
+
+def infer_us_transaction_date(
+    transaction_date_text: str,
+    statement_period: tuple[date, date] | None,
+    statement_date: date | None,
+    *,
+    strict: bool = False,
+) -> str:
+    stripped = transaction_date_text.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", stripped):
+        try:
+            datetime.strptime(stripped, "%Y-%m-%d").date()
+            return stripped
+        except ValueError:
+            pass
+
+    if transaction_date_text.count("/") == 2:
+        return parse_us_date(transaction_date_text).isoformat()
+
+    month_text, day_text = transaction_date_text.split("/")
+    month = int(month_text)
+    day = int(day_text)
+
+    if statement_period:
+        period_start, period_end = statement_period
+        for candidate_year in {period_start.year, period_end.year}:
+            try:
+                candidate_date = date(candidate_year, month, day)
+            except ValueError:
+                continue
+            if period_start <= candidate_date <= period_end:
+                return candidate_date.isoformat()
+
+        fallback_year = (
+            period_start.year
+            if period_start.year != period_end.year and month >= period_start.month
+            else period_end.year
+        )
+        return date(fallback_year, month, day).isoformat()
+
+    if statement_date:
+        inferred_year = (
+            statement_date.year - 1
+            if month > statement_date.month
+            else statement_date.year
+        )
+        return date(inferred_year, month, day).isoformat()
+
+    if strict:
+        raise ValueError(f"Unable to infer year for US date: {transaction_date_text}")
+
+    return transaction_date_text

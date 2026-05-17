@@ -10,4 +10,7 @@ data:
   DATABASE_PORT: "5432"
   DATABASE_USER: spending_tracker
   UPLOAD_DIR: /app/uploads
+  BATCH_DATA_DIR: /app/batch/data
+  BATCH_PDF_SOURCE_DIR: /app/batch/pdf
+  BATCH_TEXT_SOURCE_DIR: /app/batch/text
 

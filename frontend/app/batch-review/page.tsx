@@ -330,6 +330,47 @@ export default function BatchReviewPage() {
     }));
   }
 
+  async function onSyncToDashboard() {
+    if (!run) {
+      setError("Run a batch import before syncing to the dashboard.");
+      return;
+    }
+
+    setRunning(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/batch-imports/merge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: run.id }),
+      });
+      const payload = (await response.json()) as
+        | { merged_count: number; skipped_count: number }
+        | { detail?: string };
+      if (!response.ok) {
+        throw new Error(
+          "detail" in payload && typeof payload.detail === "string"
+            ? payload.detail
+            : "Failed to sync batch import to the dashboard."
+        );
+      }
+
+      const mergePayload = payload as { merged_count: number; skipped_count: number };
+      setMessage(
+        `Synced ${mergePayload.merged_count} transaction(s) to the dashboard.`
+      );
+    } catch (syncError) {
+      setError(
+        syncError instanceof Error
+          ? syncError.message
+          : "Failed to sync batch import to the dashboard."
+      );
+    } finally {
+      setRunning(false);
+    }
+  }
+
   async function onRunImport() {
     setRunning(true);
     setError("");
@@ -478,6 +519,9 @@ export default function BatchReviewPage() {
             <div className={styles.actions}>
               <Button appearance="primary" disabled={running} onClick={onRunImport}>
                 {running ? "Running import..." : "Run batch import"}
+              </Button>
+              <Button appearance="secondary" disabled={running || !run} onClick={onSyncToDashboard}>
+                Sync to dashboard
               </Button>
               <Badge appearance="outline" color="brand">
                 {run ? `${run.transaction_count} normalized rows` : "No run yet"}

@@ -6,28 +6,14 @@ from typing import Callable
 from .category import CategoryEngine
 from .models import BatchImportResult, NormalizedTransaction
 from .parsers import resolve_parser
+from .paths import (
+    default_csv_output_path,
+    default_pdf_source_dir,
+    default_text_source_dir,
+    resolve_allowed_directory,
+    resolve_allowed_file,
+)
 from .storage import BatchImportStore
-
-
-DEFAULT_PDF_SOURCE_DIRNAME = "Credit_Card_PDF"
-DEFAULT_TEXT_SOURCE_DIRNAME = "credit_card_text"
-DEFAULT_CSV_OUTPUT_NAME = "batch_transactions.csv"
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def default_pdf_source_dir() -> Path:
-    return _repo_root() / DEFAULT_PDF_SOURCE_DIRNAME
-
-
-def default_text_source_dir() -> Path:
-    return _repo_root() / DEFAULT_TEXT_SOURCE_DIRNAME
-
-
-def default_csv_output_path() -> Path:
-    return _repo_root() / "storage" / DEFAULT_CSV_OUTPUT_NAME
 
 
 class StatementImporter:
@@ -40,9 +26,18 @@ class StatementImporter:
         store: BatchImportStore | None = None,
         pdf_text_extractor: Callable[[str | Path], str] | None = None,
     ):
-        self.pdf_source_dir = Path(pdf_source_dir or default_pdf_source_dir())
-        self.text_source_dir = Path(text_source_dir or default_text_source_dir())
-        self.csv_output_path = Path(csv_output_path or default_csv_output_path())
+        self.pdf_source_dir = resolve_allowed_directory(
+            pdf_source_dir,
+            default=default_pdf_source_dir(),
+        )
+        self.text_source_dir = resolve_allowed_directory(
+            text_source_dir,
+            default=default_text_source_dir(),
+        )
+        self.csv_output_path = resolve_allowed_file(
+            csv_output_path,
+            default=default_csv_output_path(),
+        )
         self.store = store or BatchImportStore()
         self.pdf_text_extractor = (
             pdf_text_extractor or self._default_pdf_text_extractor

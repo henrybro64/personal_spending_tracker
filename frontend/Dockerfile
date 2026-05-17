@@ -2,6 +2,10 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# In-cluster backend DNS name for /api rewrites (NodePort and ingress both use this).
+ARG API_PROXY_TARGET=http://backend:8000
+ENV API_PROXY_TARGET=$API_PROXY_TARGET
+
 COPY frontend/package*.json ./
 RUN npm ci
 

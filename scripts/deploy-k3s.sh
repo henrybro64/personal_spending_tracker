@@ -13,6 +13,10 @@ DATABASE_NAME="${DATABASE_NAME:-personal_spending_tracker}"
 DATABASE_PORT="${DATABASE_PORT:-5432}"
 DATABASE_USER="${DATABASE_USER:-spending_tracker}"
 UPLOAD_DIR="${UPLOAD_DIR:-/app/uploads}"
+BATCH_DATA_DIR="${BATCH_DATA_DIR:-/app/batch/data}"
+BATCH_PDF_SOURCE_DIR="${BATCH_PDF_SOURCE_DIR:-/app/batch/pdf}"
+BATCH_TEXT_SOURCE_DIR="${BATCH_TEXT_SOURCE_DIR:-/app/batch/text}"
+BATCH_STORAGE_SIZE="${BATCH_STORAGE_SIZE:-5Gi}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
 POSTGRES_STORAGE_CLASS="${POSTGRES_STORAGE_CLASS:-local-path}"
 POSTGRES_STORAGE_SIZE="${POSTGRES_STORAGE_SIZE:-8Gi}"
@@ -24,6 +28,8 @@ BACKEND_IMAGE="${BACKEND_IMAGE:-}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:-}"
 IMAGE_PULL_SECRET="${IMAGE_PULL_SECRET:-}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+FRONTEND_NODE_PORT="${FRONTEND_NODE_PORT:-30081}"
+INGRESS_ENABLED="${INGRESS_ENABLED:-0}"
 KUBECTL_CMD=()
 
 usage() {
@@ -53,6 +59,8 @@ Optional environment variables:
   ROLLOUT_TIMEOUT=180s
   IMAGE_PULL_SECRET=
   OPENAI_API_KEY=
+  FRONTEND_NODE_PORT=30081
+  INGRESS_ENABLED=0   Set to 1 to also create Traefik ingress on port 80
   BUILD_IMAGES=0   Set to 1 to build and push BACKEND_IMAGE/FRONTEND_IMAGE first
 
 Examples:
@@ -115,7 +123,11 @@ if [[ "$BUILD_IMAGES" == "1" ]]; then
   docker push "$BACKEND_IMAGE"
 
   echo "Building frontend image: $FRONTEND_IMAGE"
-  docker build -f "$ROOT_DIR/frontend/Dockerfile" -t "$FRONTEND_IMAGE" "$ROOT_DIR"
+  docker build \
+    -f "$ROOT_DIR/frontend/Dockerfile" \
+    --build-arg API_PROXY_TARGET=http://backend:8000 \
+    -t "$FRONTEND_IMAGE" \
+    "$ROOT_DIR"
   docker push "$FRONTEND_IMAGE"
 fi
 
@@ -144,6 +156,9 @@ echo "Applying config map"
   --from-literal=DATABASE_PORT="$DATABASE_PORT" \
   --from-literal=DATABASE_USER="$DATABASE_USER" \
   --from-literal=UPLOAD_DIR="$UPLOAD_DIR" \
+  --from-literal=BATCH_DATA_DIR="$BATCH_DATA_DIR" \
+  --from-literal=BATCH_PDF_SOURCE_DIR="$BATCH_PDF_SOURCE_DIR" \
+  --from-literal=BATCH_TEXT_SOURCE_DIR="$BATCH_TEXT_SOURCE_DIR" \
   --dry-run=client -o yaml | "${KUBECTL_CMD[@]}" apply -f -
 
 echo "Applying secrets"
@@ -274,6 +289,22 @@ spec:
       storage: $UPLOADS_STORAGE_SIZE
 EOF
 
+echo "Applying batch-import PVC"
+cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: batch-data
+  namespace: $NAMESPACE
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: $POSTGRES_STORAGE_CLASS
+  resources:
+    requests:
+      storage: $BATCH_STORAGE_SIZE
+EOF
+
 echo "Applying backend resources"
 cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
 apiVersion: apps/v1
@@ -296,6 +327,16 @@ spec:
         app.kubernetes.io/part-of: personal-spending-tracker
     spec:
 ${IMAGE_PULL_SECRETS_BLOCK}
+      initContainers:
+        - name: batch-dir-init
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - mkdir -p /app/batch/data /app/batch/pdf /app/batch/text
+          volumeMounts:
+            - name: batch-data
+              mountPath: /app/batch
       containers:
         - name: backend
           image: $BACKEND_IMAGE
@@ -341,9 +382,26 @@ ${IMAGE_PULL_SECRETS_BLOCK}
                 configMapKeyRef:
                   name: spending-tracker-config
                   key: UPLOAD_DIR
+            - name: BATCH_DATA_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: BATCH_DATA_DIR
+            - name: BATCH_PDF_SOURCE_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: BATCH_PDF_SOURCE_DIR
+            - name: BATCH_TEXT_SOURCE_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: BATCH_TEXT_SOURCE_DIR
           volumeMounts:
             - name: uploads-data
               mountPath: $UPLOAD_DIR
+            - name: batch-data
+              mountPath: /app/batch
           readinessProbe:
             httpGet:
               path: /health
@@ -360,6 +418,9 @@ ${IMAGE_PULL_SECRETS_BLOCK}
         - name: uploads-data
           persistentVolumeClaim:
             claimName: uploads-data
+        - name: batch-data
+          persistentVolumeClaim:
+            claimName: batch-data
 ---
 apiVersion: v1
 kind: Service
@@ -429,14 +490,17 @@ metadata:
     app.kubernetes.io/name: frontend
     app.kubernetes.io/part-of: personal-spending-tracker
 spec:
+  type: NodePort
   selector:
     app.kubernetes.io/name: frontend
   ports:
     - name: http
       port: 3000
       targetPort: http
+      nodePort: $FRONTEND_NODE_PORT
 EOF
 
+if [[ "$INGRESS_ENABLED" == "1" ]]; then
 echo "Applying ingress"
 cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
 apiVersion: traefik.io/v1alpha1
@@ -478,6 +542,11 @@ spec:
                 port:
                   number: 3000
 EOF
+else
+  echo "Skipping ingress (NodePort access only)"
+  "${KUBECTL_CMD[@]}" -n "$NAMESPACE" delete ingress spending-tracker --ignore-not-found
+  "${KUBECTL_CMD[@]}" -n "$NAMESPACE" delete middleware strip-api-prefix --ignore-not-found
+fi
 
 echo "Waiting for rollouts"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/postgres --timeout="$ROLLOUT_TIMEOUT"
@@ -487,7 +556,10 @@ echo "Waiting for rollouts"
 echo
 echo "Deployment complete."
 echo "Namespace: $NAMESPACE"
-echo "Host: http://$APP_HOST"
+if [[ "$INGRESS_ENABLED" == "1" ]]; then
+  echo "Ingress: http://$APP_HOST"
+fi
+echo "NodePort: http://<node-ip>:$FRONTEND_NODE_PORT"
 echo
 echo "Useful checks:"
 echo "  $KUBECTL -n $NAMESPACE get deployments,pods,services,ingress,pvc"

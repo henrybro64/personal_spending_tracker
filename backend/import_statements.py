@@ -1,7 +1,12 @@
 import argparse
 import json
 
-from backend.batch_import import StatementImporter
+from backend.batch_import import (
+    BatchImportStore,
+    StatementImporter,
+    resolve_allowed_file,
+)
+from backend.batch_import.paths import default_sqlite_output_path
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,15 +22,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    store = BatchImportStore(
+        resolve_allowed_file(args.sqlite_out, default=default_sqlite_output_path())
+    )
     importer = StatementImporter(
         pdf_source_dir=args.pdf_dir,
         text_source_dir=args.text_dir,
         csv_output_path=args.csv_out,
+        store=store,
     )
-    if args.sqlite_out:
-        from backend.batch_import import BatchImportStore
-
-        importer.store = BatchImportStore(args.sqlite_out)
     result = importer.import_transactions()
     print(json.dumps(result.to_payload(), indent=2, ensure_ascii=False))
     return 0

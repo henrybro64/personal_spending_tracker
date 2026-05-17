@@ -2,6 +2,15 @@ from datetime import date, datetime
 import re
 from typing import TypedDict
 
+from backend.statement_parse_utils import (
+    extract_us_statement_date,
+    extract_us_statement_period,
+    infer_us_transaction_date,
+    parse_amount,
+    parse_us_date,
+    roc_date_string_to_iso,
+)
+
 
 class Transaction(TypedDict):
     date: str
@@ -276,20 +285,6 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
     ),
 ]
 
-STATEMENT_PERIOD_PATTERN = re.compile(
-    r"Opening/Closing Date\s+"
-    r"(?P<start>\d{2}/\d{2}/\d{2,4})"
-    r"\s*-\s*"
-    r"(?P<end>\d{2}/\d{2}/\d{2,4})",
-    re.IGNORECASE,
-)
-
-STATEMENT_DATE_PATTERN = re.compile(
-    r"Statement Date:\s*(?P<date>\d{2}/\d{2}/\d{2,4})",
-    re.IGNORECASE,
-)
-
-
 TRANSACTION_PATTERN = re.compile(
     r"^\s*"
     r"(?P<date>\d{2}/\d{2}(?:/\d{2,4})?)"
@@ -498,34 +493,15 @@ def categorize_merchant(merchant: str, amount: float | None = None) -> str:
 
 
 def _parse_statement_date(date_text: str) -> date:
-    for date_format in ("%m/%d/%Y", "%m/%d/%y"):
-        try:
-            return datetime.strptime(date_text, date_format).date()
-        except ValueError:
-            continue
-
-    raise ValueError(f"Unsupported statement date format: {date_text}")
+    return parse_us_date(date_text)
 
 
 def _extract_statement_period(text: str) -> tuple[date, date] | None:
-    match = STATEMENT_PERIOD_PATTERN.search(text)
-
-    if not match:
-        return None
-
-    return (
-        _parse_statement_date(match.group("start")),
-        _parse_statement_date(match.group("end")),
-    )
+    return extract_us_statement_period(text)
 
 
 def _extract_statement_date(text: str) -> date | None:
-    match = STATEMENT_DATE_PATTERN.search(text)
-
-    if not match:
-        return None
-
-    return _parse_statement_date(match.group("date"))
+    return extract_us_statement_date(text)
 
 
 def _infer_transaction_date(
@@ -533,57 +509,15 @@ def _infer_transaction_date(
     statement_period: tuple[date, date] | None,
     statement_date: date | None,
 ) -> str:
-    stripped = transaction_date_text.strip()
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", stripped):
-        try:
-            datetime.strptime(stripped, "%Y-%m-%d").date()
-            return stripped
-        except ValueError:
-            pass
-
-    if transaction_date_text.count("/") == 2:
-        return _parse_statement_date(transaction_date_text).isoformat()
-
-    month_text, day_text = transaction_date_text.split("/")
-    month = int(month_text)
-    day = int(day_text)
-
-    if statement_period:
-        period_start, period_end = statement_period
-
-        for candidate_year in {period_start.year, period_end.year}:
-            try:
-                candidate_date = date(candidate_year, month, day)
-            except ValueError:
-                continue
-
-            if period_start <= candidate_date <= period_end:
-                return candidate_date.isoformat()
-
-        fallback_year = (
-            period_start.year
-            if period_start.year != period_end.year and month >= period_start.month
-            else period_end.year
-        )
-
-        return date(fallback_year, month, day).isoformat()
-
-    if statement_date:
-        inferred_year = statement_date.year - 1 if month > statement_date.month else statement_date.year
-        return date(inferred_year, month, day).isoformat()
-
-    return transaction_date_text
+    return infer_us_transaction_date(
+        transaction_date_text,
+        statement_period,
+        statement_date,
+    )
 
 
 def _parse_amount(amount_text: str) -> float:
-    normalized = amount_text.replace("$", "").replace(",", "").strip()
-    is_negative = normalized.startswith("(") and normalized.endswith(")")
-
-    if is_negative:
-        normalized = normalized[1:-1]
-
-    amount = float(normalized)
-    return -amount if is_negative else amount
+    return parse_amount(amount_text)
 
 
 def _parse_dbs_tw_line(line: str) -> Transaction | None:
@@ -628,19 +562,7 @@ def _parse_dbs_tw_line(line: str) -> Transaction | None:
 
 
 def _roc_date_string_to_iso(roc_date: str) -> str | None:
-    """Convert Taiwan ROC calendar Y/M/D (民國) to ISO Gregorian date string."""
-    parts = roc_date.strip().split("/")
-    if len(parts) != 3:
-        return None
-    try:
-        roc_year, month, day = (int(parts[0]), int(parts[1]), int(parts[2]))
-    except ValueError:
-        return None
-    try:
-        gregorian_year = roc_year + 1911
-        return date(gregorian_year, month, day).isoformat()
-    except ValueError:
-        return None
+    return roc_date_string_to_iso(roc_date)
 
 
 def _parse_ctbc_tw_line(line: str) -> Transaction | None:
