@@ -109,6 +109,36 @@ export API_PROXY_TARGET="http://localhost:8000"
 export NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"
 ```
 
+## Automated Checks
+
+Run the backend tests from the repository root:
+
+```bash
+python3 -m pytest
+```
+
+Run the frontend verification check:
+
+```bash
+cd frontend
+npm run build
+```
+
+Run the local Playwright smoke tests:
+
+```bash
+cd frontend
+npx playwright install chromium
+npm run test:e2e
+```
+
+Current automated coverage is intentionally small:
+
+- backend `pytest` covers parser fixtures and lightweight API validation paths
+- frontend CI currently uses a production build check only
+- local Playwright smoke tests cover dashboard and data-entry flows with mocked `/api/*` responses
+- Playwright is local-only for now and does not require the backend or PostgreSQL
+
 ## 3. Use the App
 
 1. Open `http://localhost:3000`.

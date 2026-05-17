@@ -1,5 +1,7 @@
 fastapi
+httpx
 pdfplumber
 psycopg[binary]
+pytest
 python-multipart
 uvicorn[standard]
