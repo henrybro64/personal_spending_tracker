@@ -7,6 +7,8 @@ __pycache__/
 venv/
 env/
 .env
+.env.local
+.env.*.local
 
 node_modules/
 frontend/node_modules/
@@ -16,6 +18,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.log
 
 .next/
 frontend/.next/
@@ -25,6 +28,11 @@ out/
 dist/
 build/
 *.tsbuildinfo
+coverage/
+playwright-report/
+frontend/playwright-report/
+test-results/
+frontend/test-results/
 
 .pytest_cache/
 .mypy_cache/
