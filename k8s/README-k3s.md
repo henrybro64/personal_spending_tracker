@@ -10,6 +10,35 @@ The manifests assume:
 - one backend pod, one frontend pod, one PostgreSQL pod
 - uploaded PDFs stored on a PVC mounted at `/app/uploads`
 
+## Quick deploy script
+
+If you already have a working k3s cluster and a registry your node can pull from, you can deploy without editing the YAML by hand:
+
+```bash
+DB_PASSWORD='replace-me' \
+BACKEND_IMAGE='YOUR_REGISTRY/personal-spending-tracker-backend:TAG' \
+FRONTEND_IMAGE='YOUR_REGISTRY/personal-spending-tracker-frontend:TAG' \
+APP_HOST='spending.local' \
+bash scripts/deploy-k3s.sh
+```
+
+To build and push the images first:
+
+```bash
+BUILD_IMAGES=1 \
+DB_PASSWORD='replace-me' \
+BACKEND_IMAGE='YOUR_REGISTRY/personal-spending-tracker-backend:TAG' \
+FRONTEND_IMAGE='YOUR_REGISTRY/personal-spending-tracker-frontend:TAG' \
+APP_HOST='spending.local' \
+bash scripts/deploy-k3s.sh
+```
+
+If you are running directly on the k3s node and only have `sudo k3s kubectl` available, prefix the command with:
+
+```bash
+KUBECTL='sudo k3s kubectl'
+```
+
 ## 1. Install k3s
 
 Install k3s on the Linux machine:

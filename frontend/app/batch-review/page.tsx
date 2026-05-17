@@ -71,7 +71,7 @@ type DraftState = {
   exclude_from_spending: boolean;
 };
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
 const reviewCategories = [
   "Payment / Credit",
