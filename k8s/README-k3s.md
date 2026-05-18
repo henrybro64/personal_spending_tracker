@@ -25,6 +25,17 @@ bash scripts/deploy-k3s.sh
 
 Access the UI at `http://<node-ip>:30081` (same pattern as a stock ticker on `30080`).
 
+### One-command deploy on the k3s node
+
+Builds Docker images, imports them into k3s, and applies every manifest:
+
+```bash
+LOCAL_DEPLOY=1 \
+KUBECTL='sudo k3s kubectl' \
+DB_PASSWORD='replace-me' \
+bash scripts/deploy-k3s.sh
+```
+
 To also enable ingress on port 80:
 
 ```bash

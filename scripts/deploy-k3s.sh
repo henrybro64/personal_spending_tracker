@@ -24,6 +24,10 @@ UPLOADS_STORAGE_SIZE="${UPLOADS_STORAGE_SIZE:-5Gi}"
 IMAGE_PULL_POLICY="${IMAGE_PULL_POLICY:-IfNotPresent}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
 BUILD_IMAGES="${BUILD_IMAGES:-0}"
+LOCAL_DEPLOY="${LOCAL_DEPLOY:-0}"
+LOCAL_BACKEND_IMAGE="${LOCAL_BACKEND_IMAGE:-personal-spending-tracker-backend:latest}"
+LOCAL_FRONTEND_IMAGE="${LOCAL_FRONTEND_IMAGE:-personal-spending-tracker-frontend:latest}"
+K3S_CTR="${K3S_CTR:-sudo k3s ctr}"
 BACKEND_IMAGE="${BACKEND_IMAGE:-}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:-}"
 IMAGE_PULL_SECRET="${IMAGE_PULL_SECRET:-}"
@@ -31,6 +35,7 @@ OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 FRONTEND_NODE_PORT="${FRONTEND_NODE_PORT:-30081}"
 INGRESS_ENABLED="${INGRESS_ENABLED:-0}"
 KUBECTL_CMD=()
+CTR_CMD=()
 
 usage() {
   cat <<'EOF'
@@ -62,8 +67,15 @@ Optional environment variables:
   FRONTEND_NODE_PORT=30081
   INGRESS_ENABLED=0   Set to 1 to also create Traefik ingress on port 80
   BUILD_IMAGES=0   Set to 1 to build and push BACKEND_IMAGE/FRONTEND_IMAGE first
+  LOCAL_DEPLOY=0   Set to 1 for single-node k3s: build, import into k3s, deploy
+  LOCAL_BACKEND_IMAGE=personal-spending-tracker-backend:latest
+  LOCAL_FRONTEND_IMAGE=personal-spending-tracker-frontend:latest
+  K3S_CTR='sudo k3s ctr'
 
 Examples:
+  LOCAL_DEPLOY=1 KUBECTL='sudo k3s kubectl' DB_PASSWORD='change-me' \
+  bash scripts/deploy-k3s.sh
+
   DB_PASSWORD='change-me' \
   BACKEND_IMAGE='ghcr.io/acme/personal-spending-tracker-backend:2026-05-17' \
   FRONTEND_IMAGE='ghcr.io/acme/personal-spending-tracker-frontend:2026-05-17' \
@@ -108,16 +120,76 @@ init_kubectl_cmd() {
   require_cmd "${KUBECTL_CMD[0]}"
 }
 
+init_ctr_cmd() {
+  read -r -a CTR_CMD <<<"$K3S_CTR"
+  if [[ "${#CTR_CMD[@]}" -eq 0 ]]; then
+    echo "K3S_CTR cannot be empty" >&2
+    exit 1
+  fi
+
+  require_cmd "${CTR_CMD[0]}"
+}
+
+library_image_ref() {
+  local image_ref="$1"
+  if [[ "$image_ref" == */* ]]; then
+    printf '%s\n' "$image_ref"
+    return
+  fi
+
+  printf 'docker.io/library/%s\n' "$image_ref"
+}
+
+import_image_to_k3s() {
+  local image_ref="$1"
+  local library_ref
+  library_ref="$(library_image_ref "$image_ref")"
+
+  echo "Importing $library_ref into k3s"
+  docker tag "$image_ref" "$library_ref"
+  docker save "$library_ref" | "${CTR_CMD[@]}" images import -
+}
+
+build_and_import_local_images() {
+  require_cmd docker
+  init_ctr_cmd
+
+  BACKEND_IMAGE="$LOCAL_BACKEND_IMAGE"
+  FRONTEND_IMAGE="$LOCAL_FRONTEND_IMAGE"
+  IMAGE_PULL_POLICY="Never"
+
+  echo "Building backend image: $BACKEND_IMAGE"
+  docker build -f "$ROOT_DIR/backend/Dockerfile" -t "$BACKEND_IMAGE" "$ROOT_DIR"
+
+  echo "Building frontend image: $FRONTEND_IMAGE"
+  docker build \
+    -f "$ROOT_DIR/frontend/Dockerfile" \
+    --build-arg API_PROXY_TARGET=http://backend:8000 \
+    -t "$FRONTEND_IMAGE" \
+    "$ROOT_DIR"
+
+  import_image_to_k3s "$BACKEND_IMAGE"
+  import_image_to_k3s "$FRONTEND_IMAGE"
+
+  if command -v crictl >/dev/null 2>&1; then
+    echo "Imported images:"
+    crictl images | grep personal-spending-tracker || true
+  elif [[ -x /usr/local/bin/crictl ]] || sudo -n crictl version >/dev/null 2>&1; then
+    echo "Imported images:"
+    sudo crictl images | grep personal-spending-tracker || true
+  fi
+}
+
 init_kubectl_cmd
 require_env DB_PASSWORD
-require_env BACKEND_IMAGE
-require_env FRONTEND_IMAGE
 
-if [[ "$BUILD_IMAGES" == "1" ]]; then
+if [[ "$LOCAL_DEPLOY" == "1" ]]; then
+  build_and_import_local_images
+elif [[ "$BUILD_IMAGES" == "1" ]]; then
+  require_env BACKEND_IMAGE
+  require_env FRONTEND_IMAGE
   require_cmd docker
-fi
 
-if [[ "$BUILD_IMAGES" == "1" ]]; then
   echo "Building backend image: $BACKEND_IMAGE"
   docker build -f "$ROOT_DIR/backend/Dockerfile" -t "$BACKEND_IMAGE" "$ROOT_DIR"
   docker push "$BACKEND_IMAGE"
@@ -129,6 +201,9 @@ if [[ "$BUILD_IMAGES" == "1" ]]; then
     -t "$FRONTEND_IMAGE" \
     "$ROOT_DIR"
   docker push "$FRONTEND_IMAGE"
+else
+  require_env BACKEND_IMAGE
+  require_env FRONTEND_IMAGE
 fi
 
 IMAGE_PULL_SECRETS_BLOCK=""
@@ -559,7 +634,13 @@ echo "Namespace: $NAMESPACE"
 if [[ "$INGRESS_ENABLED" == "1" ]]; then
   echo "Ingress: http://$APP_HOST"
 fi
-echo "NodePort: http://<node-ip>:$FRONTEND_NODE_PORT"
+NODE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+if [[ -n "$NODE_IP" ]]; then
+  echo "NodePort: http://$NODE_IP:$FRONTEND_NODE_PORT"
+  echo "Health: curl http://$NODE_IP:$FRONTEND_NODE_PORT/api/health"
+else
+  echo "NodePort: http://<node-ip>:$FRONTEND_NODE_PORT"
+fi
 echo
 echo "Useful checks:"
 echo "  $KUBECTL -n $NAMESPACE get deployments,pods,services,ingress,pvc"
