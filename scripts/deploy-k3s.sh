@@ -35,6 +35,7 @@ IMAGE_PULL_SECRET="${IMAGE_PULL_SECRET:-}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 FRONTEND_NODE_PORT="${FRONTEND_NODE_PORT:-30081}"
 INGRESS_ENABLED="${INGRESS_ENABLED:-0}"
+DEFAULT_DB_PASSWORD="${DEFAULT_DB_PASSWORD:-spending-tracker-dev}"
 KUBECTL_CMD=()
 CTR_CMD=()
 
@@ -43,11 +44,12 @@ usage() {
 Deploy Personal Spending Tracker to a single-node k3s cluster.
 
 Required environment variables:
-  DB_PASSWORD      PostgreSQL password for the app database user
   BACKEND_IMAGE    Full backend container image reference to deploy
   FRONTEND_IMAGE   Full frontend container image reference to deploy
 
 Optional environment variables:
+  DB_PASSWORD=spending-tracker-dev   Override for production or existing PVCs
+  DEFAULT_DB_PASSWORD=spending-tracker-dev
   KUBECTL=kubectl
   NAMESPACE=spending-tracker
   APP_HOST=spending.local
@@ -75,8 +77,7 @@ Optional environment variables:
   K3S_CTR='sudo k3s ctr'
 
 Examples:
-  LOCAL_DEPLOY=1 KUBECTL='sudo k3s kubectl' DB_PASSWORD='change-me' \
-  bash scripts/deploy-k3s.sh
+  LOCAL_DEPLOY=1 KUBECTL='sudo k3s kubectl' bash scripts/deploy-k3s.sh
 
   DB_PASSWORD='change-me' \
   BACKEND_IMAGE='ghcr.io/acme/personal-spending-tracker-backend:2026-05-17' \
@@ -183,7 +184,16 @@ build_and_import_local_images() {
 }
 
 init_kubectl_cmd
-require_env DB_PASSWORD
+
+_using_default_db_password=0
+if [[ ! -v DB_PASSWORD ]]; then
+  DB_PASSWORD="$DEFAULT_DB_PASSWORD"
+  _using_default_db_password=1
+fi
+
+if [[ "$_using_default_db_password" == "1" ]]; then
+  echo "Using default DB_PASSWORD ($DB_PASSWORD). Set DB_PASSWORD to override."
+fi
 
 if [[ "$LOCAL_DEPLOY" == "1" ]]; then
   build_and_import_local_images

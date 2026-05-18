@@ -32,9 +32,10 @@ Builds Docker images, imports them into k3s, and applies every manifest:
 ```bash
 LOCAL_DEPLOY=1 \
 KUBECTL='sudo k3s kubectl' \
-DB_PASSWORD='replace-me' \
 bash scripts/deploy-k3s.sh
 ```
+
+`DB_PASSWORD` defaults to `spending-tracker-dev` when unset. Set `DB_PASSWORD` explicitly if you already have a Postgres PVC initialized with a different password.
 
 To also enable ingress on port 80:
 
