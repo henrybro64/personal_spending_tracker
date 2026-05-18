@@ -89,7 +89,7 @@ spec:
                   key: BATCH_TEXT_SOURCE_DIR
           volumeMounts:
             - name: uploads-data
-              mountPath: /app/uploads
+              mountPath: ${UPLOAD_DIR}
             - name: batch-data
               mountPath: /app/batch
           readinessProbe:
