@@ -13,5 +13,4 @@ frontend/.next/
 node_modules/
 frontend/node_modules/
 storage/
-tests/__pycache__/
 

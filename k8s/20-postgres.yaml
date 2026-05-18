@@ -2,20 +2,20 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-data
-  namespace: spending-tracker
+  namespace: ${NAMESPACE}
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: local-path
+  storageClassName: ${POSTGRES_STORAGE_CLASS}
   resources:
     requests:
-      storage: 8Gi
+      storage: ${POSTGRES_STORAGE_SIZE}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
-  namespace: spending-tracker
+  namespace: ${NAMESPACE}
   labels:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/part-of: personal-spending-tracker
@@ -32,8 +32,8 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
-          imagePullPolicy: IfNotPresent
+          image: ${POSTGRES_IMAGE}
+          imagePullPolicy: ${IMAGE_PULL_POLICY}
           ports:
             - containerPort: 5432
               name: postgres
@@ -81,7 +81,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgres
-  namespace: spending-tracker
+  namespace: ${NAMESPACE}
   labels:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/part-of: personal-spending-tracker
@@ -92,4 +92,3 @@ spec:
     - name: postgres
       port: 5432
       targetPort: postgres
-

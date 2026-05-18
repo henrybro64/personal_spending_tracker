@@ -27,7 +27,7 @@ import {
 } from "@fluentui/react-components";
 
 import { apiFetch, ApiError, apiFetchJson } from "../api";
-import { AuthPanel, SessionCard } from "../auth-card";
+import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
 import { translate } from "../messages";
@@ -480,16 +480,12 @@ export default function BatchReviewPage() {
 
   if (!user) {
     return (
-      <main className={styles.page}>
-        <div className={styles.shell}>
-          <section className={styles.content}>
-            <AuthPanel
-              title="Sign in required"
-              body="Use an email and password to review only your own staged batch-import data."
-            />
-          </section>
-        </div>
-      </main>
+      <AuthPage>
+        <AuthPanel
+          title="Sign in required"
+          body="Use an email and password to review only your own staged batch-import data."
+        />
+      </AuthPage>
     );
   }
 

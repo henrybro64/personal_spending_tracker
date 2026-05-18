@@ -2,12 +2,11 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: uploads-data
-  namespace: spending-tracker
+  namespace: ${NAMESPACE}
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: local-path
+  storageClassName: ${POSTGRES_STORAGE_CLASS}
   resources:
     requests:
-      storage: 5Gi
-
+      storage: ${UPLOADS_STORAGE_SIZE}

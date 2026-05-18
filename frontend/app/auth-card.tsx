@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useState } from "react";
 import {
   Body1,
@@ -19,6 +20,22 @@ import {
 import { useAuth } from "./auth-provider";
 
 const useStyles = makeStyles({
+  authPage: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: "24px",
+    paddingBottom: "24px",
+    paddingLeft: "24px",
+    paddingRight: "24px",
+    backgroundColor: "var(--page-surface)",
+    color: tokens.colorNeutralForeground1,
+    "@media (max-width: 640px)": {
+      paddingLeft: "16px",
+      paddingRight: "16px",
+    },
+  },
   authCard: {
     display: "flex",
     flexDirection: "column",
@@ -45,6 +62,15 @@ const useStyles = makeStyles({
     fontWeight: tokens.fontWeightSemibold,
   },
 });
+
+type AuthPageProps = {
+  children: ReactNode;
+};
+
+export function AuthPage({ children }: AuthPageProps) {
+  const styles = useStyles();
+  return <main className={styles.authPage}>{children}</main>;
+}
 
 type AuthPanelProps = {
   title: string;
@@ -117,9 +143,10 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
             />
           </Field>
         ) : null}
-        <Field label="Email">
+        <Field label="Username">
           <Input
-            type="email"
+            type="text"
+            autoComplete="username"
             value={email}
             onChange={(_, data) => setEmail(data.value)}
           />
