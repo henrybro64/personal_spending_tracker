@@ -7,6 +7,7 @@ import {
   type Theme,
 } from "@fluentui/react-components";
 
+import { AuthProvider } from "./auth-provider";
 import { LocaleProvider } from "./locale-provider";
 
 
@@ -28,7 +29,9 @@ const theme: Theme = {
 export function Providers({ children }: { children: ReactNode }) {
   return (
     <FluentProvider theme={theme}>
-      <LocaleProvider>{children}</LocaleProvider>
+      <LocaleProvider>
+        <AuthProvider>{children}</AuthProvider>
+      </LocaleProvider>
     </FluentProvider>
   );
 }

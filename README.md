@@ -1,6 +1,6 @@
 # Personal Spending Tracker
 
-Minimal full-stack app for uploading statement PDFs, parsing transactions, storing them in PostgreSQL, and reviewing the parsed results in a Next.js UI built with Microsoft Fluent UI.
+Minimal full-stack app for authenticated users to upload statement PDFs, parse transactions, store them in PostgreSQL, and review the results in a Next.js UI built with Microsoft Fluent UI.
 
 ## Stack
 
@@ -75,6 +75,8 @@ Optional: override the upload directory if you do not want local files written i
 export UPLOAD_DIR="$(pwd)/storage"
 ```
 
+Each signed-in user gets a separate subdirectory under `UPLOAD_DIR` (for example `storage/user-1/`).
+
 Optional batch-import directories (defaults shown):
 
 ```bash
@@ -94,6 +96,10 @@ The backend will be available at `http://localhost:8000`.
 Useful endpoints:
 
 - `GET /health`
+- `GET /auth/session`
+- `POST /auth/register`
+- `POST /auth/login`
+- `POST /auth/logout`
 - `GET /summary`
 - `GET /uploads/recent`
 - `POST /upload`
@@ -155,12 +161,14 @@ Current automated coverage is intentionally small:
 
 The backend CORS policy allows only `http://localhost:3000` (local Next.js dev). Same-origin `/api` proxying and k8s ingress do not rely on CORS.
 
-## 3. Use the App
+## 3. Sign In and Use the App
 
 1. Open `http://localhost:3000`.
-2. Choose a PDF file or drag one onto the upload panel.
-3. Click **Upload Statement**.
-4. The app will:
+2. Create an account or sign in with an existing email/password.
+3. If this repo already contains legacy single-user transaction data with no `user_id`, the first account created will automatically claim those rows and their backfilled upload records.
+4. Choose a PDF file or drag one onto the upload panel.
+5. Click **Upload Statement**.
+6. The app will:
    - save the PDF into the configured upload directory (`storage/` by default)
    - extract text from the PDF
    - parse transactions
@@ -168,11 +176,13 @@ The backend CORS policy allows only `http://localhost:3000` (local Next.js dev).
    - refresh the dashboard cards, merchant insights, and recent statement history
    - display the parsed transactions in the frontend
 
-You can also check the summary endpoint directly:
+All transaction, dashboard, upload, and batch-review endpoints now require authenticated session context. You can still check the health endpoint directly:
 
 ```bash
-curl http://localhost:8000/summary
+curl http://localhost:8000/health
 ```
+
+To inspect an authenticated session from the command line, sign in through the UI first or post credentials to `/auth/login` and reuse the returned session cookie.
 
 ## 4. Batch Statement Import
 

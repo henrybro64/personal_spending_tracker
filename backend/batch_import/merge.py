@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 
-from backend.database import insert_transactions
+from backend.database import create_statement_upload, insert_transactions
 from backend.parser import Transaction
 
 from .storage import BatchImportStore, BatchStoredTransaction
@@ -33,6 +33,7 @@ def batch_transaction_to_upload(transaction: BatchStoredTransaction) -> Transact
 def merge_run_to_postgres(
     store: BatchImportStore,
     *,
+    user_id: int,
     run_id: int | None = None,
     include_needs_review: bool = False,
     include_excluded: bool = False,
@@ -72,11 +73,24 @@ def merge_run_to_postgres(
             batch_transaction_to_upload(transaction)
             for transaction in statement_transactions
         ]
+        file_name = f"batch-import/{statement_file}"
+        display_name = f"Batch import: {statement_file}"
+        fingerprint = _batch_fingerprint(statement_transactions[0])
+        upload_record = create_statement_upload(
+            user_id=user_id,
+            original_file_name=display_name,
+            stored_file_name=file_name,
+            file_fingerprint_sha256=fingerprint,
+            parse_status="parsed",
+            currency=statement_transactions[0]["currency"],
+        )
         insert_transactions(
             upload_transactions,
-            file_name=f"batch-import/{statement_file}",
-            original_file_name=f"Batch import: {statement_file}",
-            file_fingerprint=_batch_fingerprint(statement_transactions[0]),
+            user_id=user_id,
+            file_name=file_name,
+            original_file_name=display_name,
+            file_fingerprint=fingerprint,
+            statement_upload_id=upload_record["id"],
         )
         merged_count += len(statement_transactions)
         synced_ids.extend(transaction["id"] for transaction in statement_transactions)

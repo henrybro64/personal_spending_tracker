@@ -24,6 +24,9 @@ import {
   shorthands,
   tokens,
 } from "@fluentui/react-components";
+import { apiFetchJson, ApiError } from "../api";
+import { AuthPanel, SessionCard } from "../auth-card";
+import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
 import { translate } from "../messages";
 
@@ -52,8 +55,6 @@ type YearGroup = {
   year: string;
   months: MonthGroup[];
 };
-
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
 const useStyles = makeStyles({
   page: {
@@ -342,6 +343,7 @@ function buildGroupedTransactions(
 export default function TransactionsPage() {
   const styles = useStyles();
   const { locale } = useLocale();
+  const { refreshSession, status, user } = useAuth();
   const pathname = usePathname();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -359,27 +361,30 @@ export default function TransactionsPage() {
       setLoading(true);
       setError("");
       try {
-        const response = await fetch(`${apiBaseUrl}/transactions?range=all&limit=5000`, {
-          cache: "no-store",
-        });
-        const payload = (await response.json()) as TransactionsResponse | { detail?: string };
-        if (!response.ok) {
-          throw new Error(
-            "detail" in payload && typeof payload.detail === "string"
-              ? payload.detail
-              : "Failed to load transactions."
-          );
-        }
-        setTransactions((payload as TransactionsResponse).transactions);
+        const payload = await apiFetchJson<TransactionsResponse>(
+          "/transactions?range=all&limit=5000",
+          "Failed to load transactions."
+        );
+        setTransactions(payload.transactions);
       } catch (loadError) {
+        if (loadError instanceof ApiError && loadError.status === 401) {
+          await refreshSession();
+          return;
+        }
         setError(loadError instanceof Error ? loadError.message : "Failed to load transactions.");
       } finally {
         setLoading(false);
       }
     }
 
-    void loadTransactions();
-  }, []);
+    if (status === "authenticated") {
+      void loadTransactions();
+      return;
+    }
+
+    setTransactions([]);
+    setLoading(status === "loading");
+  }, [refreshSession, status]);
 
   const merchantCandidates = useMemo(() => {
     const deduped = Array.from(
@@ -470,6 +475,34 @@ export default function TransactionsPage() {
     setSelectedMonthKey(nextMonth);
   }, [groupedTransactions, selectedYear, selectedMonthKey]);
 
+  if (status === "loading") {
+    return (
+      <main className={styles.page}>
+        <div className={styles.shell}>
+          <section className={styles.reportArea}>
+            <Title1>Checking session</Title1>
+            <Spinner />
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className={styles.page}>
+        <div className={styles.shell}>
+          <section className={styles.reportArea}>
+            <AuthPanel
+              title="Sign in required"
+              body="Use an email and password to view only your own transaction history."
+            />
+          </section>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className={styles.page}>
       <div className={styles.shell}>
@@ -517,6 +550,8 @@ export default function TransactionsPage() {
               </Link>
             </div>
           </Card>
+
+          <SessionCard />
 
           <Card className={mergeClasses(styles.card, styles.sidebarPanel)}>
             <div className={styles.sectionEyebrow}>{translate(locale, "slicersEyebrow")}</div>

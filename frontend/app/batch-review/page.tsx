@@ -26,6 +26,9 @@ import {
   tokens,
 } from "@fluentui/react-components";
 
+import { apiFetch, ApiError, apiFetchJson } from "../api";
+import { AuthPanel, SessionCard } from "../auth-card";
+import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
 import { translate } from "../messages";
 
@@ -70,8 +73,6 @@ type DraftState = {
   category: string;
   exclude_from_spending: boolean;
 };
-
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
 const reviewCategories = [
   "Payment / Credit",
@@ -248,6 +249,7 @@ export default function BatchReviewPage() {
   const styles = useStyles();
   const pathname = usePathname();
   const { locale } = useLocale();
+  const { refreshSession, status, user } = useAuth();
 
   const [run, setRun] = useState<BatchImportRun | null>(null);
   const [transactions, setTransactions] = useState<BatchTransaction[]>([]);
@@ -263,38 +265,23 @@ export default function BatchReviewPage() {
     setLoading(true);
     setError("");
     try {
-      const [latestResponse, transactionsResponse] = await Promise.all([
-        fetch(`${apiBaseUrl}/batch-imports/latest`, { cache: "no-store" }),
-        fetch(
-          `${apiBaseUrl}/batch-imports/transactions?needs_review_only=${reviewOnly}&limit=500`,
-          { cache: "no-store" }
+      const [latestPayload, transactionsPayload] = await Promise.all([
+        apiFetchJson<BatchImportLatestResponse>(
+          "/batch-imports/latest",
+          "Failed to load batch-import status."
+        ),
+        apiFetchJson<BatchTransactionsResponse>(
+          `/batch-imports/transactions?needs_review_only=${reviewOnly}&limit=500`,
+          "Failed to load batch-import transactions."
         ),
       ]);
-      const latestPayload = (await latestResponse.json()) as BatchImportLatestResponse | {
-        detail?: string;
-      };
-      const transactionsPayload = (await transactionsResponse.json()) as
-        | BatchTransactionsResponse
-        | { detail?: string };
-
-      if (!latestResponse.ok) {
-        throw new Error(
-          "detail" in latestPayload && typeof latestPayload.detail === "string"
-            ? latestPayload.detail
-            : "Failed to load batch-import status."
-        );
-      }
-      if (!transactionsResponse.ok) {
-        throw new Error(
-          "detail" in transactionsPayload && typeof transactionsPayload.detail === "string"
-            ? transactionsPayload.detail
-            : "Failed to load batch-import transactions."
-        );
-      }
-
-      setRun((latestPayload as BatchImportLatestResponse).run);
-      setTransactions((transactionsPayload as BatchTransactionsResponse).transactions);
+      setRun(latestPayload.run);
+      setTransactions(transactionsPayload.transactions);
     } catch (loadError) {
+      if (loadError instanceof ApiError && loadError.status === 401) {
+        await refreshSession();
+        return;
+      }
       setError(
         loadError instanceof Error
           ? loadError.message
@@ -306,8 +293,15 @@ export default function BatchReviewPage() {
   }
 
   useEffect(() => {
-    void loadBatchState(needsReviewOnly);
-  }, [needsReviewOnly]);
+    if (status === "authenticated") {
+      void loadBatchState(needsReviewOnly);
+      return;
+    }
+
+    setLoading(status === "loading");
+    setRun(null);
+    setTransactions([]);
+  }, [needsReviewOnly, refreshSession, status]);
 
   const activeReviewCount = useMemo(
     () => transactions.filter((transaction) => transaction.needs_review).length,
@@ -340,7 +334,7 @@ export default function BatchReviewPage() {
     setError("");
     setMessage("");
     try {
-      const response = await fetch(`${apiBaseUrl}/batch-imports/merge`, {
+      const response = await apiFetch("/batch-imports/merge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ run_id: run.id }),
@@ -349,6 +343,10 @@ export default function BatchReviewPage() {
         | { merged_count: number; skipped_count: number }
         | { detail?: string };
       if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
         throw new Error(
           "detail" in payload && typeof payload.detail === "string"
             ? payload.detail
@@ -376,13 +374,17 @@ export default function BatchReviewPage() {
     setError("");
     setMessage("");
     try {
-      const response = await fetch(`${apiBaseUrl}/batch-imports/run`, {
+      const response = await apiFetch("/batch-imports/run", {
         method: "POST",
       });
       const payload = (await response.json()) as
         | { run: BatchImportRun }
         | { detail?: string };
       if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
         throw new Error(
           "detail" in payload && typeof payload.detail === "string"
             ? payload.detail
@@ -409,8 +411,8 @@ export default function BatchReviewPage() {
     setError("");
     setMessage("");
     try {
-      const response = await fetch(
-        `${apiBaseUrl}/batch-imports/transactions/${transaction.id}`,
+      const response = await apiFetch(
+        `/batch-imports/transactions/${transaction.id}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -425,6 +427,10 @@ export default function BatchReviewPage() {
         | { transaction: BatchTransaction }
         | { detail?: string };
       if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
         throw new Error(
           "detail" in payload && typeof payload.detail === "string"
             ? payload.detail
@@ -457,6 +463,34 @@ export default function BatchReviewPage() {
     } finally {
       setSavingId(null);
     }
+  }
+
+  if (status === "loading") {
+    return (
+      <main className={styles.page}>
+        <div className={styles.shell}>
+          <section className={styles.content}>
+            <Title1>Checking session</Title1>
+            <Spinner />
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className={styles.page}>
+        <div className={styles.shell}>
+          <section className={styles.content}>
+            <AuthPanel
+              title="Sign in required"
+              body="Use an email and password to review only your own staged batch-import data."
+            />
+          </section>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -506,6 +540,8 @@ export default function BatchReviewPage() {
               </Link>
             </div>
           </Card>
+
+          <SessionCard />
         </aside>
 
         <section className={styles.content}>

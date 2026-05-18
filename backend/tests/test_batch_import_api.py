@@ -5,6 +5,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _register_user(client: TestClient) -> None:
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "batch@example.com",
+            "password": "password123",
+            "display_name": "Batch User",
+        },
+    )
+    assert response.status_code == 201
+
+
 @pytest.fixture
 def batch_client(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     batch_root = tmp_path / "batch"
@@ -25,11 +37,12 @@ def batch_client(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: 
         encoding="utf-8",
     )
 
+    _register_user(client)
     return client
 
 
-def test_batch_import_rejects_paths_outside_allowed_roots(client: TestClient) -> None:
-    response = client.post(
+def test_batch_import_rejects_paths_outside_allowed_roots(batch_client: TestClient) -> None:
+    response = batch_client.post(
         "/batch-imports/run",
         json={"pdf_source_dir": "/etc"},
     )
