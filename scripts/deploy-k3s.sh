@@ -22,6 +22,7 @@ POSTGRES_STORAGE_CLASS="${POSTGRES_STORAGE_CLASS:-local-path}"
 POSTGRES_STORAGE_SIZE="${POSTGRES_STORAGE_SIZE:-8Gi}"
 UPLOADS_STORAGE_SIZE="${UPLOADS_STORAGE_SIZE:-5Gi}"
 IMAGE_PULL_POLICY="${IMAGE_PULL_POLICY:-IfNotPresent}"
+APP_IMAGE_PULL_POLICY="${APP_IMAGE_PULL_POLICY:-$IMAGE_PULL_POLICY}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
 BUILD_IMAGES="${BUILD_IMAGES:-0}"
 LOCAL_DEPLOY="${LOCAL_DEPLOY:-0}"
@@ -61,6 +62,7 @@ Optional environment variables:
   POSTGRES_STORAGE_SIZE=8Gi
   UPLOADS_STORAGE_SIZE=5Gi
   IMAGE_PULL_POLICY=IfNotPresent
+  APP_IMAGE_PULL_POLICY=IfNotPresent  Backend/frontend only (LOCAL_DEPLOY sets Never)
   ROLLOUT_TIMEOUT=180s
   IMAGE_PULL_SECRET=
   OPENAI_API_KEY=
@@ -156,7 +158,7 @@ build_and_import_local_images() {
 
   BACKEND_IMAGE="$LOCAL_BACKEND_IMAGE"
   FRONTEND_IMAGE="$LOCAL_FRONTEND_IMAGE"
-  IMAGE_PULL_POLICY="Never"
+  APP_IMAGE_PULL_POLICY="Never"
 
   echo "Building backend image: $BACKEND_IMAGE"
   docker build -f "$ROOT_DIR/backend/Dockerfile" -t "$BACKEND_IMAGE" "$ROOT_DIR"
@@ -415,7 +417,7 @@ ${IMAGE_PULL_SECRETS_BLOCK}
       containers:
         - name: backend
           image: $BACKEND_IMAGE
-          imagePullPolicy: $IMAGE_PULL_POLICY
+          imagePullPolicy: $APP_IMAGE_PULL_POLICY
           ports:
             - containerPort: 8000
               name: http
@@ -539,7 +541,7 @@ ${IMAGE_PULL_SECRETS_BLOCK}
       containers:
         - name: frontend
           image: $FRONTEND_IMAGE
-          imagePullPolicy: $IMAGE_PULL_POLICY
+          imagePullPolicy: $APP_IMAGE_PULL_POLICY
           ports:
             - containerPort: 3000
               name: http
