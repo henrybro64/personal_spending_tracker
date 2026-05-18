@@ -39,6 +39,9 @@ import {
   tokens,
 } from "@fluentui/react-components";
 
+import { apiFetch, apiFetchJson, ApiError } from "./api";
+import { AuthPanel, SessionCard } from "./auth-card";
+import { useAuth } from "./auth-provider";
 import { useLocale } from "./locale-provider";
 import { translate, type MessageKey } from "./messages";
 
@@ -209,7 +212,6 @@ type MetricCard = {
   hint: string;
 };
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 const emptySummary: SummaryResponse = {
   total_spending: 0,
   number_of_transactions: 0,
@@ -1042,35 +1044,13 @@ async function fetchJson<T>(
   path: string,
   requestFailedFallback: string
 ): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    cache: "no-store",
-  });
-
-  let payload: unknown = null;
-
-  try {
-    payload = await response.json();
-  } catch {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    const detail =
-      payload &&
-      typeof payload === "object" &&
-      "detail" in payload &&
-      typeof payload.detail === "string"
-        ? payload.detail
-        : requestFailedFallback;
-    throw new Error(detail);
-  }
-
-  return payload as T;
+  return apiFetchJson<T>(path, requestFailedFallback);
 }
 
 export default function HomePage() {
   const styles = useStyles();
   const { locale, setLocale, intlLocale } = useLocale();
+  const { refreshSession, status: authStatus, user } = useAuth();
   const fm = useMemo(() => createFormatters(intlLocale), [intlLocale]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -1191,6 +1171,10 @@ export default function HomePage() {
       setRecentUploads(recentUploadsData.uploads);
       setDashboardError("");
     } catch (dashboardLoadError) {
+      if (dashboardLoadError instanceof ApiError && dashboardLoadError.status === 401) {
+        await refreshSession();
+        return;
+      }
       setDashboardError(
         dashboardLoadError instanceof Error
           ? dashboardLoadError.message
@@ -1228,6 +1212,10 @@ export default function HomePage() {
       setTransactions(dashboardData.transactions);
       setError("");
     } catch (transactionLoadError) {
+      if (transactionLoadError instanceof ApiError && transactionLoadError.status === 401) {
+        await refreshSession();
+        return;
+      }
       setDashboardView(null);
       setTransactions([]);
       setError(
@@ -1243,14 +1231,25 @@ export default function HomePage() {
   }
 
   useEffect(() => {
+    if (authStatus !== "authenticated") {
+      setDashboardView(null);
+      setTransactions([]);
+      setRecentUploads([]);
+      setSummary(emptySummary);
+      setIsDashboardLoading(authStatus === "loading");
+      return;
+    }
+
     void Promise.all([loadDashboardData(true), loadTransactionsData(true)]);
   }, [
+    authStatus,
     timeRange,
     displayCurrency,
     amountFilter,
     sortOption,
     selectedMerchant,
     deferredSearchQuery,
+    refreshSession,
   ]);
 
   function handleNextFile(nextFile: File | null) {
@@ -1315,7 +1314,7 @@ export default function HomePage() {
     setLastUploadParseReason(null);
 
     try {
-      const response = await fetch(`${apiBaseUrl}/upload`, {
+      const response = await apiFetch("/upload", {
         method: "POST",
         body: formData,
       });
@@ -1323,6 +1322,10 @@ export default function HomePage() {
       const data = (await response.json()) as UploadResponse | { detail?: string };
 
       if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
         const detail =
           "detail" in data && typeof data.detail === "string"
             ? data.detail
@@ -1393,7 +1396,7 @@ export default function HomePage() {
     setIsManualSaving(true);
     setManualError("");
     try {
-      const response = await fetch(`${apiBaseUrl}/transactions/manual`, {
+      const response = await apiFetch("/transactions/manual", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1402,6 +1405,10 @@ export default function HomePage() {
       });
       const responseBody = (await response.json()) as { detail?: string };
       if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
         throw new Error(responseBody.detail || translate(locale, "errUploadFailed"));
       }
       setManualMerchant("");
@@ -1419,6 +1426,34 @@ export default function HomePage() {
     } finally {
       setIsManualSaving(false);
     }
+  }
+
+  if (authStatus === "loading") {
+    return (
+      <main className={styles.page}>
+        <div className={styles.shell}>
+          <section className={styles.reportArea}>
+            <Title1>Checking session</Title1>
+            <ProgressBar />
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className={styles.page}>
+        <div className={styles.shell}>
+          <section className={styles.reportArea}>
+            <AuthPanel
+              title="Sign in required"
+              body="Use an email and password to view only your own uploads, summaries, and dashboard data."
+            />
+          </section>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -1446,6 +1481,8 @@ export default function HomePage() {
               </Link>
             </div>
           </Card>
+
+          <SessionCard />
 
           <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
             <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>

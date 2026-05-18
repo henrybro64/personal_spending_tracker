@@ -1,8 +1,8 @@
 import os
 import sys
 from datetime import date
-from hashlib import sha1, sha256
 from contextlib import asynccontextmanager
+from hashlib import sha256
 from pathlib import Path
 from shutil import copyfileobj
 from typing import Literal, TypedDict
@@ -16,29 +16,56 @@ if _repo_root_str not in sys.path:
     sys.path.insert(0, _repo_root_str)
 
 from fastapi import (  # noqa: E402
+    Depends,
     FastAPI,
     File,
     Form,
     HTTPException,
     Query,
+    Request,
+    Response,
     UploadFile,
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+from backend.auth import (  # noqa: E402
+    attach_session_cookie,
+    clear_session_cookie,
+    display_name_from_email,
+    generate_session_token,
+    get_audit_request_context,
+    get_optional_current_user,
+    hash_password,
+    hash_session_token,
+    require_current_user,
+    session_expiry,
+    validate_email,
+    validate_password,
+    verify_password,
+)
 from backend.database import (  # noqa: E402
     RecentUpload,
     StoredTransaction,
     TimeRange,
     TransactionsSummary,
+    UserRecord,
+    create_session,
+    create_statement_upload,
+    create_user,
     get_existing_upload_by_fingerprint,
     get_recent_uploads,
     get_transactions,
     get_transactions_summary,
+    get_user_auth_by_email,
     init_db,
     insert_manual_transaction,
     insert_transactions,
+    maybe_claim_legacy_data_for_first_user,
+    record_audit_event,
+    revoke_session,
+    update_user_last_login,
 )
 from backend.batch_import import (  # noqa: E402
     BatchImportRunSummary,
@@ -182,6 +209,19 @@ class ManualTransactionResponse(TypedDict):
     transaction: StoredTransaction
 
 
+class AuthRequest(BaseModel):
+    email: str
+    password: str
+    display_name: str | None = None
+
+
+class SessionResponse(TypedDict):
+    authenticated: bool
+    user: UserRecord | None
+    claimed_legacy_transactions: int
+    claimed_legacy_uploads: int
+
+
 VALID_TIME_RANGES: tuple[TimeRange, ...] = (
     "week",
     "month",
@@ -201,11 +241,14 @@ VALID_DISPLAY_CURRENCIES: tuple[DisplayCurrency, ...] = ("USD", "TWD")
 USD_TO_TWD_RATE = 32.0
 
 
-def _get_upload_dir() -> Path:
+def _get_upload_dir(user_id: int) -> Path:
     configured_upload_dir = os.getenv("UPLOAD_DIR")
-    if not configured_upload_dir:
-        return DEFAULT_STORAGE_DIR
-    return Path(configured_upload_dir).expanduser()
+    base_dir = (
+        Path(configured_upload_dir).expanduser()
+        if configured_upload_dir
+        else DEFAULT_STORAGE_DIR
+    )
+    return base_dir / f"user-{user_id}"
 
 
 def _resolve_time_range(range_key: str) -> TimeRange:
@@ -282,10 +325,21 @@ def _sort_transactions(
     return sorted_transactions
 
 
-def _get_batch_import_store(sqlite_path: str | None = None) -> BatchImportStore:
+def _default_batch_sqlite_path_for_user(user_id: int) -> Path:
+    return default_sqlite_output_path().with_name(f"batch_imports_user_{user_id}.sqlite3")
+
+
+def _default_batch_csv_path_for_user(user_id: int) -> Path:
+    return default_sqlite_output_path().with_name(f"batch_transactions_user_{user_id}.csv")
+
+
+def _get_batch_import_store(
+    user_id: int,
+    sqlite_path: str | None = None,
+) -> BatchImportStore:
     resolved_sqlite_path = resolve_allowed_file(
         sqlite_path,
-        default=default_sqlite_output_path(),
+        default=_default_batch_sqlite_path_for_user(user_id),
     )
     store = BatchImportStore(resolved_sqlite_path)
     store.initialize()
@@ -312,6 +366,15 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def attach_request_id(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid4().hex
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
 @app.get("/")
 async def read_root() -> dict[str, str]:
     return {"message": "Personal Spending Tracker API"}
@@ -322,29 +385,213 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/auth/session")
+async def auth_session(
+    current_user: UserRecord | None = Depends(get_optional_current_user),
+) -> SessionResponse:
+    return {
+        "authenticated": current_user is not None,
+        "user": current_user,
+        "claimed_legacy_transactions": 0,
+        "claimed_legacy_uploads": 0,
+    }
+
+
+@app.post("/auth/register", status_code=status.HTTP_201_CREATED)
+async def register(
+    payload: AuthRequest,
+    request: Request,
+    response: Response,
+) -> SessionResponse:
+    normalized_email = validate_email(payload.email)
+    validate_password(payload.password)
+    display_name = (
+        payload.display_name.strip()
+        if payload.display_name and payload.display_name.strip()
+        else display_name_from_email(normalized_email)
+    )
+    audit_context = get_audit_request_context(request)
+
+    if get_user_auth_by_email(normalized_email):
+        record_audit_event(
+            action="user_register",
+            status="rejected",
+            target_type="user",
+            target_id=normalized_email,
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"reason": "duplicate_email"},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="An account already exists for that email address.",
+        )
+
+    created_user = create_user(
+        email=normalized_email,
+        password_hash=hash_password(payload.password),
+        display_name=display_name,
+    )
+    claimed_counts = maybe_claim_legacy_data_for_first_user(created_user["id"])
+
+    session_token = generate_session_token()
+    create_session(
+        created_user["id"],
+        hash_session_token(session_token),
+        session_expiry(),
+    )
+    update_user_last_login(created_user["id"])
+    attach_session_cookie(response, session_token)
+    record_audit_event(
+        action="user_register",
+        status="success",
+        user_id=created_user["id"],
+        target_type="user",
+        target_id=str(created_user["id"]),
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={
+            "claimed_legacy_transactions": claimed_counts["claimed_transaction_count"],
+            "claimed_legacy_uploads": claimed_counts["claimed_statement_count"],
+        },
+    )
+    record_audit_event(
+        action="user_sign_in",
+        status="success",
+        user_id=created_user["id"],
+        target_type="session",
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+    )
+    return {
+        "authenticated": True,
+        "user": created_user,
+        "claimed_legacy_transactions": claimed_counts["claimed_transaction_count"],
+        "claimed_legacy_uploads": claimed_counts["claimed_statement_count"],
+    }
+
+
+@app.post("/auth/login")
+async def login(
+    payload: AuthRequest,
+    request: Request,
+    response: Response,
+) -> SessionResponse:
+    normalized_email = validate_email(payload.email)
+    validate_password(payload.password)
+    audit_context = get_audit_request_context(request)
+    user = get_user_auth_by_email(normalized_email)
+
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        record_audit_event(
+            action="user_sign_in",
+            status="rejected",
+            target_type="user",
+            target_id=normalized_email,
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"reason": "invalid_credentials"},
+        )
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    session_token = generate_session_token()
+    create_session(user["id"], hash_session_token(session_token), session_expiry())
+    update_user_last_login(user["id"])
+    attach_session_cookie(response, session_token)
+    record_audit_event(
+        action="user_sign_in",
+        status="success",
+        user_id=user["id"],
+        target_type="session",
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+    )
+    return {
+        "authenticated": True,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "display_name": user["display_name"],
+            "created_at": user["created_at"],
+        },
+        "claimed_legacy_transactions": 0,
+        "claimed_legacy_uploads": 0,
+    }
+
+
+@app.post("/auth/logout")
+async def logout(
+    request: Request,
+    response: Response,
+    current_user: UserRecord | None = Depends(get_optional_current_user),
+) -> SessionResponse:
+    session_token = request.cookies.get("pst_session")
+    audit_context = get_audit_request_context(request)
+    if session_token:
+        revoke_session(hash_session_token(session_token))
+    clear_session_cookie(response)
+
+    if current_user:
+        record_audit_event(
+            action="user_sign_out",
+            status="success",
+            user_id=current_user["id"],
+            target_type="session",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+        )
+
+    return {
+        "authenticated": False,
+        "user": None,
+        "claimed_legacy_transactions": 0,
+        "claimed_legacy_uploads": 0,
+    }
+
+
 @app.get("/summary")
-async def summary(range: str = Query(default="all")) -> SummaryResponse:
+async def summary(
+    range: str = Query(default="all"),
+    current_user: UserRecord = Depends(require_current_user),
+) -> SummaryResponse:
     resolved_range = _resolve_time_range(range)
     summary_data: TransactionsSummary = get_transactions_summary(
-        range_key=resolved_range
+        user_id=current_user["id"],
+        range_key=resolved_range,
     )
     return summary_data
 
 
 @app.get("/uploads/recent")
-async def recent_uploads(limit: int = 5) -> RecentUploadsResponse:
+async def recent_uploads(
+    limit: int = 5,
+    current_user: UserRecord = Depends(require_current_user),
+) -> RecentUploadsResponse:
     limited_value = max(1, min(limit, 12))
-    return {"uploads": get_recent_uploads(limit=limited_value)}
+    return {
+        "uploads": get_recent_uploads(
+            user_id=current_user["id"],
+            limit=limited_value,
+        )
+    }
 
 
 @app.get("/transactions")
 async def transactions(
     range: str = Query(default="all"),
     limit: int = Query(default=5000, ge=1, le=20000),
+    current_user: UserRecord = Depends(require_current_user),
 ) -> TransactionsResponse:
     resolved_range = _resolve_time_range(range)
     return {
         "transactions": get_transactions(
+            user_id=current_user["id"],
             range_key=resolved_range,
             limit=limit,
         )
@@ -360,13 +607,18 @@ async def dashboard_view(
     sort: str = Query(default="amount_desc"),
     currency: str = Query(default="USD"),
     limit: int = Query(default=5000, ge=1, le=20000),
+    current_user: UserRecord = Depends(require_current_user),
 ) -> DashboardViewResponse:
     resolved_range = _resolve_time_range(range)
     resolved_amount_filter = _resolve_amount_filter(amount_filter)
     resolved_sort_option = _resolve_sort_option(sort)
     resolved_currency = _resolve_display_currency(currency)
 
-    all_transactions = get_transactions(range_key=resolved_range, limit=limit)
+    all_transactions = get_transactions(
+        user_id=current_user["id"],
+        range_key=resolved_range,
+        limit=limit,
+    )
     converted_transactions: list[StoredTransaction] = [
         {
             **transaction,
@@ -491,7 +743,10 @@ async def dashboard_view(
         transaction["amount"] for transaction in converted_transactions
     )
 
-    summary_data: TransactionsSummary = get_transactions_summary(range_key=resolved_range)
+    summary_data: TransactionsSummary = get_transactions_summary(
+        user_id=current_user["id"],
+        range_key=resolved_range,
+    )
     summary_converted: SummaryResponse = {
         "total_spending": _convert_amount(
             summary_data["total_spending"], "USD", resolved_currency
@@ -527,6 +782,8 @@ async def dashboard_view(
 @app.post("/transactions/manual", status_code=status.HTTP_201_CREATED)
 async def create_manual_transaction(
     payload: ManualTransactionRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_current_user),
 ) -> ManualTransactionResponse:
     transaction_date = payload.date.strip()
     merchant = payload.merchant.strip()
@@ -542,11 +799,28 @@ async def create_manual_transaction(
         raise HTTPException(status_code=400, detail="Date must be YYYY-MM-DD.") from None
 
     created = insert_manual_transaction(
+        user_id=current_user["id"],
         transaction_date=transaction_date,
         merchant=merchant,
         amount=payload.amount,
         category=payload.category,
         payment_method=payload.payment_method,
+    )
+    audit_context = get_audit_request_context(request)
+    record_audit_event(
+        action="manual_transaction_create",
+        status="success",
+        user_id=current_user["id"],
+        target_type="transaction",
+        target_id=created["file_name"],
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={
+            "merchant": created["merchant"],
+            "date": created["date"],
+            "amount": created["amount"],
+        },
     )
     return {"transaction": created}
 
@@ -554,14 +828,21 @@ async def create_manual_transaction(
 @app.post("/batch-imports/run", status_code=status.HTTP_201_CREATED)
 async def run_batch_import(
     payload: BatchImportRequest | None = None,
+    current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportRunExecutionResponse:
     request_payload = payload or BatchImportRequest()
-    store = _get_batch_import_store(request_payload.sqlite_output_path)
+    store = _get_batch_import_store(
+        current_user["id"],
+        request_payload.sqlite_output_path,
+    )
     try:
         importer = StatementImporter(
             pdf_source_dir=request_payload.pdf_source_dir,
             text_source_dir=request_payload.text_source_dir,
-            csv_output_path=request_payload.csv_output_path,
+            csv_output_path=resolve_allowed_file(
+                request_payload.csv_output_path,
+                default=_default_batch_csv_path_for_user(current_user["id"]),
+            ),
             store=store,
         )
         result = importer.import_transactions()
@@ -574,13 +855,18 @@ async def run_batch_import(
 @app.post("/batch-imports/merge", status_code=status.HTTP_200_OK)
 async def merge_batch_import(
     payload: BatchImportMergeRequest | None = None,
+    current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportMergeResponse:
     request_payload = payload or BatchImportMergeRequest()
-    store = _get_batch_import_store(request_payload.sqlite_output_path)
+    store = _get_batch_import_store(
+        current_user["id"],
+        request_payload.sqlite_output_path,
+    )
 
     try:
         result = merge_run_to_postgres(
             store,
+            user_id=current_user["id"],
             run_id=request_payload.run_id,
             include_needs_review=request_payload.include_needs_review,
             include_excluded=request_payload.include_excluded,
@@ -600,8 +886,9 @@ async def merge_batch_import(
 @app.get("/batch-imports/latest")
 async def batch_import_latest(
     sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportLatestResponse:
-    store = _get_batch_import_store(sqlite_path)
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
     return {"run": store.get_latest_run()}
 
 
@@ -611,8 +898,9 @@ async def batch_import_transactions(
     run_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=500, ge=1, le=5000),
     sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportTransactionsResponse:
-    store = _get_batch_import_store(sqlite_path)
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
     return {
         "transactions": store.list_transactions(
             needs_review_only=needs_review_only,
@@ -627,12 +915,13 @@ async def update_batch_import_transaction(
     transaction_id: int,
     payload: BatchReviewUpdateRequest,
     sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportReviewUpdateResponse:
     category = payload.category.strip()
     if not category:
         raise HTTPException(status_code=400, detail="Category is required.")
 
-    store = _get_batch_import_store(sqlite_path)
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
     try:
         updated_transaction = store.update_transaction_review(
             transaction_id,
@@ -651,36 +940,70 @@ async def update_batch_import_transaction(
 
 @app.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_pdf(
+    request: Request,
     file: UploadFile = File(...),
     password: str | None = Form(default=None),
+    current_user: UserRecord = Depends(require_current_user),
 ) -> UploadResponse:
+    audit_context = get_audit_request_context(request)
     original_name = file.filename or ""
     has_pdf_extension = Path(original_name).suffix.lower() == ".pdf"
     is_pdf_content = file.content_type == "application/pdf"
 
     if not has_pdf_extension and not is_pdf_content:
+        record_audit_event(
+            action="statement_upload_attempt",
+            status="rejected",
+            user_id=current_user["id"],
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"reason": "invalid_file_type", "file_name": original_name},
+        )
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     password_clean = password.strip() if password else None
+    record_audit_event(
+        action="statement_upload_attempt",
+        status="started",
+        user_id=current_user["id"],
+        target_type="statement_upload",
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={"file_name": original_name},
+    )
 
-    upload_dir = _get_upload_dir()
+    upload_dir = _get_upload_dir(current_user["id"])
     upload_dir.mkdir(parents=True, exist_ok=True)
-    saved_name = f"{uuid4().hex}.pdf"
-    saved_path = upload_dir / saved_name
+    temp_path = upload_dir / f".tmp-{uuid4().hex}.pdf"
 
     try:
-        with saved_path.open("wb") as buffer:
+        with temp_path.open("wb") as buffer:
             copyfileobj(file.file, buffer)
     finally:
         await file.close()
 
-    file_bytes = saved_path.read_bytes()
-    sha1_fingerprint = sha1(file_bytes).hexdigest()
+    file_bytes = temp_path.read_bytes()
     sha256_fingerprint = sha256(file_bytes).hexdigest()
     existing_upload = get_existing_upload_by_fingerprint(
-        [sha1_fingerprint, sha256_fingerprint]
+        user_id=current_user["id"],
+        file_fingerprint_sha256=sha256_fingerprint,
     )
     if existing_upload:
+        temp_path.unlink(missing_ok=True)
+        record_audit_event(
+            action="duplicate_upload_rejection",
+            status="rejected",
+            user_id=current_user["id"],
+            target_type="statement_upload",
+            target_id=str(existing_upload["id"]),
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"file_name": original_name},
+        )
         raise HTTPException(
             status_code=409,
             detail=(
@@ -689,38 +1012,96 @@ async def upload_pdf(
             ),
         )
 
+    saved_name = f"{uuid4().hex}.pdf"
+    saved_path = upload_dir / saved_name
+    temp_path.rename(saved_path)
+
     try:
         extracted_text = extract_pdf_text(saved_path, password=password_clean)
     except PdfPasswordProtectedError as e:
+        saved_path.unlink(missing_ok=True)
         need_password = (
             "This PDF is password-protected. Enter the document password "
             "below and try again."
+        )
+        record_audit_event(
+            action="statement_upload_parse_failure",
+            status="rejected",
+            user_id=current_user["id"],
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={
+                "file_name": original_name,
+                "reason": "incorrect_password" if e.had_password else "password_required",
+            },
         )
         raise HTTPException(
             status_code=400,
             detail="Incorrect PDF password." if e.had_password else need_password,
         ) from e
     except PdfDecryptError:
+        saved_path.unlink(missing_ok=True)
         cannot_open = (
             "This PDF could not be opened. It may use unsupported "
             "encryption; try removing the password in a PDF app and "
             "export a new file."
         )
+        record_audit_event(
+            action="statement_upload_parse_failure",
+            status="rejected",
+            user_id=current_user["id"],
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"file_name": original_name, "reason": "decrypt_error"},
+        )
         raise HTTPException(status_code=400, detail=cannot_open) from None
     transactions = parse_transactions(extracted_text)
     display_name = original_name or saved_name
-    insert_transactions(
-        transactions,
-        saved_name,
-        file_fingerprint=sha1_fingerprint,
-        original_file_name=display_name,
-    )
 
     parse_reason: str | None = None
+    parse_status = "parsed"
     if not transactions:
         parse_reason = (
             "empty_text" if not extracted_text.strip() else "no_matching_lines"
         )
+        parse_status = "no_transactions"
+
+    upload_record = create_statement_upload(
+        user_id=current_user["id"],
+        original_file_name=display_name,
+        stored_file_name=saved_name,
+        file_fingerprint_sha256=sha256_fingerprint,
+        parse_status=parse_status,
+        parse_reason=parse_reason,
+        currency=transactions[0].get("currency") if transactions else None,
+    )
+    insert_transactions(
+        transactions,
+        user_id=current_user["id"],
+        file_name=saved_name,
+        file_fingerprint=sha256_fingerprint,
+        original_file_name=display_name,
+        statement_upload_id=upload_record["id"],
+    )
+    record_audit_event(
+        action="statement_upload_success",
+        status="success",
+        user_id=current_user["id"],
+        target_type="statement_upload",
+        target_id=str(upload_record["id"]),
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={
+            "file_name": display_name,
+            "parse_status": parse_status,
+            "transaction_count": len(transactions),
+        },
+    )
 
     return {
         "file_path": str(saved_path),

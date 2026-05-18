@@ -21,10 +21,11 @@ import {
   shorthands,
   tokens,
 } from "@fluentui/react-components";
+import { apiFetch } from "../api";
+import { AuthPanel, SessionCard } from "../auth-card";
+import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
 import { translate } from "../messages";
-
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
 type UploadResponse = {
   file_path: string;
@@ -197,6 +198,7 @@ function getTodayIsoDate() {
 export default function DataEntryPage() {
   const styles = useStyles();
   const { locale } = useLocale();
+  const { refreshSession, status, user } = useAuth();
   const pathname = usePathname();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -234,12 +236,16 @@ export default function DataEntryPage() {
     setUploadError("");
     setUploadMessage("");
     try {
-      const response = await fetch(`${apiBaseUrl}/upload`, {
+      const response = await apiFetch("/upload", {
         method: "POST",
         body: formData,
       });
       const payload = (await response.json()) as UploadResponse | { detail?: string };
       if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
         throw new Error(
           "detail" in payload && typeof payload.detail === "string"
             ? payload.detail
@@ -286,7 +292,7 @@ export default function DataEntryPage() {
     setManualError("");
     setManualMessage("");
     try {
-      const response = await fetch(`${apiBaseUrl}/transactions/manual`, {
+      const response = await apiFetch("/transactions/manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -299,6 +305,10 @@ export default function DataEntryPage() {
       });
       const payload = (await response.json()) as { detail?: string };
       if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
         throw new Error(payload.detail ?? translate(locale, "errAddManualFailed"));
       }
       setManualMessage(translate(locale, "dataEntryManualSuccess"));
@@ -314,6 +324,34 @@ export default function DataEntryPage() {
     } finally {
       setManualSaving(false);
     }
+  }
+
+  if (status === "loading") {
+    return (
+      <main className={styles.page}>
+        <div className={styles.shell}>
+          <section className={styles.reportArea}>
+            <Title1>Checking session</Title1>
+            <ProgressBar />
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className={styles.page}>
+        <div className={styles.shell}>
+          <section className={styles.reportArea}>
+            <AuthPanel
+              title="Sign in required"
+              body="Use an email and password to upload statements and add manual transactions."
+            />
+          </section>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -363,6 +401,8 @@ export default function DataEntryPage() {
               </Link>
             </div>
           </Card>
+
+          <SessionCard />
 
           <Card className={mergeClasses(styles.card, styles.sidebarPanel)}>
             <div className={styles.sectionEyebrow}>{translate(locale, "slicersEyebrow")}</div>

@@ -1,7 +1,27 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 
 type DisplayCurrency = "USD" | "TWD";
+
+async function mockAuthenticatedSession(page: Page) {
+  await page.route("**/api/auth/session", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        user: {
+          id: 1,
+          email: "tester@example.com",
+          display_name: "Test User",
+          created_at: "2026-05-18T00:00:00+00:00",
+        },
+        claimed_legacy_transactions: 0,
+        claimed_legacy_uploads: 0,
+      }),
+    });
+  });
+}
 
 function buildDashboardView(currency: DisplayCurrency) {
   const isTwd = currency === "TWD";
@@ -147,6 +167,8 @@ test("dashboard renders with mocked API data and survives a currency toggle", as
   page,
 }) => {
   const dashboardRequests: string[] = [];
+
+  await mockAuthenticatedSession(page);
 
   await page.route("**/api/uploads/recent?limit=6", async (route) => {
     await route.fulfill({

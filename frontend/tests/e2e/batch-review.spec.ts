@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 
 const sampleRun = {
@@ -48,11 +48,33 @@ const sampleTransactions = [
   },
 ];
 
+async function mockAuthenticatedSession(page: Page) {
+  await page.route("**/api/auth/session", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authenticated: true,
+        user: {
+          id: 1,
+          email: "tester@example.com",
+          display_name: "Test User",
+          created_at: "2026-05-18T00:00:00+00:00",
+        },
+        claimed_legacy_transactions: 0,
+        claimed_legacy_uploads: 0,
+      }),
+    });
+  });
+}
+
 
 test("batch review page loads queue, runs import, and syncs to dashboard", async ({
   page,
 }) => {
   let mergePayload: Record<string, unknown> | null = null;
+
+  await mockAuthenticatedSession(page);
 
   await page.route("**/api/batch-imports/latest", async (route) => {
     await route.fulfill({
