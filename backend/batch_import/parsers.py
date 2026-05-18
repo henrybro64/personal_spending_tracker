@@ -11,28 +11,11 @@ from backend.statement_parse_utils import (
     infer_us_transaction_date,
     normalize_statement_text,
     parse_amount,
-    parse_us_date,
     roc_date_to_iso,
 )
 
 from .category import CategoryEngine
 from .models import NormalizedTransaction
-
-
-def _normalize_text(text: str) -> str:
-    return normalize_statement_text(text)
-
-
-def _parse_us_date(date_text: str) -> date:
-    return parse_us_date(date_text)
-
-
-def _extract_statement_period(text: str) -> tuple[date, date] | None:
-    return extract_us_statement_period(text)
-
-
-def _extract_statement_date(text: str) -> date | None:
-    return extract_us_statement_date(text)
 
 
 def _infer_us_short_date(
@@ -46,14 +29,6 @@ def _infer_us_short_date(
         statement_date,
         strict=True,
     )
-
-
-def _parse_amount(amount_text: str) -> float:
-    return parse_amount(amount_text)
-
-
-def _roc_to_iso(date_text: str) -> str:
-    return roc_date_to_iso(date_text)
 
 
 def _extract_last4(text: str, patterns: tuple[re.Pattern[str], ...]) -> str | None:
@@ -155,8 +130,8 @@ class AmexStatementParser(BaseStatementParser):
         statement_text: str,
         category_engine: CategoryEngine,
     ) -> list[NormalizedTransaction]:
-        normalized_text = _normalize_text(statement_text)
-        statement_date = _extract_statement_date(normalized_text)
+        normalized_text = normalize_statement_text(statement_text)
+        statement_date = extract_us_statement_date(normalized_text)
         card_last4 = _extract_last4(normalized_text, self._last4_patterns)
         transactions: list[NormalizedTransaction] = []
 
@@ -187,7 +162,7 @@ class AmexStatementParser(BaseStatementParser):
                     transaction_date=transaction_date,
                     posted_date=posted_date,
                     merchant_raw=match.group("merchant"),
-                    raw_amount=_parse_amount(match.group("amount")),
+                    raw_amount=parse_amount(match.group("amount")),
                     category_engine=category_engine,
                 )
             )
@@ -226,8 +201,8 @@ class ChaseStatementParser(BaseStatementParser):
         statement_text: str,
         category_engine: CategoryEngine,
     ) -> list[NormalizedTransaction]:
-        normalized_text = _normalize_text(statement_text)
-        statement_period = _extract_statement_period(normalized_text)
+        normalized_text = normalize_statement_text(statement_text)
+        statement_period = extract_us_statement_period(normalized_text)
         card_last4 = _extract_last4(
             f"{source_path.name}\n{normalized_text}", self._last4_patterns
         )
@@ -257,7 +232,7 @@ class ChaseStatementParser(BaseStatementParser):
                         None,
                     ),
                     merchant_raw=match.group("merchant"),
-                    raw_amount=_parse_amount(match.group("amount")),
+                    raw_amount=parse_amount(match.group("amount")),
                     category_engine=category_engine,
                 )
             )
@@ -297,7 +272,7 @@ class CtbcDailyStatementParser(BaseStatementParser):
         statement_text: str,
         category_engine: CategoryEngine,
     ) -> list[NormalizedTransaction]:
-        normalized_text = _normalize_text(statement_text)
+        normalized_text = normalize_statement_text(statement_text)
         card_last4 = _extract_last4(normalized_text, self._last4_patterns)
         transactions: list[NormalizedTransaction] = []
 
@@ -314,10 +289,10 @@ class CtbcDailyStatementParser(BaseStatementParser):
                 self._build_transaction(
                     source_path=source_path,
                     card_last4=card_last4,
-                    transaction_date=_roc_to_iso(match.group("transaction_date")),
-                    posted_date=_roc_to_iso(match.group("posted_date")),
+                    transaction_date=roc_date_to_iso(match.group("transaction_date")),
+                    posted_date=roc_date_to_iso(match.group("posted_date")),
                     merchant_raw=match.group("merchant"),
-                    raw_amount=_parse_amount(match.group("amount")),
+                    raw_amount=parse_amount(match.group("amount")),
                     category_engine=category_engine,
                 )
             )
@@ -372,7 +347,7 @@ class DbsStatementParser(BaseStatementParser):
         statement_text: str,
         category_engine: CategoryEngine,
     ) -> list[NormalizedTransaction]:
-        normalized_text = _normalize_text(statement_text)
+        normalized_text = normalize_statement_text(statement_text)
         card_last4 = _extract_last4(normalized_text, self._last4_patterns)
         transactions: list[NormalizedTransaction] = []
 
@@ -398,7 +373,7 @@ class DbsStatementParser(BaseStatementParser):
                         match.group("posted_date"), "%Y/%m/%d"
                     ).date().isoformat(),
                     merchant_raw=match.group("merchant"),
-                    raw_amount=_parse_amount(match.group("amount")),
+                    raw_amount=parse_amount(match.group("amount")),
                     category_engine=category_engine,
                 )
             )
@@ -438,7 +413,7 @@ _PARSERS: tuple[BaseStatementParser, ...] = (
 def resolve_parser(
     file_name: str, statement_text: str
 ) -> BaseStatementParser | None:
-    normalized_text = _normalize_text(statement_text)
+    normalized_text = normalize_statement_text(statement_text)
     for parser in _PARSERS:
         if parser.matches(file_name, normalized_text):
             return parser

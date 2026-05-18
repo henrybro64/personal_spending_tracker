@@ -40,5 +40,5 @@ frontend/test-results/
 .coverage
 htmlcov/
 
-storage/*.pdf
-storage/*.db
+storage/*
+!storage/.gitkeep

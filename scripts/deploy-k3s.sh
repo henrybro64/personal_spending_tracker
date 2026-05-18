@@ -32,7 +32,6 @@ K3S_CTR="${K3S_CTR:-sudo k3s ctr}"
 BACKEND_IMAGE="${BACKEND_IMAGE:-}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:-}"
 IMAGE_PULL_SECRET="${IMAGE_PULL_SECRET:-}"
-OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 FRONTEND_NODE_PORT="${FRONTEND_NODE_PORT:-30081}"
 INGRESS_ENABLED="${INGRESS_ENABLED:-0}"
 DEFAULT_DB_PASSWORD="${DEFAULT_DB_PASSWORD:-spending-tracker-dev}"
@@ -67,7 +66,6 @@ Optional environment variables:
   APP_IMAGE_PULL_POLICY=IfNotPresent  Backend/frontend only (LOCAL_DEPLOY sets Never)
   ROLLOUT_TIMEOUT=180s
   IMAGE_PULL_SECRET=
-  OPENAI_API_KEY=
   FRONTEND_NODE_PORT=30081
   INGRESS_ENABLED=0   Set to 1 to also create Traefik ingress on port 80
   BUILD_IMAGES=0   Set to 1 to build and push BACKEND_IMAGE/FRONTEND_IMAGE first
@@ -133,6 +131,41 @@ init_ctr_cmd() {
   require_cmd "${CTR_CMD[0]}"
 }
 
+K8S_ENVSUBST_VARS='$NAMESPACE $APP_HOST $POSTGRES_IMAGE $POSTGRES_STORAGE_CLASS $POSTGRES_STORAGE_SIZE $UPLOADS_STORAGE_SIZE $BATCH_STORAGE_SIZE $IMAGE_PULL_POLICY $BACKEND_IMAGE $FRONTEND_IMAGE $APP_IMAGE_PULL_POLICY $FRONTEND_NODE_PORT'
+
+apply_k8s_manifest() {
+  local manifest_path="$1"
+  if [[ ! -f "$manifest_path" ]]; then
+    echo "Missing manifest: $manifest_path" >&2
+    exit 1
+  fi
+  envsubst "$K8S_ENVSUBST_VARS" <"$manifest_path" | "${KUBECTL_CMD[@]}" apply -f -
+}
+
+apply_image_pull_secrets() {
+  if [[ -z "$IMAGE_PULL_SECRET" ]]; then
+    return
+  fi
+
+  local deployment
+  for deployment in backend frontend; do
+    "${KUBECTL_CMD[@]}" -n "$NAMESPACE" patch deployment "$deployment" --type merge -p "$(cat <<EOF
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "imagePullSecrets": [
+          { "name": "$IMAGE_PULL_SECRET" }
+        ]
+      }
+    }
+  }
+}
+EOF
+)"
+  done
+}
+
 library_image_ref() {
   local image_ref="$1"
   if [[ "$image_ref" == */* ]]; then
@@ -184,9 +217,10 @@ build_and_import_local_images() {
 }
 
 init_kubectl_cmd
+require_cmd envsubst
 
 _using_default_db_password=0
-if [[ ! -v DB_PASSWORD ]]; then
+if [[ -z "${DB_PASSWORD:-}" ]]; then
   DB_PASSWORD="$DEFAULT_DB_PASSWORD"
   _using_default_db_password=1
 fi
@@ -218,22 +252,12 @@ else
   require_env FRONTEND_IMAGE
 fi
 
-IMAGE_PULL_SECRETS_BLOCK=""
-if [[ -n "$IMAGE_PULL_SECRET" ]]; then
-  IMAGE_PULL_SECRETS_BLOCK=$(cat <<EOF
-      imagePullSecrets:
-        - name: $IMAGE_PULL_SECRET
-EOF
-)
-fi
+export NAMESPACE APP_HOST POSTGRES_IMAGE POSTGRES_STORAGE_CLASS POSTGRES_STORAGE_SIZE
+export UPLOADS_STORAGE_SIZE BATCH_STORAGE_SIZE IMAGE_PULL_POLICY
+export BACKEND_IMAGE FRONTEND_IMAGE APP_IMAGE_PULL_POLICY FRONTEND_NODE_PORT
 
 echo "Applying namespace: $NAMESPACE"
-cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: $NAMESPACE
-EOF
+apply_k8s_manifest "$ROOT_DIR/k8s/00-namespace.yaml"
 
 echo "Applying config map"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" create configmap spending-tracker-config \
@@ -249,386 +273,30 @@ echo "Applying config map"
   --dry-run=client -o yaml | "${KUBECTL_CMD[@]}" apply -f -
 
 echo "Applying secrets"
-secret_cmd=(
-  "${KUBECTL_CMD[@]}" -n "$NAMESPACE" create secret generic spending-tracker-secrets
-  "--from-literal=DATABASE_PASSWORD=$DB_PASSWORD"
-  --dry-run=client
-  -o
-  yaml
-)
-if [[ -n "$OPENAI_API_KEY" ]]; then
-  secret_cmd+=("--from-literal=OPENAI_API_KEY=$OPENAI_API_KEY")
-fi
-"${secret_cmd[@]}" | "${KUBECTL_CMD[@]}" apply -f -
+"${KUBECTL_CMD[@]}" -n "$NAMESPACE" create secret generic spending-tracker-secrets \
+  --from-literal=DATABASE_PASSWORD="$DB_PASSWORD" \
+  --dry-run=client -o yaml | "${KUBECTL_CMD[@]}" apply -f -
 
 echo "Applying PostgreSQL resources"
-cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-data
-  namespace: $NAMESPACE
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: $POSTGRES_STORAGE_CLASS
-  resources:
-    requests:
-      storage: $POSTGRES_STORAGE_SIZE
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: postgres
-  namespace: $NAMESPACE
-  labels:
-    app.kubernetes.io/name: postgres
-    app.kubernetes.io/part-of: personal-spending-tracker
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: postgres
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: postgres
-        app.kubernetes.io/part-of: personal-spending-tracker
-    spec:
-${IMAGE_PULL_SECRETS_BLOCK}
-      containers:
-        - name: postgres
-          image: $POSTGRES_IMAGE
-          imagePullPolicy: $IMAGE_PULL_POLICY
-          ports:
-            - containerPort: 5432
-              name: postgres
-          env:
-            - name: POSTGRES_DB
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_NAME
-            - name: POSTGRES_USER
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_USER
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: spending-tracker-secrets
-                  key: DATABASE_PASSWORD
-          volumeMounts:
-            - name: postgres-data
-              mountPath: /var/lib/postgresql/data
-          readinessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - pg_isready -U "\$POSTGRES_USER" -d "\$POSTGRES_DB"
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - pg_isready -U "\$POSTGRES_USER" -d "\$POSTGRES_DB"
-            initialDelaySeconds: 15
-            periodSeconds: 20
-      volumes:
-        - name: postgres-data
-          persistentVolumeClaim:
-            claimName: postgres-data
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: $NAMESPACE
-  labels:
-    app.kubernetes.io/name: postgres
-    app.kubernetes.io/part-of: personal-spending-tracker
-spec:
-  selector:
-    app.kubernetes.io/name: postgres
-  ports:
-    - name: postgres
-      port: 5432
-      targetPort: postgres
-EOF
+apply_k8s_manifest "$ROOT_DIR/k8s/20-postgres.yaml"
 
 echo "Applying uploads PVC"
-cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: uploads-data
-  namespace: $NAMESPACE
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: $POSTGRES_STORAGE_CLASS
-  resources:
-    requests:
-      storage: $UPLOADS_STORAGE_SIZE
-EOF
+apply_k8s_manifest "$ROOT_DIR/k8s/60-uploads-pvc.yaml"
 
 echo "Applying batch-import PVC"
-cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: batch-data
-  namespace: $NAMESPACE
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: $POSTGRES_STORAGE_CLASS
-  resources:
-    requests:
-      storage: $BATCH_STORAGE_SIZE
-EOF
+apply_k8s_manifest "$ROOT_DIR/k8s/61-batch-pvc.yaml"
 
 echo "Applying backend resources"
-cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: backend
-  namespace: $NAMESPACE
-  labels:
-    app.kubernetes.io/name: backend
-    app.kubernetes.io/part-of: personal-spending-tracker
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: backend
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: backend
-        app.kubernetes.io/part-of: personal-spending-tracker
-    spec:
-${IMAGE_PULL_SECRETS_BLOCK}
-      initContainers:
-        - name: batch-dir-init
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - mkdir -p /app/batch/data /app/batch/pdf /app/batch/text
-          volumeMounts:
-            - name: batch-data
-              mountPath: /app/batch
-      containers:
-        - name: backend
-          image: $BACKEND_IMAGE
-          imagePullPolicy: $APP_IMAGE_PULL_POLICY
-          ports:
-            - containerPort: 8000
-              name: http
-          env:
-            - name: APP_ENV
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: APP_ENV
-            - name: DB_HOST
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_HOST
-            - name: DB_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_NAME
-            - name: DB_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_PORT
-            - name: DB_USER
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_USER
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: spending-tracker-secrets
-                  key: DATABASE_PASSWORD
-            - name: DATABASE_URL
-              value: postgresql://\$(DB_USER):\$(DB_PASSWORD)@\$(DB_HOST):\$(DB_PORT)/\$(DB_NAME)
-            - name: UPLOAD_DIR
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: UPLOAD_DIR
-            - name: BATCH_DATA_DIR
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: BATCH_DATA_DIR
-            - name: BATCH_PDF_SOURCE_DIR
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: BATCH_PDF_SOURCE_DIR
-            - name: BATCH_TEXT_SOURCE_DIR
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: BATCH_TEXT_SOURCE_DIR
-          volumeMounts:
-            - name: uploads-data
-              mountPath: $UPLOAD_DIR
-            - name: batch-data
-              mountPath: /app/batch
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: http
-            initialDelaySeconds: 15
-            periodSeconds: 20
-      volumes:
-        - name: uploads-data
-          persistentVolumeClaim:
-            claimName: uploads-data
-        - name: batch-data
-          persistentVolumeClaim:
-            claimName: batch-data
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: backend
-  namespace: $NAMESPACE
-  labels:
-    app.kubernetes.io/name: backend
-    app.kubernetes.io/part-of: personal-spending-tracker
-spec:
-  selector:
-    app.kubernetes.io/name: backend
-  ports:
-    - name: http
-      port: 8000
-      targetPort: http
-EOF
+apply_k8s_manifest "$ROOT_DIR/k8s/30-backend.yaml"
 
 echo "Applying frontend resources"
-cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: frontend
-  namespace: $NAMESPACE
-  labels:
-    app.kubernetes.io/name: frontend
-    app.kubernetes.io/part-of: personal-spending-tracker
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: frontend
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: frontend
-        app.kubernetes.io/part-of: personal-spending-tracker
-    spec:
-${IMAGE_PULL_SECRETS_BLOCK}
-      containers:
-        - name: frontend
-          image: $FRONTEND_IMAGE
-          imagePullPolicy: $APP_IMAGE_PULL_POLICY
-          ports:
-            - containerPort: 3000
-              name: http
-          readinessProbe:
-            httpGet:
-              path: /
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /
-              port: http
-            initialDelaySeconds: 15
-            periodSeconds: 20
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: frontend
-  namespace: $NAMESPACE
-  labels:
-    app.kubernetes.io/name: frontend
-    app.kubernetes.io/part-of: personal-spending-tracker
-spec:
-  type: NodePort
-  selector:
-    app.kubernetes.io/name: frontend
-  ports:
-    - name: http
-      port: 3000
-      targetPort: http
-      nodePort: $FRONTEND_NODE_PORT
-EOF
+apply_k8s_manifest "$ROOT_DIR/k8s/40-frontend.yaml"
+
+apply_image_pull_secrets
 
 if [[ "$INGRESS_ENABLED" == "1" ]]; then
-echo "Applying ingress"
-cat <<EOF | "${KUBECTL_CMD[@]}" apply -f -
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: strip-api-prefix
-  namespace: $NAMESPACE
-spec:
-  stripPrefix:
-    prefixes:
-      - /api
-    forceSlash: false
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: spending-tracker
-  namespace: $NAMESPACE
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web
-    traefik.ingress.kubernetes.io/router.middlewares: ${NAMESPACE}-strip-api-prefix@kubernetescrd
-spec:
-  rules:
-    - host: $APP_HOST
-      http:
-        paths:
-          - path: /api
-            pathType: Prefix
-            backend:
-              service:
-                name: backend
-                port:
-                  number: 8000
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: frontend
-                port:
-                  number: 3000
-EOF
+  echo "Applying ingress"
+  apply_k8s_manifest "$ROOT_DIR/k8s/50-ingress.yaml"
 else
   echo "Skipping ingress (NodePort access only)"
   "${KUBECTL_CMD[@]}" -n "$NAMESPACE" delete ingress spending-tracker --ignore-not-found
