@@ -13,7 +13,9 @@ from backend.database import UserRecord, get_user_for_session, record_audit_even
 
 SESSION_COOKIE_NAME = "pst_session"
 PASSWORD_MIN_LENGTH = 8
-_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+USERNAME_MIN_LENGTH = 3
+USERNAME_MAX_LENGTH = 80
+_USERNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._@-]*$")
 
 
 @dataclass(frozen=True)
@@ -23,11 +25,27 @@ class AuditRequestContext:
     user_agent: str | None
 
 
-def validate_email(email: str) -> str:
-    normalized = email.strip().lower()
-    if not _EMAIL_PATTERN.match(normalized):
-        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+def validate_username(username: str) -> str:
+    normalized = username.strip().lower()
+    if len(normalized) < USERNAME_MIN_LENGTH or len(normalized) > USERNAME_MAX_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Username must be {USERNAME_MIN_LENGTH}-"
+                f"{USERNAME_MAX_LENGTH} characters."
+            ),
+        )
+    if not _USERNAME_PATTERN.match(normalized):
+        raise HTTPException(
+            status_code=400,
+            detail="Username may only use letters, numbers, and . _ - @",
+        )
     return normalized
+
+
+def validate_email(email: str) -> str:
+    """Backward-compatible alias for login identifier validation."""
+    return validate_username(email)
 
 
 def validate_password(password: str) -> str:
@@ -41,11 +59,16 @@ def validate_password(password: str) -> str:
     return password
 
 
-def display_name_from_email(email: str) -> str:
-    local_part = email.split("@", 1)[0].strip()
+def display_name_from_username(username: str) -> str:
+    local_part = username.split("@", 1)[0].strip()
     sanitized = local_part.replace(".", " ").replace("_", " ").replace("-", " ")
     candidate = " ".join(part for part in sanitized.split() if part)
-    return candidate[:80] if candidate else email[:80]
+    return candidate[:80] if candidate else username[:80]
+
+
+def display_name_from_email(email: str) -> str:
+    """Backward-compatible alias."""
+    return display_name_from_username(email)
 
 
 def _urlsafe_b64encode(data: bytes) -> str:

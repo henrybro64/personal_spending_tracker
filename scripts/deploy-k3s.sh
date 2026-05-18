@@ -207,12 +207,21 @@ build_and_import_local_images() {
   import_image_to_k3s "$BACKEND_IMAGE"
   import_image_to_k3s "$FRONTEND_IMAGE"
 
-  if command -v crictl >/dev/null 2>&1; then
-    echo "Imported images:"
-    crictl images | grep personal-spending-tracker || true
-  elif [[ -x /usr/local/bin/crictl ]] || sudo -n crictl version >/dev/null 2>&1; then
-    echo "Imported images:"
-    sudo crictl images | grep personal-spending-tracker || true
+  list_imported_images
+}
+
+list_imported_images() {
+  # Use k3s-bundled crictl; standalone crictl often lacks CRI_CONFIG_FILE and prints:
+  # FATA load config file: stat .../crictl.yaml: no such file or directory
+  if command -v k3s >/dev/null 2>&1; then
+    local crictl_cmd=(k3s crictl)
+    if [[ "$(id -u)" -ne 0 ]]; then
+      crictl_cmd=(sudo k3s crictl)
+    fi
+    if "${crictl_cmd[@]}" images >/dev/null 2>&1; then
+      echo "Imported images:"
+      "${crictl_cmd[@]}" images | grep personal-spending-tracker || true
+    fi
   fi
 }
 

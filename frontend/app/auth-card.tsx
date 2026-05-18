@@ -87,7 +87,7 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
   } = useAuth();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [displayName, setDisplayName] = useState("");
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -99,11 +99,11 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
       if (mode === "register") {
         await register({
           display_name: displayName || null,
-          email,
+          email: username,
           password,
         });
       } else {
-        await login({ email, password });
+        await login({ email: username, password });
       }
       setPassword("");
     } catch (authError) {
@@ -147,8 +147,8 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
           <Input
             type="text"
             autoComplete="username"
-            value={email}
-            onChange={(_, data) => setEmail(data.value)}
+            value={username}
+            onChange={(_, data) => setUsername(data.value)}
           />
         </Field>
         <Field label="Password">
@@ -180,7 +180,7 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
       <Body1 className={styles.quietText}>
         {mode === "register"
           ? "The first account created here automatically claims any legacy single-user data."
-          : "Sign in to view only your own uploads, transactions, summaries, and batch-review data."}
+          : "Sign in with your username and password to view only your own data."}
       </Body1>
     </Card>
   );

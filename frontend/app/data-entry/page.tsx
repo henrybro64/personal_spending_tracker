@@ -344,7 +344,7 @@ export default function DataEntryPage() {
       <AuthPage>
         <AuthPanel
           title="Sign in required"
-          body="Use an email and password to upload statements and add manual transactions."
+          body="Use a username and password to upload statements and add manual transactions."
         />
       </AuthPage>
     );

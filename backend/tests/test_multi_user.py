@@ -60,6 +60,19 @@ def _upload_request() -> Request:
     return request
 
 
+def test_register_accepts_plain_username(client: TestClient) -> None:
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "henrybro",
+            "password": "password123",
+            "display_name": "Henry",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["user"]["email"] == "henrybro"
+
+
 def test_users_only_see_their_own_manual_transactions(client: TestClient) -> None:
     _register(client, email="alice@example.com", display_name="Alice")
     alice_manual = client.post(

@@ -493,7 +493,7 @@ export default function TransactionsPage() {
       <AuthPage>
         <AuthPanel
           title="Sign in required"
-          body="Use an email and password to view only your own transaction history."
+          body="Use a username and password to view only your own transaction history."
         />
       </AuthPage>
     );
