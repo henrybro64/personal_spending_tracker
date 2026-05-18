@@ -33,7 +33,7 @@ from pydantic import BaseModel  # noqa: E402
 from backend.auth import (  # noqa: E402
     attach_session_cookie,
     clear_session_cookie,
-    display_name_from_email,
+    display_name_from_username,
     generate_session_token,
     get_audit_request_context,
     get_optional_current_user,
@@ -41,7 +41,7 @@ from backend.auth import (  # noqa: E402
     hash_session_token,
     require_current_user,
     session_expiry,
-    validate_email,
+    validate_username,
     validate_password,
     verify_password,
 )
@@ -403,33 +403,33 @@ async def register(
     request: Request,
     response: Response,
 ) -> SessionResponse:
-    normalized_email = validate_email(payload.email)
+    normalized_username = validate_username(payload.email)
     validate_password(payload.password)
     display_name = (
         payload.display_name.strip()
         if payload.display_name and payload.display_name.strip()
-        else display_name_from_email(normalized_email)
+        else display_name_from_username(normalized_username)
     )
     audit_context = get_audit_request_context(request)
 
-    if get_user_auth_by_email(normalized_email):
+    if get_user_auth_by_email(normalized_username):
         record_audit_event(
             action="user_register",
             status="rejected",
             target_type="user",
-            target_id=normalized_email,
+            target_id=normalized_username,
             request_id=audit_context.request_id,
             ip_address=audit_context.ip_address,
             user_agent=audit_context.user_agent,
-            metadata={"reason": "duplicate_email"},
+            metadata={"reason": "duplicate_username"},
         )
         raise HTTPException(
             status_code=409,
-            detail="An account already exists for that email address.",
+            detail="An account already exists for that username.",
         )
 
     created_user = create_user(
-        email=normalized_email,
+        email=normalized_username,
         password_hash=hash_password(payload.password),
         display_name=display_name,
     )
@@ -480,23 +480,23 @@ async def login(
     request: Request,
     response: Response,
 ) -> SessionResponse:
-    normalized_email = validate_email(payload.email)
+    normalized_username = validate_username(payload.email)
     validate_password(payload.password)
     audit_context = get_audit_request_context(request)
-    user = get_user_auth_by_email(normalized_email)
+    user = get_user_auth_by_email(normalized_username)
 
     if not user or not verify_password(payload.password, user["password_hash"]):
         record_audit_event(
             action="user_sign_in",
             status="rejected",
             target_type="user",
-            target_id=normalized_email,
+            target_id=normalized_username,
             request_id=audit_context.request_id,
             ip_address=audit_context.ip_address,
             user_agent=audit_context.user_agent,
             metadata={"reason": "invalid_credentials"},
         )
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
 
     session_token = generate_session_token()
     create_session(user["id"], hash_session_token(session_token), session_expiry())

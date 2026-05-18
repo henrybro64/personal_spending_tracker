@@ -483,7 +483,7 @@ export default function BatchReviewPage() {
       <AuthPage>
         <AuthPanel
           title="Sign in required"
-          body="Use an email and password to review only your own staged batch-import data."
+          body="Use a username and password to review only your own staged batch-import data."
         />
       </AuthPage>
     );

@@ -1446,7 +1446,7 @@ export default function HomePage() {
       <AuthPage>
         <AuthPanel
           title="Sign in required"
-          body="Use an email and password to view only your own uploads, summaries, and dashboard data."
+          body="Use a username and password to view only your own uploads, summaries, and dashboard data."
         />
       </AuthPage>
     );
