@@ -1,5 +1,6 @@
 import importlib
 import os
+import functools
 import shutil
 import socket
 import subprocess
@@ -40,12 +41,44 @@ def _run_command(command: list[str]) -> None:
     )
 
 
+@functools.lru_cache(maxsize=1)
+def _pg_bindir() -> str | None:
+    pg_config = shutil.which("pg_config")
+    if not pg_config:
+        return None
+
+    completed = subprocess.run(
+        [pg_config, "--bindir"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+
+    bindir = completed.stdout.strip()
+    return bindir or None
+
+
+def _find_postgres_command(command_name: str) -> str | None:
+    discovered = shutil.which(command_name)
+    if discovered:
+        return discovered
+
+    bindir = _pg_bindir()
+    if not bindir:
+        return None
+
+    candidate = Path(bindir) / command_name
+    return str(candidate) if candidate.exists() else None
+
+
 @pytest.fixture(scope="session")
 def database_url(tmp_path_factory: pytest.TempPathFactory) -> str:
-    initdb = shutil.which("initdb")
-    pg_ctl = shutil.which("pg_ctl")
-    createdb = shutil.which("createdb")
-    dropdb = shutil.which("dropdb")
+    initdb = _find_postgres_command("initdb")
+    pg_ctl = _find_postgres_command("pg_ctl")
+    createdb = _find_postgres_command("createdb")
+    dropdb = _find_postgres_command("dropdb")
 
     if not initdb or not pg_ctl or not createdb or not dropdb:
         raise RuntimeError("PostgreSQL CLI tools are required for backend tests.")
@@ -98,7 +131,7 @@ def database_url(tmp_path_factory: pytest.TempPathFactory) -> str:
         )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def reset_database(database_url: str) -> None:
     import backend.database as database
 
@@ -124,6 +157,7 @@ def reset_database(database_url: str) -> None:
 def api_main(
     monkeypatch: pytest.MonkeyPatch,
     database_url: str,
+    reset_database,
     tmp_path: Path,
 ):
     pdfplumber_module = types.ModuleType("pdfplumber")
