@@ -81,6 +81,28 @@ kubectl -n spending-tracker logs deployment/backend
 
 **Image pull errors on local k3s:** use `LOCAL_DEPLOY=1` so images are built and imported on the node.
 
+## Data persistence on redeploy
+
+**Normal redeploy keeps your data.** `scripts/deploy-k3s.sh` only runs `kubectl apply`. It does not delete the namespace, PVCs, or Postgres data.
+
+| Action | Database & uploads |
+|--------|-------------------|
+| `bash scripts/deploy-k3s.sh` again (same node) | **Kept** — PVCs `postgres-data`, `uploads-data`, `batch-data` stay on disk |
+| Node reboot (k3s enabled) | **Kept** — pods restart, PVCs unchanged |
+| Change `DB_PASSWORD` in secret only | **Kept** — data remains; align Postgres password or backend cannot connect |
+| `kubectl delete namespace spending-tracker` | **Wiped** — namespace deletion removes PVCs and all data |
+| `kubectl delete pvc postgres-data` (etc.) | **Wiped** — that volume’s data is gone |
+
+Backend startup runs `CREATE TABLE IF NOT EXISTS` only; it does not drop or truncate tables.
+
+**Safe redeploy:**
+
+```bash
+LOCAL_DEPLOY=1 KUBECTL='sudo k3s kubectl' bash scripts/deploy-k3s.sh
+```
+
+Use the **same** `DB_PASSWORD` as when the Postgres PVC was first created (default: `spending-tracker-dev`).
+
 ## Delete
 
 ```bash

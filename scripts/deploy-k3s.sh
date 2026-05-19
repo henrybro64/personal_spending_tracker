@@ -319,6 +319,8 @@ echo "Waiting for rollouts"
 
 echo
 echo "Deployment complete."
+echo "Data: Postgres/uploads/batch PVCs are preserved across redeploys (kubectl apply only)."
+echo "      Do not delete namespace or PVCs unless you intend to wipe data."
 echo "Namespace: $NAMESPACE"
 if [[ "$INGRESS_ENABLED" == "1" ]]; then
   echo "Ingress: http://$APP_HOST"
