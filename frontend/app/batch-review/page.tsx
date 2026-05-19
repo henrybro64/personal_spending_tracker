@@ -374,31 +374,32 @@ export default function BatchReviewPage() {
     setError("");
     setMessage("");
     try {
-      const response = await apiFetch("/batch-imports/run", {
-        method: "POST",
-      });
-      const payload = (await response.json()) as
-        | { run: BatchImportRun }
-        | { detail?: string };
-      if (!response.ok) {
-        if (response.status === 401) {
-          await refreshSession();
-          return;
-        }
-        throw new Error(
-          "detail" in payload && typeof payload.detail === "string"
-            ? payload.detail
-            : "Batch import failed."
-        );
-      }
+      const payload = await apiFetchJson<{
+        run: BatchImportRun & {
+          skipped_files?: Array<{ statement_file: string; reason: string }>;
+        };
+      }>("/batch-imports/run", "Batch import failed.", { method: "POST" });
 
-      const runPayload = (payload as { run: BatchImportRun }).run;
+      const runPayload = payload.run;
       setRun(runPayload);
-      setMessage(
-        `Imported ${runPayload.transaction_count} transactions from ${runPayload.statement_count} statements.`
-      );
+      const skipped = runPayload.skipped_files ?? [];
+      const passwordSkipped = skipped.filter(
+        (item) => item.reason === "password_required"
+      ).length;
+      let summary = `Imported ${runPayload.transaction_count} transactions from ${runPayload.statement_count} statements.`;
+      if (skipped.length > 0) {
+        summary += ` Skipped ${skipped.length} file(s).`;
+      }
+      if (passwordSkipped > 0) {
+        summary += ` ${passwordSkipped} need a PDF password — decrypt with scripts/decrypt-pdfs.sh first.`;
+      }
+      setMessage(summary);
       await loadBatchState(needsReviewOnly);
     } catch (runError) {
+      if (runError instanceof ApiError && runError.status === 401) {
+        await refreshSession();
+        return;
+      }
       setError(runError instanceof Error ? runError.message : "Batch import failed.");
     } finally {
       setRunning(false);

@@ -195,6 +195,39 @@ class StatementImporterTests(unittest.TestCase):
             csv_lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(11, len(csv_lines))
 
+    def test_importer_skips_password_protected_pdfs(self) -> None:
+        from backend.pdf_utils import PdfPasswordProtectedError
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            pdf_dir = temp_dir / "pdf"
+            output_dir = temp_dir / "output"
+            pdf_dir.mkdir()
+            output_dir.mkdir()
+            (pdf_dir / "locked.pdf").write_bytes(b"%PDF-1.4\n")
+            (pdf_dir / "plain.pdf").write_text("plain statement text", encoding="utf-8")
+
+            store = BatchImportStore(output_dir / "batch.sqlite3")
+
+            def fake_extractor(path: str | Path) -> str:
+                if Path(path).name == "locked.pdf":
+                    raise PdfPasswordProtectedError(had_password=False)
+                return Path(path).read_text(encoding="utf-8")
+
+            importer = StatementImporter(
+                pdf_source_dir=pdf_dir,
+                text_source_dir=pdf_dir / "missing-text",
+                csv_output_path=output_dir / "batch.csv",
+                store=store,
+                pdf_text_extractor=fake_extractor,
+            )
+            result = importer.import_transactions()
+
+            self.assertEqual(0, result.statement_count)
+            self.assertEqual(1, len(result.skipped_files))
+            self.assertEqual("locked.pdf", result.skipped_files[0]["statement_file"])
+            self.assertEqual("password_required", result.skipped_files[0]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

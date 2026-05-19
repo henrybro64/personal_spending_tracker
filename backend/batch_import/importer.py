@@ -57,33 +57,41 @@ class StatementImporter:
         skipped_files: list[dict[str, str]] = []
 
         for source_path in self._iter_source_files():
-            statement_text = self._load_statement_text(source_path)
-            parser = resolve_parser(source_path.name, statement_text)
-            if parser is None:
+            try:
+                statement_text = self._load_statement_text(source_path)
+                parser = resolve_parser(source_path.name, statement_text)
+                if parser is None:
+                    skipped_files.append(
+                        {
+                            "statement_file": source_path.name,
+                            "reason": "unsupported_format",
+                        }
+                    )
+                    continue
+
+                parsed_transactions = parser.parse(
+                    source_path=source_path,
+                    statement_text=statement_text,
+                    category_engine=category_engine,
+                )
+                if not parsed_transactions:
+                    skipped_files.append(
+                        {
+                            "statement_file": source_path.name,
+                            "reason": "no_transactions_found",
+                        }
+                    )
+                    continue
+
+                transactions.extend(parsed_transactions)
+                parsed_files.append(source_path.name)
+            except _PDF_READ_ERRORS as exc:
                 skipped_files.append(
                     {
                         "statement_file": source_path.name,
-                        "reason": "unsupported_format",
+                        "reason": _pdf_skip_reason(exc),
                     }
                 )
-                continue
-
-            parsed_transactions = parser.parse(
-                source_path=source_path,
-                statement_text=statement_text,
-                category_engine=category_engine,
-            )
-            if not parsed_transactions:
-                skipped_files.append(
-                    {
-                        "statement_file": source_path.name,
-                        "reason": "no_transactions_found",
-                    }
-                )
-                continue
-
-            transactions.extend(parsed_transactions)
-            parsed_files.append(source_path.name)
 
         run_id, imported_at, needs_review_count = self.store.record_import_run(
             transactions,
@@ -124,3 +132,22 @@ class StatementImporter:
         from backend.pdf_utils import extract_pdf_text
 
         return extract_pdf_text(source_path)
+
+
+def _pdf_skip_reason(exc: BaseException) -> str:
+    from backend.pdf_utils import PdfDecryptError, PdfPasswordProtectedError
+
+    if isinstance(exc, PdfPasswordProtectedError):
+        return "password_required"
+    if isinstance(exc, PdfDecryptError):
+        return "decrypt_error"
+    return "read_error"
+
+
+def _pdf_read_errors() -> tuple[type[BaseException], ...]:
+    from backend.pdf_utils import PdfDecryptError, PdfPasswordProtectedError
+
+    return (PdfPasswordProtectedError, PdfDecryptError, OSError, UnicodeDecodeError)
+
+
+_PDF_READ_ERRORS = _pdf_read_errors()
