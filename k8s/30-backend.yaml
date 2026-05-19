@@ -17,6 +17,7 @@ spec:
         app.kubernetes.io/name: backend
         app.kubernetes.io/part-of: personal-spending-tracker
     spec:
+      restartPolicy: Always
       initContainers:
         - name: batch-dir-init
           image: busybox:1.36

@@ -34,6 +34,7 @@ FRONTEND_IMAGE="${FRONTEND_IMAGE:-}"
 IMAGE_PULL_SECRET="${IMAGE_PULL_SECRET:-}"
 FRONTEND_NODE_PORT="${FRONTEND_NODE_PORT:-30081}"
 INGRESS_ENABLED="${INGRESS_ENABLED:-0}"
+ENABLE_K3S_ON_BOOT="${ENABLE_K3S_ON_BOOT:-1}"
 DEFAULT_DB_PASSWORD="${DEFAULT_DB_PASSWORD:-spending-tracker-dev}"
 KUBECTL_CMD=()
 CTR_CMD=()
@@ -68,6 +69,7 @@ Optional environment variables:
   IMAGE_PULL_SECRET=
   FRONTEND_NODE_PORT=30081
   INGRESS_ENABLED=0   Set to 1 to also create Traefik ingress on port 80
+  ENABLE_K3S_ON_BOOT=1   Run systemctl enable k3s so the cluster starts on reboot
   BUILD_IMAGES=0   Set to 1 to build and push BACKEND_IMAGE/FRONTEND_IMAGE first
   LOCAL_DEPLOY=0   Set to 1 for single-node k3s: build, import into k3s, deploy
   LOCAL_BACKEND_IMAGE=personal-spending-tracker-backend:latest
@@ -140,6 +142,44 @@ apply_k8s_manifest() {
     exit 1
   fi
   envsubst "$K8S_ENVSUBST_VARS" <"$manifest_path" | "${KUBECTL_CMD[@]}" apply -f -
+}
+
+systemctl_cmd() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    systemctl "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo systemctl "$@"
+  else
+    systemctl "$@"
+  fi
+}
+
+ensure_k3s_starts_on_boot() {
+  if [[ "$ENABLE_K3S_ON_BOOT" != "1" ]]; then
+    return
+  fi
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "Note: systemctl not found; ensure k3s is configured to start on boot."
+    return
+  fi
+
+  if ! systemctl_cmd list-unit-files k3s.service >/dev/null 2>&1; then
+    echo "Note: k3s.service not found; skip boot enable (is k3s installed?)"
+    return
+  fi
+
+  if systemctl_cmd is-enabled --quiet k3s 2>/dev/null; then
+    echo "k3s is enabled to start on boot."
+    return
+  fi
+
+  echo "Enabling k3s to start on boot..."
+  if systemctl_cmd enable k3s >/dev/null 2>&1; then
+    echo "k3s will start automatically when the node reboots."
+  else
+    echo "Warning: could not enable k3s on boot. Run: sudo systemctl enable k3s" >&2
+  fi
 }
 
 apply_image_pull_secrets() {
@@ -227,6 +267,7 @@ list_imported_images() {
 
 init_kubectl_cmd
 require_cmd envsubst
+ensure_k3s_starts_on_boot
 
 _using_default_db_password=0
 if [[ -z "${DB_PASSWORD:-}" ]]; then
@@ -321,6 +362,7 @@ echo
 echo "Deployment complete."
 echo "Data: Postgres/uploads/batch PVCs are preserved across redeploys (kubectl apply only)."
 echo "      Do not delete namespace or PVCs unless you intend to wipe data."
+echo "Boot: With k3s enabled on boot, postgres/backend/frontend pods restart automatically after a node reboot."
 echo "Namespace: $NAMESPACE"
 if [[ "$INGRESS_ENABLED" == "1" ]]; then
   echo "Ingress: http://$APP_HOST"

@@ -42,6 +42,36 @@ sudo k3s kubectl get nodes -o wide
 
 Optional: copy `/etc/rancher/k3s/k3s.yaml` to `~/.kube/config` for plain `kubectl`.
 
+## Start automatically after node reboot
+
+Two things must be true:
+
+1. **k3s starts when the machine boots** — `scripts/deploy-k3s.sh` runs `systemctl enable k3s` by default (`ENABLE_K3S_ON_BOOT=1`). Verify:
+
+   ```bash
+   systemctl is-enabled k3s   # should print "enabled"
+   ```
+
+   If not:
+
+   ```bash
+   sudo systemctl enable k3s
+   sudo systemctl start k3s
+   ```
+
+2. **The app was deployed at least once** — Kubernetes keeps Deployments running. After reboot, pods in `spending-tracker` come back on their own (same Postgres/upload data on PVCs).
+
+You do **not** need to run the deploy script after every reboot. Redeploy only when you change images or config.
+
+Test after a reboot:
+
+```bash
+sudo reboot
+# after the node is back:
+sudo k3s kubectl -n spending-tracker get pods
+curl http://<node-ip>:30081/api/health
+```
+
 ## Manifest layout
 
 | File | Purpose |
