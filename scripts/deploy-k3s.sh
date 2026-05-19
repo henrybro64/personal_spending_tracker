@@ -234,11 +234,17 @@ build_and_import_local_images() {
   FRONTEND_IMAGE="$LOCAL_FRONTEND_IMAGE"
   APP_IMAGE_PULL_POLICY="Never"
 
+  local docker_build_args=()
+  if [[ "${BUILD_NO_CACHE:-0}" == "1" ]]; then
+    docker_build_args+=(--no-cache)
+  fi
+
   echo "Building backend image: $BACKEND_IMAGE"
-  docker build -f "$ROOT_DIR/backend/Dockerfile" -t "$BACKEND_IMAGE" "$ROOT_DIR"
+  docker build "${docker_build_args[@]}" -f "$ROOT_DIR/backend/Dockerfile" -t "$BACKEND_IMAGE" "$ROOT_DIR"
 
   echo "Building frontend image: $FRONTEND_IMAGE"
   docker build \
+    "${docker_build_args[@]}" \
     -f "$ROOT_DIR/frontend/Dockerfile" \
     --build-arg API_PROXY_TARGET=http://backend:8000 \
     -t "$FRONTEND_IMAGE" \

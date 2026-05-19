@@ -834,6 +834,10 @@ async def run_batch_import(
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportRunExecutionResponse:
     request_payload = payload or BatchImportRequest()
+    logger.info(
+        "batch-imports/run started user_id=%s",
+        current_user["id"],
+    )
     store = _get_batch_import_store(
         current_user["id"],
         request_payload.sqlite_output_path,
@@ -859,6 +863,13 @@ async def run_batch_import(
             detail=f"Batch import failed: {exc}",
         ) from exc
 
+    logger.info(
+        "batch-imports/run finished user_id=%s statements=%s transactions=%s skipped=%s",
+        current_user["id"],
+        result.statement_count,
+        result.transaction_count,
+        len(result.skipped_files),
+    )
     return {"run": result.to_payload()}
 
 
