@@ -65,6 +65,44 @@ type BatchImportLatestResponse = {
   run: BatchImportRun | null;
 };
 
+type SkippedFile = {
+  statement_file: string;
+  reason: string;
+  detail?: string;
+};
+
+type BatchImportRunPayload = BatchImportRun & {
+  run_id?: number;
+  skipped_files?: SkippedFile[];
+};
+
+const SKIP_REASON_LABELS: Record<string, string> = {
+  password_required: "Password required",
+  decrypt_error: "Could not decrypt PDF",
+  pdf_read_error: "PDF read error",
+  read_error: "File read error",
+  processing_error: "Processing error",
+  unsupported_format: "Unsupported format",
+  no_transactions_found: "No transactions found",
+};
+
+function normalizeBatchRun(run: BatchImportRunPayload): BatchImportRun {
+  return {
+    ...run,
+    id: run.id ?? run.run_id ?? 0,
+  };
+}
+
+function groupSkippedFiles(skipped: SkippedFile[]) {
+  const groups = new Map<string, SkippedFile[]>();
+  for (const item of skipped) {
+    const bucket = groups.get(item.reason) ?? [];
+    bucket.push(item);
+    groups.set(item.reason, bucket);
+  }
+  return [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+}
+
 type BatchTransactionsResponse = {
   transactions: BatchTransaction[];
 };
@@ -260,6 +298,7 @@ export default function BatchReviewPage() {
   const [savingId, setSavingId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [skippedFiles, setSkippedFiles] = useState<SkippedFile[]>([]);
 
   async function loadBatchState(reviewOnly: boolean) {
     setLoading(true);
@@ -373,22 +412,25 @@ export default function BatchReviewPage() {
     setRunning(true);
     setError("");
     setMessage("");
+    setSkippedFiles([]);
     try {
-      const payload = await apiFetchJson<{
-        run: BatchImportRun & {
-          skipped_files?: Array<{ statement_file: string; reason: string }>;
-        };
-      }>("/batch-imports/run", "Batch import failed.", { method: "POST" });
+      const payload = await apiFetchJson<{ run: BatchImportRunPayload }>(
+        "/batch-imports/run",
+        "Batch import failed.",
+        { method: "POST" }
+      );
 
-      const runPayload = payload.run;
+      const runPayload = normalizeBatchRun(payload.run);
+      const skipped = payload.run.skipped_files ?? [];
       setRun(runPayload);
-      const skipped = runPayload.skipped_files ?? [];
+      setSkippedFiles(skipped);
+
       const passwordSkipped = skipped.filter(
         (item) => item.reason === "password_required"
       ).length;
       let summary = `Imported ${runPayload.transaction_count} transactions from ${runPayload.statement_count} statements.`;
       if (skipped.length > 0) {
-        summary += ` Skipped ${skipped.length} file(s).`;
+        summary += ` Skipped ${skipped.length} file(s) — see details below.`;
       }
       if (passwordSkipped > 0) {
         summary += ` ${passwordSkipped} need a PDF password — decrypt with scripts/decrypt-pdfs.sh first.`;
@@ -400,7 +442,12 @@ export default function BatchReviewPage() {
         await refreshSession();
         return;
       }
-      setError(runError instanceof Error ? runError.message : "Batch import failed.");
+      setSkippedFiles([]);
+      const detail =
+        runError instanceof Error ? runError.message : "Batch import failed.";
+      setError(
+        `${detail} Check backend logs on the cluster for the full traceback.`
+      );
     } finally {
       setRunning(false);
     }
@@ -606,6 +653,37 @@ export default function BatchReviewPage() {
             <MessageBar intent="success">
               <MessageBarBody>{message}</MessageBarBody>
             </MessageBar>
+          ) : null}
+
+          {skippedFiles.length > 0 ? (
+            <Card className={mergeClasses(styles.card, styles.sidebarPanel)}>
+              <Title2>Skipped statements ({skippedFiles.length})</Title2>
+              <Body1 className={styles.quietText}>
+                These files were not imported. Fix the issue and run batch import
+                again.
+              </Body1>
+              {groupSkippedFiles(skippedFiles).map(([reason, files]) => (
+                <div key={reason} className={styles.metaItem}>
+                  <div className={styles.metaLabel}>
+                    {SKIP_REASON_LABELS[reason] ?? reason} ({files.length})
+                  </div>
+                  <Body1>
+                    {files
+                      .slice(0, 8)
+                      .map((file) => file.statement_file)
+                      .join(", ")}
+                    {files.length > 8
+                      ? `, and ${files.length - 8} more`
+                      : ""}
+                  </Body1>
+                  {files[0]?.detail ? (
+                    <Body1 className={styles.quietText}>
+                      Example: {files[0].detail}
+                    </Body1>
+                  ) : null}
+                </div>
+              ))}
+            </Card>
           ) : null}
 
           <Card className={mergeClasses(styles.card, styles.sidebarPanel)}>
