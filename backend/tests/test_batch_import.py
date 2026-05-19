@@ -10,6 +10,11 @@ from backend.batch_import import (
     StatementImporter,
     resolve_parser,
 )
+from backend.batch_import.parsers import ChaseStatementParser, CtbcDailyStatementParser
+from backend.batch_import.upload_fallback import (
+    upload_fallback_supported,
+    transactions_from_upload_parser,
+)
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "batch_import"
@@ -289,6 +294,134 @@ class StatementImporterTests(unittest.TestCase):
             self.assertEqual(0, result.statement_count)
             self.assertEqual(1, len(result.skipped_files))
             self.assertEqual("processing_error", result.skipped_files[0]["reason"])
+
+    def test_importer_falls_back_to_upload_parser_when_batch_lines_empty(self) -> None:
+        from unittest.mock import patch
+
+        ctbc_text = (FIXTURE_DIR.parent / "ctbc_sample.txt").read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            pdf_dir, text_dir, output_dir = self._batch_sandbox(temp_dir)
+            (pdf_dir / "CBGCC-DAILYSTMT_20240215.pdf").write_text(
+                ctbc_text,
+                encoding="utf-8",
+            )
+
+            store = BatchImportStore(output_dir / "batch.sqlite3")
+            env_overrides = {
+                "BATCH_DATA_DIR": str(output_dir),
+                "BATCH_PDF_SOURCE_DIR": str(pdf_dir),
+                "BATCH_TEXT_SOURCE_DIR": str(text_dir),
+            }
+            previous_values = self._apply_batch_env(env_overrides)
+            try:
+                importer = StatementImporter(
+                    pdf_source_dir=pdf_dir,
+                    text_source_dir=text_dir,
+                    csv_output_path=output_dir / "batch.csv",
+                    store=store,
+                    pdf_text_extractor=lambda path: Path(path).read_text(
+                        encoding="utf-8"
+                    ),
+                )
+                with patch.object(CtbcDailyStatementParser, "parse", return_value=[]):
+                    result = importer.import_transactions()
+            finally:
+                self._restore_batch_env(previous_values)
+
+            self.assertEqual(1, result.statement_count)
+            self.assertEqual(2, result.transaction_count)
+            self.assertEqual(
+                "CBGCC-DAILYSTMT_20240215.pdf", result.parsed_files[0]
+            )
+            merchants = {
+                row["merchant_raw"] for row in store.list_transactions(limit=10)
+            }
+            self.assertIn("FOODPANDA", merchants)
+
+    def test_upload_fallback_supported_only_for_taiwan_pdf_parsers(self) -> None:
+        self.assertTrue(upload_fallback_supported("ctbc_daily"))
+        self.assertTrue(upload_fallback_supported("ctbc_card"))
+        self.assertTrue(upload_fallback_supported("dbs"))
+        self.assertFalse(upload_fallback_supported("chase"))
+        self.assertFalse(upload_fallback_supported("amex"))
+
+    def test_importer_does_not_fallback_for_chase_when_batch_lines_empty(self) -> None:
+        from unittest.mock import patch
+
+        chase_text = (FIXTURE_DIR / "chase_statement.txt").read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            pdf_dir, text_dir, output_dir = self._batch_sandbox(temp_dir)
+            (pdf_dir / "20240123-statements-6814-.pdf").write_text(
+                chase_text,
+                encoding="utf-8",
+            )
+
+            store = BatchImportStore(output_dir / "batch.sqlite3")
+            env_overrides = {
+                "BATCH_DATA_DIR": str(output_dir),
+                "BATCH_PDF_SOURCE_DIR": str(pdf_dir),
+                "BATCH_TEXT_SOURCE_DIR": str(text_dir),
+            }
+            previous_values = self._apply_batch_env(env_overrides)
+            try:
+                importer = StatementImporter(
+                    pdf_source_dir=pdf_dir,
+                    text_source_dir=text_dir,
+                    csv_output_path=output_dir / "batch.csv",
+                    store=store,
+                    pdf_text_extractor=lambda path: Path(path).read_text(
+                        encoding="utf-8"
+                    ),
+                )
+                with patch.object(ChaseStatementParser, "parse", return_value=[]):
+                    result = importer.import_transactions()
+            finally:
+                self._restore_batch_env(previous_values)
+
+            self.assertEqual(0, result.statement_count)
+            self.assertEqual(1, len(result.skipped_files))
+            self.assertEqual("no_transactions_found", result.skipped_files[0]["reason"])
+
+    def test_upload_fallback_skips_rows_without_iso_dates(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            path = temp_dir / "CBGCC-DAILYSTMT_test.pdf"
+            path.write_text("placeholder", encoding="utf-8")
+
+            with patch(
+                "backend.batch_import.upload_fallback.parse_transactions",
+                return_value=[
+                    {
+                        "date": "01/15",
+                        "merchant": "BAD DATE",
+                        "amount": 10.0,
+                        "category": "Other",
+                        "currency": "TWD",
+                    },
+                    {
+                        "date": "2022-01-03",
+                        "merchant": "GOOD",
+                        "amount": 20.0,
+                        "category": "Other",
+                        "currency": "TWD",
+                    },
+                ],
+            ):
+                rows = transactions_from_upload_parser(
+                    path,
+                    "text",
+                    CategoryEngine(),
+                    bank="CTBC",
+                )
+
+            self.assertEqual(1, len(rows))
+            self.assertEqual("GOOD", rows[0].merchant_raw)
 
 
 if __name__ == "__main__":
