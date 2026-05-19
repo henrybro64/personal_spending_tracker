@@ -228,6 +228,45 @@ class StatementImporterTests(unittest.TestCase):
             self.assertEqual("locked.pdf", result.skipped_files[0]["statement_file"])
             self.assertEqual("password_required", result.skipped_files[0]["reason"])
 
+    def test_importer_skips_parser_processing_errors(self) -> None:
+        from unittest.mock import patch
+
+        class BrokenParser:
+            name = "broken"
+
+            def parse(self, source_path, statement_text, category_engine):
+                raise ValueError("Unsupported US date format: 99/99")
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            pdf_dir = temp_dir / "pdf"
+            output_dir = temp_dir / "output"
+            pdf_dir.mkdir()
+            output_dir.mkdir()
+            (pdf_dir / "20240123-statements-6814-.pdf").write_text(
+                "synthetic",
+                encoding="utf-8",
+            )
+
+            store = BatchImportStore(output_dir / "batch.sqlite3")
+            importer = StatementImporter(
+                pdf_source_dir=pdf_dir,
+                text_source_dir=pdf_dir / "missing-text",
+                csv_output_path=output_dir / "batch.csv",
+                store=store,
+                pdf_text_extractor=lambda path: "synthetic",
+            )
+
+            with patch(
+                "backend.batch_import.importer.resolve_parser",
+                return_value=BrokenParser(),
+            ):
+                result = importer.import_transactions()
+
+            self.assertEqual(0, result.statement_count)
+            self.assertEqual(1, len(result.skipped_files))
+            self.assertEqual("processing_error", result.skipped_files[0]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

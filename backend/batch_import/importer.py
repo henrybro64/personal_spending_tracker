@@ -92,6 +92,14 @@ class StatementImporter:
                         "reason": _pdf_skip_reason(exc),
                     }
                 )
+            except Exception as exc:
+                skipped_files.append(
+                    {
+                        "statement_file": source_path.name,
+                        "reason": "processing_error",
+                        "detail": str(exc)[:200],
+                    }
+                )
 
         run_id, imported_at, needs_review_count = self.store.record_import_run(
             transactions,
@@ -136,18 +144,28 @@ class StatementImporter:
 
 def _pdf_skip_reason(exc: BaseException) -> str:
     from backend.pdf_utils import PdfDecryptError, PdfPasswordProtectedError
+    from pdfplumber.utils.exceptions import PdfminerException
 
     if isinstance(exc, PdfPasswordProtectedError):
         return "password_required"
     if isinstance(exc, PdfDecryptError):
         return "decrypt_error"
+    if isinstance(exc, PdfminerException):
+        return "pdf_read_error"
     return "read_error"
 
 
 def _pdf_read_errors() -> tuple[type[BaseException], ...]:
     from backend.pdf_utils import PdfDecryptError, PdfPasswordProtectedError
+    from pdfplumber.utils.exceptions import PdfminerException
 
-    return (PdfPasswordProtectedError, PdfDecryptError, OSError, UnicodeDecodeError)
+    return (
+        PdfPasswordProtectedError,
+        PdfDecryptError,
+        PdfminerException,
+        OSError,
+        UnicodeDecodeError,
+    )
 
 
 _PDF_READ_ERRORS = _pdf_read_errors()
