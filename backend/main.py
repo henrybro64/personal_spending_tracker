@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from datetime import date
@@ -86,6 +87,7 @@ from backend.pdf_utils import (  # noqa: E402
 
 DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
 LOCAL_FRONTEND_ORIGINS = ("http://localhost:3000",)
+logger = logging.getLogger(__name__)
 
 
 class UploadResponse(TypedDict):
@@ -848,6 +850,12 @@ async def run_batch_import(
         result = importer.import_transactions()
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("batch-imports/run failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Batch import failed: {exc}",
+        ) from exc
 
     return {"run": result.to_payload()}
 

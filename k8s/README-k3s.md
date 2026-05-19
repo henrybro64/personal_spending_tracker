@@ -111,6 +111,8 @@ kubectl -n spending-tracker logs deployment/backend
 
 **Image pull errors on local k3s:** use `LOCAL_DEPLOY=1` so images are built and imported on the node.
 
+**Batch import returns HTTP 500 with no Python traceback:** check `kubectl -n spending-tracker get events` for `Liveness probe failed` on `deployment/backend`. A long import blocks the API worker; Kubernetes may kill the pod before the request finishes. Redeploy with updated probe settings in `30-backend.yaml`, or import fewer PDFs per run.
+
 ## Data persistence on redeploy
 
 **Normal redeploy keeps your data.** `scripts/deploy-k3s.sh` only runs `kubectl apply`. It does not delete the namespace, PVCs, or Postgres data.
