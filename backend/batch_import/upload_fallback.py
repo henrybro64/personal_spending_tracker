@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from pathlib import Path
 
 from backend.parser import parse_transactions
 
 from .category import CategoryEngine
 from .models import NormalizedTransaction
+
+# PDF text for Taiwan banks (CTBC/DBS) is parsed reliably by parser.py; US cards
+# need statement period metadata that batch parsers enforce, so do not fallback.
+UPLOAD_FALLBACK_PARSER_NAMES = frozenset({"ctbc_daily", "ctbc_card", "dbs"})
+
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _LAST4_PATTERNS = (
     re.compile(r"末四碼\s*(?P<last4>\d{4})"),
@@ -15,6 +22,20 @@ _LAST4_PATTERNS = (
     re.compile(r"Ending\s+(?P<last4>\d{4})", re.IGNORECASE),
     re.compile(r"statements-(?P<last4>\d{4})-", re.IGNORECASE),
 )
+
+
+def upload_fallback_supported(parser_name: str) -> bool:
+    return parser_name in UPLOAD_FALLBACK_PARSER_NAMES
+
+
+def _is_valid_iso_date(date_text: str) -> bool:
+    if not _ISO_DATE.fullmatch(date_text.strip()):
+        return False
+    try:
+        date.fromisoformat(date_text.strip())
+    except ValueError:
+        return False
+    return True
 
 
 def _infer_card_last4(source_path: Path, statement_text: str) -> str | None:
@@ -38,6 +59,9 @@ def transactions_from_upload_parser(
     transactions: list[NormalizedTransaction] = []
 
     for row in parse_transactions(statement_text):
+        if not _is_valid_iso_date(row["date"]):
+            continue
+
         merchant = row["merchant"]
         raw_amount = float(row["amount"])
         category_match = category_engine.categorize(merchant, raw_amount)

@@ -14,7 +14,10 @@ from .paths import (
     resolve_allowed_file,
 )
 from .storage import BatchImportStore
-from .upload_fallback import transactions_from_upload_parser
+from .upload_fallback import (
+    transactions_from_upload_parser,
+    upload_fallback_supported,
+)
 
 
 class StatementImporter:
@@ -75,7 +78,7 @@ class StatementImporter:
                     statement_text=statement_text,
                     category_engine=category_engine,
                 )
-                if not parsed_transactions:
+                if not parsed_transactions and upload_fallback_supported(parser.name):
                     parsed_transactions = transactions_from_upload_parser(
                         source_path,
                         statement_text,
