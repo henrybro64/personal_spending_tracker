@@ -42,6 +42,36 @@ sudo k3s kubectl get nodes -o wide
 
 Optional: copy `/etc/rancher/k3s/k3s.yaml` to `~/.kube/config` for plain `kubectl`.
 
+## Start automatically after node reboot
+
+Two things must be true:
+
+1. **k3s starts when the machine boots** — `scripts/deploy-k3s.sh` runs `systemctl enable k3s` by default (`ENABLE_K3S_ON_BOOT=1`). Verify:
+
+   ```bash
+   systemctl is-enabled k3s   # should print "enabled"
+   ```
+
+   If not:
+
+   ```bash
+   sudo systemctl enable k3s
+   sudo systemctl start k3s
+   ```
+
+2. **The app was deployed at least once** — Kubernetes keeps Deployments running. After reboot, pods in `spending-tracker` come back on their own (same Postgres/upload data on PVCs).
+
+You do **not** need to run the deploy script after every reboot. Redeploy only when you change images or config.
+
+Test after a reboot:
+
+```bash
+sudo reboot
+# after the node is back:
+sudo k3s kubectl -n spending-tracker get pods
+curl http://<node-ip>:30081/api/health
+```
+
 ## Manifest layout
 
 | File | Purpose |
@@ -80,6 +110,28 @@ kubectl -n spending-tracker logs deployment/backend
 **Password auth failed after changing `DB_PASSWORD`:** Postgres PVC keeps the old password. Delete the namespace and redeploy, or `ALTER USER` inside the Postgres pod.
 
 **Image pull errors on local k3s:** use `LOCAL_DEPLOY=1` so images are built and imported on the node.
+
+## Data persistence on redeploy
+
+**Normal redeploy keeps your data.** `scripts/deploy-k3s.sh` only runs `kubectl apply`. It does not delete the namespace, PVCs, or Postgres data.
+
+| Action | Database & uploads |
+|--------|-------------------|
+| `bash scripts/deploy-k3s.sh` again (same node) | **Kept** — PVCs `postgres-data`, `uploads-data`, `batch-data` stay on disk |
+| Node reboot (k3s enabled) | **Kept** — pods restart, PVCs unchanged |
+| Change `DB_PASSWORD` in secret only | **Kept** — data remains; align Postgres password or backend cannot connect |
+| `kubectl delete namespace spending-tracker` | **Wiped** — namespace deletion removes PVCs and all data |
+| `kubectl delete pvc postgres-data` (etc.) | **Wiped** — that volume’s data is gone |
+
+Backend startup runs `CREATE TABLE IF NOT EXISTS` only; it does not drop or truncate tables.
+
+**Safe redeploy:**
+
+```bash
+LOCAL_DEPLOY=1 KUBECTL='sudo k3s kubectl' bash scripts/deploy-k3s.sh
+```
+
+Use the **same** `DB_PASSWORD` as when the Postgres PVC was first created (default: `spending-tracker-dev`).
 
 ## Delete
 

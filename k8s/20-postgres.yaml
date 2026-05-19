@@ -30,6 +30,7 @@ spec:
         app.kubernetes.io/name: postgres
         app.kubernetes.io/part-of: personal-spending-tracker
     spec:
+      restartPolicy: Always
       containers:
         - name: postgres
           image: ${POSTGRES_IMAGE}
