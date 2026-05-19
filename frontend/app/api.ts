@@ -26,23 +26,32 @@ export async function apiFetchJson<T>(
   init?: RequestInit
 ): Promise<T> {
   const response = await apiFetch(path, init);
+  const responseText = await response.text();
 
   let payload: unknown = null;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = null;
+  if (responseText) {
+    try {
+      payload = JSON.parse(responseText) as unknown;
+    } catch {
+      payload = null;
+    }
   }
 
   if (!response.ok) {
-    const detail =
+    const jsonDetail =
       payload &&
       typeof payload === "object" &&
       "detail" in payload &&
       typeof payload.detail === "string"
         ? payload.detail
-        : requestFailedFallback;
-    throw new ApiError(detail, response.status);
+        : null;
+    const detail =
+      jsonDetail ??
+      (responseText.trim().slice(0, 300) || requestFailedFallback);
+    throw new ApiError(
+      jsonDetail ? detail : `HTTP ${response.status}: ${detail}`,
+      response.status
+    );
   }
 
   return payload as T;
