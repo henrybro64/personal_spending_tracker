@@ -110,15 +110,34 @@ class ParserFixtureTests(unittest.TestCase):
 
 
 class StatementImporterTests(unittest.TestCase):
+    @staticmethod
+    def _batch_sandbox(temp_dir: Path) -> tuple[Path, Path, Path]:
+        pdf_dir = temp_dir / "Credit_Card_PDF"
+        text_dir = temp_dir / "credit_card_text"
+        output_dir = temp_dir / "output"
+        pdf_dir.mkdir()
+        text_dir.mkdir()
+        output_dir.mkdir()
+        return pdf_dir, text_dir, output_dir
+
+    @staticmethod
+    def _apply_batch_env(overrides: dict[str, str]) -> dict[str, str | None]:
+        previous_values = {key: os.environ.get(key) for key in overrides}
+        os.environ.update(overrides)
+        return previous_values
+
+    @staticmethod
+    def _restore_batch_env(previous_values: dict[str, str | None]) -> None:
+        for key, value in previous_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
     def test_importer_walks_directories_exports_and_learns_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_name:
             temp_dir = Path(temp_dir_name)
-            pdf_dir = temp_dir / "Credit_Card_PDF"
-            text_dir = temp_dir / "credit_card_text"
-            output_dir = temp_dir / "output"
-            pdf_dir.mkdir()
-            text_dir.mkdir()
-            output_dir.mkdir()
+            pdf_dir, text_dir, output_dir = self._batch_sandbox(temp_dir)
 
             fixture_map = {
                 pdf_dir / "2026-01-29.pdf": FIXTURE_DIR / "amex_statement.txt",
@@ -141,10 +160,7 @@ class StatementImporterTests(unittest.TestCase):
                 "BATCH_PDF_SOURCE_DIR": str(pdf_dir),
                 "BATCH_TEXT_SOURCE_DIR": str(text_dir),
             }
-            previous_values = {
-                key: os.environ.get(key) for key in env_overrides
-            }
-            os.environ.update(env_overrides)
+            previous_values = self._apply_batch_env(env_overrides)
             try:
                 importer = StatementImporter(
                     pdf_source_dir=pdf_dir,
@@ -157,11 +173,7 @@ class StatementImporterTests(unittest.TestCase):
                 )
                 result = importer.import_transactions()
             finally:
-                for key, value in previous_values.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
+                self._restore_batch_env(previous_values)
 
             self.assertEqual(5, result.statement_count)
             self.assertEqual(10, result.transaction_count)
@@ -200,28 +212,33 @@ class StatementImporterTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir_name:
             temp_dir = Path(temp_dir_name)
-            pdf_dir = temp_dir / "pdf"
-            output_dir = temp_dir / "output"
-            pdf_dir.mkdir()
-            output_dir.mkdir()
+            pdf_dir, text_dir, output_dir = self._batch_sandbox(temp_dir)
             (pdf_dir / "locked.pdf").write_bytes(b"%PDF-1.4\n")
-            (pdf_dir / "plain.pdf").write_text("plain statement text", encoding="utf-8")
 
             store = BatchImportStore(output_dir / "batch.sqlite3")
+            env_overrides = {
+                "BATCH_DATA_DIR": str(output_dir),
+                "BATCH_PDF_SOURCE_DIR": str(pdf_dir),
+                "BATCH_TEXT_SOURCE_DIR": str(text_dir),
+            }
 
             def fake_extractor(path: str | Path) -> str:
                 if Path(path).name == "locked.pdf":
                     raise PdfPasswordProtectedError(had_password=False)
                 return Path(path).read_text(encoding="utf-8")
 
-            importer = StatementImporter(
-                pdf_source_dir=pdf_dir,
-                text_source_dir=pdf_dir / "missing-text",
-                csv_output_path=output_dir / "batch.csv",
-                store=store,
-                pdf_text_extractor=fake_extractor,
-            )
-            result = importer.import_transactions()
+            previous_values = self._apply_batch_env(env_overrides)
+            try:
+                importer = StatementImporter(
+                    pdf_source_dir=pdf_dir,
+                    text_source_dir=text_dir,
+                    csv_output_path=output_dir / "batch.csv",
+                    store=store,
+                    pdf_text_extractor=fake_extractor,
+                )
+                result = importer.import_transactions()
+            finally:
+                self._restore_batch_env(previous_values)
 
             self.assertEqual(0, result.statement_count)
             self.assertEqual(1, len(result.skipped_files))
@@ -239,29 +256,35 @@ class StatementImporterTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir_name:
             temp_dir = Path(temp_dir_name)
-            pdf_dir = temp_dir / "pdf"
-            output_dir = temp_dir / "output"
-            pdf_dir.mkdir()
-            output_dir.mkdir()
+            pdf_dir, text_dir, output_dir = self._batch_sandbox(temp_dir)
             (pdf_dir / "20240123-statements-6814-.pdf").write_text(
                 "synthetic",
                 encoding="utf-8",
             )
 
             store = BatchImportStore(output_dir / "batch.sqlite3")
-            importer = StatementImporter(
-                pdf_source_dir=pdf_dir,
-                text_source_dir=pdf_dir / "missing-text",
-                csv_output_path=output_dir / "batch.csv",
-                store=store,
-                pdf_text_extractor=lambda path: "synthetic",
-            )
+            env_overrides = {
+                "BATCH_DATA_DIR": str(output_dir),
+                "BATCH_PDF_SOURCE_DIR": str(pdf_dir),
+                "BATCH_TEXT_SOURCE_DIR": str(text_dir),
+            }
+            previous_values = self._apply_batch_env(env_overrides)
+            try:
+                importer = StatementImporter(
+                    pdf_source_dir=pdf_dir,
+                    text_source_dir=text_dir,
+                    csv_output_path=output_dir / "batch.csv",
+                    store=store,
+                    pdf_text_extractor=lambda path: "synthetic",
+                )
 
-            with patch(
-                "backend.batch_import.importer.resolve_parser",
-                return_value=BrokenParser(),
-            ):
-                result = importer.import_transactions()
+                with patch(
+                    "backend.batch_import.importer.resolve_parser",
+                    return_value=BrokenParser(),
+                ):
+                    result = importer.import_transactions()
+            finally:
+                self._restore_batch_env(previous_values)
 
             self.assertEqual(0, result.statement_count)
             self.assertEqual(1, len(result.skipped_files))
