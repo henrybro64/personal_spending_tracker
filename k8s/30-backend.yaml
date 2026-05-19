@@ -99,12 +99,18 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /health
               port: http
             initialDelaySeconds: 15
-            periodSeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 10
+            # Batch PDF import can block the single worker for minutes; avoid
+            # killing the pod when /health cannot respond within 1s (default).
+            failureThreshold: 10
       volumes:
         - name: uploads-data
           persistentVolumeClaim:
