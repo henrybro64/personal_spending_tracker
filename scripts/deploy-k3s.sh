@@ -338,6 +338,9 @@ apply_k8s_manifest "$ROOT_DIR/k8s/61-batch-pvc.yaml"
 
 echo "Applying backend resources"
 apply_k8s_manifest "$ROOT_DIR/k8s/30-backend.yaml"
+echo "Restarting backend to pick up image and probe changes"
+"${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout restart deployment/backend
+"${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/backend --timeout="$ROLLOUT_TIMEOUT"
 
 echo "Applying frontend resources"
 apply_k8s_manifest "$ROOT_DIR/k8s/40-frontend.yaml"

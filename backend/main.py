@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import sys
@@ -847,7 +848,8 @@ async def run_batch_import(
             ),
             store=store,
         )
-        result = importer.import_transactions()
+        # Run off the event loop so /health stays responsive during long PDF imports.
+        result = await asyncio.to_thread(importer.import_transactions)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
