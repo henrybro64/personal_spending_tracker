@@ -6,9 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
+from backend.merchant_noise import merchant_raw_is_digit_only_noise
+
 from .category import (
     CategoryRule,
-    merchant_raw_is_digit_only_noise,
     normalize_merchant_key,
     transaction_type_for_category,
 )

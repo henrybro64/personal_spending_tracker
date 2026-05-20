@@ -444,7 +444,7 @@ class StatementImporterTests(unittest.TestCase):
 
 class MerchantDigitNoiseTests(unittest.TestCase):
     def test_digit_only_noise_detection(self) -> None:
-        from backend.batch_import.category import merchant_raw_is_digit_only_noise
+        from backend.merchant_noise import merchant_raw_is_digit_only_noise
 
         self.assertTrue(merchant_raw_is_digit_only_noise("500"))
         self.assertTrue(merchant_raw_is_digit_only_noise("2,585"))
