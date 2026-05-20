@@ -10,6 +10,10 @@ from backend.statement_parse_utils import (
     parse_us_date,
     roc_date_string_to_iso,
 )
+from backend.transaction_exclusions import (
+    PAYMENT_CATEGORY,
+    is_credit_card_bill_payment,
+)
 
 
 class Transaction(TypedDict):
@@ -469,6 +473,9 @@ OTHER_SPENDING_GRANULAR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
 
 
 def categorize_merchant(merchant: str, amount: float | None = None) -> str:
+    if is_credit_card_bill_payment(merchant):
+        return PAYMENT_CATEGORY
+
     merchant_upper = " ".join(merchant.upper().split())
     normalized_merchant = re.sub(r"[^A-Z0-9]+", " ", merchant_upper).strip()
 
