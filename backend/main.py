@@ -146,6 +146,14 @@ class BatchImportBulkReviewUpdateResponse(TypedDict):
     updated_count: int
 
 
+class BatchImportDigitNoisePendingResponse(TypedDict):
+    pending_count: int
+
+
+class BatchImportDismissDigitNoiseResponse(TypedDict):
+    updated_count: int
+
+
 class BatchImportMergeResponse(TypedDict):
     run_id: int | None
     merged_count: int
@@ -231,6 +239,10 @@ class BatchReviewBulkUpdateRequest(BaseModel):
     category: str
     exclude_from_spending: bool
     save_rule: bool = True
+
+
+class BatchReviewDismissDigitNoiseRequest(BaseModel):
+    run_id: int
 
 
 class ManualTransactionResponse(TypedDict):
@@ -1053,6 +1065,29 @@ async def bulk_update_batch_import_review(
         exclude_from_spending=payload.exclude_from_spending,
         save_rule=payload.save_rule,
     )
+    return {"updated_count": int(updated_count)}
+
+
+@app.get("/batch-imports/digit-noise-pending-count")
+async def batch_import_digit_noise_pending_count(
+    run_id: int | None = Query(default=None, ge=1),
+    sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
+) -> BatchImportDigitNoisePendingResponse:
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    return {
+        "pending_count": store.count_digit_only_noise_pending(run_id=run_id),
+    }
+
+
+@app.post("/batch-imports/review/dismiss-digit-noise", status_code=status.HTTP_200_OK)
+async def dismiss_batch_import_digit_noise(
+    payload: BatchReviewDismissDigitNoiseRequest,
+    sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
+) -> BatchImportDismissDigitNoiseResponse:
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    updated_count = store.bulk_dismiss_digit_only_noise(run_id=payload.run_id)
     return {"updated_count": int(updated_count)}
 
 

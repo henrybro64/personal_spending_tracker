@@ -113,6 +113,22 @@ kubectl -n spending-tracker logs deployment/backend
 
 **Batch import returns HTTP 500 with no Python traceback:** check `kubectl -n spending-tracker get events` for `Liveness probe failed` on `deployment/backend`. A long import blocks the API worker; Kubernetes may kill the pod before the request finishes. Redeploy with updated probe settings in `30-backend.yaml`, or import fewer PDFs per run.
 
+**Debug missing merchants (Uber / 優食) in CTBC PDFs:**
+
+```bash
+# On the k3s node (from repo checkout):
+bash scripts/diagnose-ctbc-in-pod.sh
+bash scripts/diagnose-ctbc-in-pod.sh CTBC_card   # only filenames containing CTBC_card
+
+# Or manually:
+POD=$(sudo k3s kubectl -n spending-tracker get pods -l app.kubernetes.io/name=backend -o jsonpath='{.items[0].metadata.name}')
+sudo k3s kubectl -n spending-tracker exec -it "$POD" -c backend -- \
+  python3 -m backend.diagnose_pdf_merchants /app/batch/pdf \
+  --sqlite /app/batch/data/batch_imports.sqlite3 --only CTBC_card
+```
+
+Paste the full output into a bug report. Compare **sample raw lines** (text in PDF) vs **parsed merchants** (what the importer stored).
+
 ## Data persistence on redeploy
 
 **Normal redeploy keeps your data.** `scripts/deploy-k3s.sh` only runs `kubectl apply`. It does not delete the namespace, PVCs, or Postgres data.

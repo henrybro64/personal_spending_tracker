@@ -98,6 +98,14 @@ test("batch review page loads queue, runs import, and syncs to dashboard", async
     });
   });
 
+  await page.route("**/api/batch-imports/digit-noise-pending-count**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ pending_count: 0 }),
+    });
+  });
+
   await page.route("**/api/batch-imports/needs-review-merchants**", async (route) => {
     await route.fulfill({
       status: 200,

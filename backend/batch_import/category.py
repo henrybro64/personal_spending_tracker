@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -30,6 +31,21 @@ class CategoryMatch:
 def normalize_merchant_key(merchant: str) -> str:
     merchant_upper = " ".join(merchant.upper().split())
     return re.sub(r"[^0-9A-Z\u4e00-\u9fff]+", " ", merchant_upper).strip()
+
+
+def merchant_raw_is_digit_only_noise(merchant_raw: str) -> bool:
+    """True when *merchant_raw* is only digits, grouping commas, and whitespace.
+
+    CTBC PDF parsing sometimes turns table or installment fragments into
+    transactions whose merchant column is a bare number (e.g. ``500``,
+    ``2,585``). Those are not real merchant names; they clutter bulk review
+    even for imports that predated stricter CTBC line filtering.
+    """
+    collapsed = unicodedata.normalize("NFKC", merchant_raw)
+    compact = re.sub(r"[\s,]+", "", collapsed)
+    if not compact:
+        return False
+    return all(ch.isdigit() for ch in compact)
 
 
 def transaction_type_for_category(

@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from backend.batch_import.category import merchant_raw_is_digit_only_noise
+
 US_STATEMENT_PERIOD_PATTERN = re.compile(
     r"Opening/Closing Date\s+"
     r"(?P<start>\d{2}/\d{2}/\d{2,4})"
@@ -184,13 +186,17 @@ def parse_ctbc_roc_statement_line(line: str) -> CtbcRocLineParts | None:
     if not header_match:
         return None
 
-    trailing_match = CTBC_AMOUNT_TRAILING.match(header_match.group("rest").strip())
+    rest = header_match.group("rest").strip()
+    trailing_match = CTBC_AMOUNT_TRAILING.match(rest)
     if not trailing_match:
         return None
 
     merchant = " ".join(trailing_match.group("merchant").split())
     if not merchant:
         merchant = "(no description)"
+
+    if merchant_raw_is_digit_only_noise(merchant):
+        return None
 
     return CtbcRocLineParts(
         transaction_date=header_match.group("transaction_date"),
