@@ -44,6 +44,18 @@ def transaction_type_for_category(
 
 DEFAULT_RULES: tuple[CategoryRule, ...] = (
     CategoryRule(
+        patterns=(
+            "繳款",
+            "網路繳款",
+            "帳戶繳款",
+            "本行帳戶繳款",
+        ),
+        category=PAYMENT_CATEGORY,
+        exclude_from_spending=True,
+        transaction_type="payment_or_credit",
+        priority=50,
+    ),
+    CategoryRule(
         patterns=("PAYMENT", "THANK YOU", "REFUND", "CREDIT"),
         category=PAYMENT_CATEGORY,
         exclude_from_spending=True,

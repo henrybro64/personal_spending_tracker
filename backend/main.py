@@ -47,6 +47,7 @@ from backend.auth import (  # noqa: E402
     validate_password,
     verify_password,
 )
+from backend.transaction_exclusions import should_exclude_from_spending
 from backend.database import (  # noqa: E402
     RecentUpload,
     StoredTransaction,
@@ -618,11 +619,18 @@ async def dashboard_view(
     resolved_sort_option = _resolve_sort_option(sort)
     resolved_currency = _resolve_display_currency(currency)
 
-    all_transactions = get_transactions(
-        user_id=current_user["id"],
-        range_key=resolved_range,
-        limit=limit,
-    )
+    all_transactions = [
+        transaction
+        for transaction in get_transactions(
+            user_id=current_user["id"],
+            range_key=resolved_range,
+            limit=limit,
+        )
+        if not should_exclude_from_spending(
+            transaction["merchant"],
+            category=transaction.get("category"),
+        )
+    ]
     converted_transactions: list[StoredTransaction] = [
         {
             **transaction,

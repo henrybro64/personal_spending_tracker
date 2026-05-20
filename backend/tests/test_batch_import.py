@@ -44,6 +44,10 @@ class CategoryEngineTests(unittest.TestCase):
         self.assertTrue(payment_match.exclude_from_spending)
         self.assertEqual("payment_or_credit", payment_match.transaction_type)
 
+        bill_payment_match = engine.categorize("ATM/網路繳款/本行帳戶繳款", 37628.16)
+        self.assertEqual("Payment / Credit", bill_payment_match.category)
+        self.assertTrue(bill_payment_match.exclude_from_spending)
+
         unknown_match = engine.categorize("MYSTERY MERCHANT", 12.34)
         self.assertEqual("Unknown / Needs Review", unknown_match.category)
         self.assertTrue(unknown_match.needs_review)
