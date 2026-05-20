@@ -35,8 +35,8 @@ spec:
             - sh
             - -c
             - |
-              echo "Waiting for postgres at ${DATABASE_HOST}:5432..."
-              until pg_isready -h "${DATABASE_HOST}" -p 5432 -q; do
+              echo "Waiting for postgres at ${DATABASE_HOST}:${DATABASE_PORT}..."
+              until pg_isready -h "${DATABASE_HOST}" -p "${DATABASE_PORT}" -q; do
                 sleep 2
               done
               echo "Postgres is ready."
@@ -46,6 +46,11 @@ spec:
                 configMapKeyRef:
                   name: spending-tracker-config
                   key: DATABASE_HOST
+            - name: DATABASE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: DATABASE_PORT
       containers:
         - name: backend
           image: ${BACKEND_IMAGE}
