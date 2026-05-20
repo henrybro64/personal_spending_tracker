@@ -121,13 +121,14 @@ npm run dev
 
 The frontend will be available at `http://localhost:3000`.
 
-By default the frontend proxies same-origin `/api/*` requests to `http://localhost:8000`.
-If your backend is running somewhere else, set one of these before `npm run dev`:
+Same-origin `/api/*` requests are proxied to the backend by `frontend/app/api/[...path]/route.ts`
+(long timeouts for batch import). Before `npm run dev`, point the server proxy at your API:
 
 ```bash
 export API_PROXY_TARGET="http://localhost:8000"
-export NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"
 ```
+
+Keep `NEXT_PUBLIC_API_BASE_URL` as `/api` (default) so the browser calls the Next.js app, not the backend directly.
 
 ## Automated Checks
 
