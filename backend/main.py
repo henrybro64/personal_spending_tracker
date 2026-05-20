@@ -229,6 +229,7 @@ VALID_TIME_RANGES: tuple[TimeRange, ...] = (
     "week",
     "month",
     "quarter",
+    "6months",
     "year",
     "5years",
     "all",

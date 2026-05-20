@@ -212,7 +212,7 @@ test("dashboard renders with mocked API data and survives a currency toggle", as
   await expect(page.getByText("Spending by category")).toBeVisible();
   await expect(page.getByLabel("Search")).toBeVisible();
   await expect(page.getByRole("combobox").first()).toBeVisible();
-  await expect(page.getByText("$4,321.09").first()).toBeVisible();
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
 
   const currencySwitch = page.getByRole("switch", {
     name: "Display currency",

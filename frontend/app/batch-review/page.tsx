@@ -216,19 +216,30 @@ const useStyles = makeStyles({
   },
   metaGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
     gap: "12px",
+  },
+  metaItemWide: {
+    gridColumn: "1 / -1",
   },
   metaItem: {
     display: "flex",
     flexDirection: "column",
     gap: "4px",
+    minWidth: 0,
   },
   metaLabel: {
     color: tokens.colorNeutralForeground3,
     fontSize: tokens.fontSizeBase200,
     textTransform: "uppercase",
     letterSpacing: "0.08em",
+  },
+  metaPathValue: {
+    fontFamily: tokens.fontFamilyMonospace,
+    fontSize: tokens.fontSizeBase200,
+    lineHeight: tokens.lineHeightBase300,
+    wordBreak: "break-all",
+    overflowWrap: "anywhere",
   },
   tableWrap: {
     overflowX: "auto",
@@ -623,18 +634,38 @@ export default function BatchReviewPage() {
                   <div className={styles.metaLabel}>Needs review</div>
                   <Body1>{run.needs_review_count}</Body1>
                 </div>
-                <div className={styles.metaItem}>
+                <div className={mergeClasses(styles.metaItem, styles.metaItemWide)}>
                   <div className={styles.metaLabel}>CSV output</div>
-                  <Body1>{run.csv_output_path}</Body1>
+                  <Body1
+                    className={styles.metaPathValue}
+                    title={run.csv_output_path}
+                  >
+                    {run.csv_output_path}
+                  </Body1>
                 </div>
-                <div className={styles.metaItem}>
+                <div className={mergeClasses(styles.metaItem, styles.metaItemWide)}>
                   <div className={styles.metaLabel}>SQLite output</div>
-                  <Body1>{run.sqlite_output_path}</Body1>
+                  <Body1
+                    className={styles.metaPathValue}
+                    title={run.sqlite_output_path}
+                  >
+                    {run.sqlite_output_path}
+                  </Body1>
                 </div>
-                <div className={styles.metaItem}>
+                <div className={mergeClasses(styles.metaItem, styles.metaItemWide)}>
                   <div className={styles.metaLabel}>Source directories</div>
-                  <Body1>{run.pdf_source_dir}</Body1>
-                  <Body1>{run.text_source_dir}</Body1>
+                  <Body1
+                    className={styles.metaPathValue}
+                    title={run.pdf_source_dir}
+                  >
+                    {run.pdf_source_dir}
+                  </Body1>
+                  <Body1
+                    className={styles.metaPathValue}
+                    title={run.text_source_dir}
+                  >
+                    {run.text_source_dir}
+                  </Body1>
                 </div>
               </div>
             ) : (

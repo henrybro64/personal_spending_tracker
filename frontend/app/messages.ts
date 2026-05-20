@@ -69,7 +69,8 @@ const en = {
   timeRangeLabel: "Time range",
   rangeWeek: "Past week",
   rangeMonth: "Past month",
-  rangeQuarter: "Past quarter",
+  rangeQuarter: "Past 3 months",
+  range6Months: "Past 6 months",
   rangeYear: "Past year",
   range5Years: "Past 5 years",
   rangeAll: "All time",
@@ -189,8 +190,8 @@ const en = {
   languageEnglish: "English",
   languageTraditionalChinese: "Traditional Chinese",
   currencyLabel: "Display currency",
-  currencyUsd: "USD",
-  currencyTwd: "TWD",
+  currencyUsd: "US$",
+  currencyTwd: "NT$",
 } as const;
 
 const zhHant: Record<keyof typeof en, string> = {
@@ -261,7 +262,8 @@ const zhHant: Record<keyof typeof en, string> = {
   timeRangeLabel: "時間範圍",
   rangeWeek: "過去 1 週",
   rangeMonth: "過去 1 個月",
-  rangeQuarter: "過去 1 季",
+  rangeQuarter: "過去 3 個月",
+  range6Months: "過去 6 個月",
   rangeYear: "過去 1 年",
   range5Years: "過去 5 年",
   rangeAll: "全部期間",
@@ -379,8 +381,8 @@ const zhHant: Record<keyof typeof en, string> = {
   languageEnglish: "English",
   languageTraditionalChinese: "繁體中文",
   currencyLabel: "顯示幣別",
-  currencyUsd: "美元 USD",
-  currencyTwd: "新台幣 TWD",
+  currencyUsd: "US$",
+  currencyTwd: "NT$",
 };
 
 export type MessageKey = keyof typeof en;
