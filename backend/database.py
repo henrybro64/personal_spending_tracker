@@ -63,7 +63,7 @@ class StatementUploadRecord(TypedDict):
     parse_status: str
 
 
-TimeRange = Literal["week", "month", "quarter", "year", "5years", "all"]
+TimeRange = Literal["week", "month", "quarter", "6months", "year", "5years", "all"]
 
 
 def _normalize_category_for_storage(category: str | None, amount: float) -> str:
@@ -876,6 +876,8 @@ def _since_date_for_range(range_key: TimeRange) -> date | None:
         return today - timedelta(days=30)
     if range_key == "quarter":
         return today - timedelta(days=90)
+    if range_key == "6months":
+        return today - timedelta(days=180)
     if range_key == "year":
         return today - timedelta(days=365)
     if range_key == "5years":

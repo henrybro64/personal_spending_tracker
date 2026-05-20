@@ -44,7 +44,14 @@ type TransactionsResponse = {
 
 type AmountFilter = "all" | "spend" | "refunds";
 type SortOption = "amount_desc" | "amount_asc" | "merchant" | "date";
-type TimeRange = "week" | "month" | "quarter" | "year" | "5years" | "all";
+type TimeRange =
+  | "week"
+  | "month"
+  | "quarter"
+  | "6months"
+  | "year"
+  | "5years"
+  | "all";
 type MonthGroup = {
   monthKey: string;
   monthLabel: string;
@@ -290,6 +297,7 @@ function isInTimeRange(dateValue: string, range: TimeRange) {
   if (range === "week") threshold.setDate(now.getDate() - 7);
   if (range === "month") threshold.setMonth(now.getMonth() - 1);
   if (range === "quarter") threshold.setMonth(now.getMonth() - 3);
+  if (range === "6months") threshold.setMonth(now.getMonth() - 6);
   if (range === "year") threshold.setFullYear(now.getFullYear() - 1);
   if (range === "5years") threshold.setFullYear(now.getFullYear() - 5);
   return parsedDate >= threshold && parsedDate <= now;
@@ -565,6 +573,7 @@ export default function TransactionsPage() {
                 <Button appearance={timeRange === "week" ? "primary" : "secondary"} onClick={() => setTimeRange("week")} size="small">{translate(locale, "rangeWeek")}</Button>
                 <Button appearance={timeRange === "month" ? "primary" : "secondary"} onClick={() => setTimeRange("month")} size="small">{translate(locale, "rangeMonth")}</Button>
                 <Button appearance={timeRange === "quarter" ? "primary" : "secondary"} onClick={() => setTimeRange("quarter")} size="small">{translate(locale, "rangeQuarter")}</Button>
+                <Button appearance={timeRange === "6months" ? "primary" : "secondary"} onClick={() => setTimeRange("6months")} size="small">{translate(locale, "range6Months")}</Button>
                 <Button appearance={timeRange === "year" ? "primary" : "secondary"} onClick={() => setTimeRange("year")} size="small">{translate(locale, "rangeYear")}</Button>
                 <Button appearance={timeRange === "5years" ? "primary" : "secondary"} onClick={() => setTimeRange("5years")} size="small">{translate(locale, "range5Years")}</Button>
                 <Button appearance={timeRange === "all" ? "primary" : "secondary"} onClick={() => setTimeRange("all")} size="small">{translate(locale, "rangeAll")}</Button>

@@ -135,7 +135,22 @@ type ManualTransactionPayload = {
 
 type AmountFilter = "all" | "spend" | "refunds";
 type SortOption = "amount_desc" | "amount_asc" | "merchant" | "date";
-type TimeRange = "week" | "month" | "quarter" | "year" | "5years" | "all";
+type TimeRange =
+  | "week"
+  | "month"
+  | "quarter"
+  | "6months"
+  | "year"
+  | "5years"
+  | "all";
+
+const dashboardTimeRangeOptions = [
+  "month",
+  "quarter",
+  "6months",
+  "year",
+  "all",
+] as const satisfies readonly TimeRange[];
 
 const manualPaymentMethods = [
   "Cash",
@@ -196,6 +211,8 @@ function timeRangeMessageKey(range: TimeRange): MessageKey {
       return "rangeMonth";
     case "quarter":
       return "rangeQuarter";
+    case "6months":
+      return "range6Months";
     case "year":
       return "rangeYear";
     case "5years":
@@ -475,6 +492,25 @@ const useStyles = makeStyles({
   reportLead: {
     maxWidth: "760px",
     color: tokens.colorNeutralForeground2,
+  },
+  reportTimeRangeRow: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    paddingTop: "4px",
+    ...shorthands.borderTop("1px", "solid", tokens.colorNeutralStroke2),
+  },
+  reportTimeRangeLabel: {
+    fontSize: tokens.fontSizeBase200,
+    fontWeight: tokens.fontWeightSemibold,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: tokens.colorNeutralForeground3,
+  },
+  reportTimeRangePills: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
   },
   headerHighlights: {
     display: "grid",
@@ -1060,7 +1096,7 @@ export default function HomePage() {
   const [summary, setSummary] = useState<SummaryResponse>(emptySummary);
   const [recentUploads, setRecentUploads] = useState<RecentUpload[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
-  const [timeRange, setTimeRange] = useState<TimeRange>("all");
+  const [timeRange, setTimeRange] = useState<TimeRange>("year");
   const [displayCurrency, setDisplayCurrency] = useState<DisplayCurrency>("USD");
   const [selectedMerchant, setSelectedMerchant] = useState<string | null>(null);
   const [amountFilter, setAmountFilter] = useState<AmountFilter>("all");
@@ -1500,16 +1536,7 @@ export default function HomePage() {
                 {translate(locale, "timeRangeLabel")}
               </Body1>
               <div className={styles.pillGrid}>
-                {(
-                  [
-                    "week",
-                    "month",
-                    "quarter",
-                    "year",
-                    "5years",
-                    "all",
-                  ] as const
-                ).map((rangeValue) => (
+                {dashboardTimeRangeOptions.map((rangeValue) => (
                   <Button
                     appearance={timeRange === rangeValue ? "primary" : "secondary"}
                     className={styles.pillButton}
@@ -1700,6 +1727,24 @@ export default function HomePage() {
                       : translate(locale, "waiting")}
                   </div>
                 </div>
+              </div>
+            </div>
+            <div className={styles.reportTimeRangeRow}>
+              <div className={styles.reportTimeRangeLabel}>
+                {translate(locale, "timeRangeLabel")}
+              </div>
+              <div className={styles.reportTimeRangePills}>
+                {dashboardTimeRangeOptions.map((rangeValue) => (
+                  <Button
+                    appearance={timeRange === rangeValue ? "primary" : "secondary"}
+                    className={styles.pillButton}
+                    key={rangeValue}
+                    onClick={() => setTimeRange(rangeValue)}
+                    size="small"
+                  >
+                    {translate(locale, timeRangeMessageKey(rangeValue))}
+                  </Button>
+                ))}
               </div>
             </div>
           </Card>
