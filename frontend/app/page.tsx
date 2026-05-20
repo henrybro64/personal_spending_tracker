@@ -246,8 +246,15 @@ const categoryPalette = [
   "#a776b8",
 ];
 
+function dashboardCurrencySymbol(currencyCode: string): string {
+  return currencyCode.toUpperCase() === "TWD" ? "NT$" : "US$";
+}
+
 function createFormatters(intlLocale: string) {
-  const currencyFormatterByCode = new Map<string, Intl.NumberFormat>();
+  const amountFormatter = new Intl.NumberFormat(intlLocale, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
   const countFormatter = new Intl.NumberFormat(intlLocale);
   const percentFormatter = new Intl.NumberFormat(intlLocale, {
     style: "percent",
@@ -272,18 +279,9 @@ function createFormatters(intlLocale: string) {
 
   return {
     formatCurrency(amount: number, currencyCode: string = "USD") {
-      const normalizedCode = currencyCode.toUpperCase();
-      if (!currencyFormatterByCode.has(normalizedCode)) {
-        currencyFormatterByCode.set(
-          normalizedCode,
-          new Intl.NumberFormat(intlLocale, {
-            style: "currency",
-            currency: normalizedCode,
-            maximumFractionDigits: 2,
-          })
-        );
-      }
-      return currencyFormatterByCode.get(normalizedCode)!.format(amount);
+      const symbol = dashboardCurrencySymbol(currencyCode);
+      const formattedAmount = amountFormatter.format(Math.abs(amount));
+      return amount < 0 ? `-${symbol}${formattedAmount}` : `${symbol}${formattedAmount}`;
     },
     formatCount(value: number) {
       return countFormatter.format(value);

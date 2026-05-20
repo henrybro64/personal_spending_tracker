@@ -190,8 +190,8 @@ const en = {
   languageEnglish: "English",
   languageTraditionalChinese: "Traditional Chinese",
   currencyLabel: "Display currency",
-  currencyUsd: "USD",
-  currencyTwd: "TWD",
+  currencyUsd: "US$",
+  currencyTwd: "NT$",
 } as const;
 
 const zhHant: Record<keyof typeof en, string> = {
@@ -381,8 +381,8 @@ const zhHant: Record<keyof typeof en, string> = {
   languageEnglish: "English",
   languageTraditionalChinese: "繁體中文",
   currencyLabel: "顯示幣別",
-  currencyUsd: "美元 USD",
-  currencyTwd: "新台幣 TWD",
+  currencyUsd: "US$",
+  currencyTwd: "NT$",
 };
 
 export type MessageKey = keyof typeof en;
