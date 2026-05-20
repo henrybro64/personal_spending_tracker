@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from backend.batch_import.category import merchant_raw_is_digit_only_noise
+from backend.merchant_noise import merchant_raw_is_digit_only_noise
 
 US_STATEMENT_PERIOD_PATTERN = re.compile(
     r"Opening/Closing Date\s+"

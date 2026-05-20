@@ -333,20 +333,21 @@ echo "Applying secrets"
   --from-literal=DATABASE_PASSWORD="$DB_PASSWORD" \
   --dry-run=client -o yaml | "${KUBECTL_CMD[@]}" apply -f -
 
-echo "Applying PostgreSQL resources"
-apply_k8s_manifest "$ROOT_DIR/k8s/20-postgres.yaml"
-
 echo "Applying uploads PVC"
 apply_k8s_manifest "$ROOT_DIR/k8s/60-uploads-pvc.yaml"
 
 echo "Applying batch-import PVC"
 apply_k8s_manifest "$ROOT_DIR/k8s/61-batch-pvc.yaml"
 
+echo "Applying PostgreSQL resources"
+apply_k8s_manifest "$ROOT_DIR/k8s/20-postgres.yaml"
+echo "Waiting for Postgres before starting backend (avoids DB connection crash)"
+"${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/postgres --timeout="$ROLLOUT_TIMEOUT"
+
 echo "Applying backend resources"
 apply_k8s_manifest "$ROOT_DIR/k8s/30-backend.yaml"
 echo "Restarting backend to pick up image and probe changes"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout restart deployment/backend
-"${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/backend --timeout="$ROLLOUT_TIMEOUT"
 
 echo "Applying frontend resources"
 apply_k8s_manifest "$ROOT_DIR/k8s/40-frontend.yaml"

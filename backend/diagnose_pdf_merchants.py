@@ -19,10 +19,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from backend.batch_import.category import (
-    CategoryEngine,
-    merchant_raw_is_digit_only_noise,
-)
+from backend.batch_import.category import CategoryEngine
+from backend.merchant_noise import merchant_raw_is_digit_only_noise
 from backend.batch_import.parsers import resolve_parser
 from backend.batch_import.upload_fallback import transactions_from_upload_parser
 from backend.parser import parse_transactions
