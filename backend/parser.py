@@ -7,6 +7,7 @@ from backend.statement_parse_utils import (
     extract_us_statement_period,
     infer_us_transaction_date,
     parse_amount,
+    parse_ctbc_roc_statement_line,
     parse_us_date,
     roc_date_string_to_iso,
 )
@@ -73,6 +74,8 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "TEXACO",
             "TRAIN",
             "UBER",
+            "優步",
+            "优步",
             "UBIKE",
             "TAXI",
             "台鐵",
@@ -127,6 +130,8 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "UBER EATS",
             "FOODPANDA",
             "熊貓",
+            "陳耀訓",
+            "麵包埠",
             "麥當勞",
             "摩斯",
             "肯德基",
@@ -152,6 +157,10 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "WALMART",
             "PCHOME",
             "MOMO",
+            "ＭＯＭＯ",
+            "COUPANG",
+            "ＣＯＵＰＡＮＧ",
+            "酷澎",
             "SHOPEE",
             "蝦皮",
             "博客來",
@@ -259,6 +268,8 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "ICLOUD",
             "OPENAI",
             "CHATGPT",
+            "CURSOR",
+            "PERPLEXITY",
             "NOTION",
             "FIGMA",
             "GITHUB",
@@ -471,6 +482,13 @@ OTHER_SPENDING_GRANULAR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
     ),
 ]
 
+AI_SERVICE_KEYWORDS: tuple[str, ...] = (
+    "OPENAI",
+    "CHATGPT",
+    "CURSOR",
+    "PERPLEXITY",
+)
+
 
 def categorize_merchant(merchant: str, amount: float | None = None) -> str:
     if is_credit_card_bill_payment(merchant):
@@ -478,6 +496,11 @@ def categorize_merchant(merchant: str, amount: float | None = None) -> str:
 
     merchant_upper = " ".join(merchant.upper().split())
     normalized_merchant = re.sub(r"[^A-Z0-9]+", " ", merchant_upper).strip()
+    if any(
+        keyword in normalized_merchant or keyword in merchant_upper
+        for keyword in AI_SERVICE_KEYWORDS
+    ):
+        return "Digital Services"
 
     for category, keywords in CATEGORY_KEYWORDS:
         if any(
@@ -573,35 +596,17 @@ def _roc_date_string_to_iso(roc_date: str) -> str | None:
 
 
 def _parse_ctbc_tw_line(line: str) -> Transaction | None:
-    """中國信託信用卡：消費日 入帳日 ... 新台幣金額 MCC(6764/6232/3037)."""
-    match = re.match(
-        r"^\s*"
-        r"(?P<d1>\d{2,3}/\d{1,2}/\d{1,2})\s+"
-        r"(?P<d2>\d{2,3}/\d{1,2}/\d{1,2})\s+"
-        r"(?P<rest>.+)$",
-        line,
-    )
-    if not match:
+    """中國信託信用卡：消費日 入帳日 ... 新台幣金額 [MCC]."""
+    parsed_line = parse_ctbc_roc_statement_line(line)
+    if parsed_line is None:
         return None
 
-    rest = match.group("rest")
-    amount_m = re.search(
-        r"(?P<amount>-?[\d,]+(?:\.\d{2})?)\s+(?P<mcc>6764|6232|3037)\b",
-        rest,
-    )
-    if not amount_m:
-        return None
-
-    merchant = rest[: amount_m.start()].strip()
-    merchant = " ".join(merchant.split())
-    if not merchant:
-        merchant = "(no description)"
-
-    date_iso = _roc_date_string_to_iso(match.group("d1"))
+    date_iso = _roc_date_string_to_iso(parsed_line.transaction_date)
     if not date_iso:
         return None
 
-    amount_value = _parse_amount(amount_m.group("amount"))
+    merchant = parsed_line.merchant
+    amount_value = parsed_line.amount
     return {
         "date": date_iso,
         "merchant": merchant,

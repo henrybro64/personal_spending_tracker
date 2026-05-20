@@ -68,6 +68,7 @@ from backend.database import (  # noqa: E402
     maybe_claim_legacy_data_for_first_user,
     record_audit_event,
     revoke_session,
+    update_transaction_category,
     update_user_last_login,
 )
 from backend.batch_import import (  # noqa: E402
@@ -126,8 +127,23 @@ class BatchImportTransactionsResponse(TypedDict):
     transactions: list[BatchStoredTransaction]
 
 
+class NeedsReviewMerchantSummary(TypedDict):
+    merchant_raw: str
+    transaction_count: int
+    sample_category: str
+    sample_excluded: bool
+
+
+class BatchImportNeedsReviewMerchantsResponse(TypedDict):
+    merchants: list[NeedsReviewMerchantSummary]
+
+
 class BatchImportReviewUpdateResponse(TypedDict):
     transaction: BatchStoredTransaction
+
+
+class BatchImportBulkReviewUpdateResponse(TypedDict):
+    updated_count: int
 
 
 class BatchImportMergeResponse(TypedDict):
@@ -198,7 +214,7 @@ class BatchImportRequest(BaseModel):
 
 class BatchImportMergeRequest(BaseModel):
     run_id: int | None = None
-    include_needs_review: bool = False
+    include_needs_review: bool = True
     include_excluded: bool = False
     sqlite_output_path: str | None = None
 
@@ -209,8 +225,20 @@ class BatchReviewUpdateRequest(BaseModel):
     save_rule: bool = True
 
 
+class BatchReviewBulkUpdateRequest(BaseModel):
+    run_id: int
+    merchant_raw: str
+    category: str
+    exclude_from_spending: bool
+    save_rule: bool = True
+
+
 class ManualTransactionResponse(TypedDict):
     transaction: StoredTransaction
+
+
+class TransactionCategoryUpdateRequest(BaseModel):
+    category: str
 
 
 class AuthRequest(BaseModel):
@@ -837,6 +865,26 @@ async def create_manual_transaction(
     return {"transaction": created}
 
 
+@app.patch("/transactions/{transaction_id}")
+async def update_transaction(
+    transaction_id: int,
+    payload: TransactionCategoryUpdateRequest,
+    current_user: UserRecord = Depends(require_current_user),
+) -> ManualTransactionResponse:
+    category = payload.category.strip()
+    if not category:
+        raise HTTPException(status_code=400, detail="Category is required.")
+
+    updated = update_transaction_category(
+        user_id=current_user["id"],
+        transaction_id=transaction_id,
+        category=category,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Transaction not found.")
+    return {"transaction": updated}
+
+
 @app.post("/batch-imports/run", status_code=status.HTTP_201_CREATED)
 async def run_batch_import(
     payload: BatchImportRequest | None = None,
@@ -966,6 +1014,46 @@ async def update_batch_import_transaction(
         ) from None
 
     return {"transaction": updated_transaction}
+
+
+@app.get("/batch-imports/needs-review-merchants")
+async def batch_import_needs_review_merchants(
+    run_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=20, ge=1, le=200),
+    sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
+) -> BatchImportNeedsReviewMerchantsResponse:
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    return {
+        "merchants": store.list_needs_review_merchants(
+            run_id=run_id,
+            limit=limit,
+        )
+    }
+
+
+@app.post("/batch-imports/review/bulk", status_code=status.HTTP_200_OK)
+async def bulk_update_batch_import_review(
+    payload: BatchReviewBulkUpdateRequest,
+    sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
+) -> BatchImportBulkReviewUpdateResponse:
+    category = payload.category.strip()
+    merchant_raw = payload.merchant_raw.strip()
+    if not category:
+        raise HTTPException(status_code=400, detail="Category is required.")
+    if not merchant_raw:
+        raise HTTPException(status_code=400, detail="Merchant is required.")
+
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    updated_count = store.bulk_update_merchant_review(
+        run_id=payload.run_id,
+        merchant_raw=merchant_raw,
+        category=category,
+        exclude_from_spending=payload.exclude_from_spending,
+        save_rule=payload.save_rule,
+    )
+    return {"updated_count": int(updated_count)}
 
 
 @app.post("/upload", status_code=status.HTTP_201_CREATED)

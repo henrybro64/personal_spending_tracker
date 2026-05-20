@@ -84,11 +84,29 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
         priority=300,
     ),
     CategoryRule(
-        patterns=("AMAZON", "AMZN", "MOMO", "PCHOME", "SHOPEE", "RAKUTEN"),
+        patterns=(
+            "AMAZON",
+            "AMZN",
+            "MOMO",
+            "ＭＯＭＯ",
+            "PCHOME",
+            "COUPANG",
+            "ＣＯＵＰＡＮＧ",
+            "酷澎",
+            "SHOPEE",
+            "RAKUTEN",
+        ),
         category="Shopping / Online Retail",
         exclude_from_spending=False,
         transaction_type="purchase",
         priority=400,
+    ),
+    CategoryRule(
+        patterns=("OPENAI", "CHATGPT", "CURSOR", "PERPLEXITY"),
+        category="Digital Services",
+        exclude_from_spending=False,
+        transaction_type="purchase",
+        priority=450,
     ),
     CategoryRule(
         patterns=(
@@ -146,6 +164,8 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
             "STARBUCKS",
             "MCDONALD",
             "麥當勞",
+            "陳耀訓",
+            "麵包埠",
         ),
         category="Dining / Food",
         exclude_from_spending=False,
@@ -153,7 +173,17 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
         priority=900,
     ),
     CategoryRule(
-        patterns=("UBER", "LYFT", "PARKING", "捷運", "高鐵", "台鐵", "THSR"),
+        patterns=(
+            "UBER",
+            "優步",
+            "优步",
+            "LYFT",
+            "PARKING",
+            "捷運",
+            "高鐵",
+            "台鐵",
+            "THSR",
+        ),
         category="Transportation",
         exclude_from_spending=False,
         transaction_type="purchase",
@@ -226,7 +256,7 @@ class CategoryEngine:
                 )
 
         return CategoryMatch(
-            category=UNKNOWN_CATEGORY,
+            category="Other Spending",
             exclude_from_spending=amount < 0,
             transaction_type="payment_or_credit" if amount < 0 else "purchase",
             needs_review=True,

@@ -11,6 +11,7 @@ from backend.statement_parse_utils import (
     infer_us_transaction_date,
     normalize_statement_text,
     parse_amount,
+    parse_ctbc_roc_statement_line,
     roc_date_to_iso,
 )
 
@@ -241,13 +242,6 @@ class ChaseStatementParser(BaseStatementParser):
 
 
 class CtbcDailyStatementParser(BaseStatementParser):
-    _line_pattern = re.compile(
-        r"^(?P<transaction_date>\d{2,3}/\d{1,2}/\d{1,2})\s+"
-        r"(?P<posted_date>\d{2,3}/\d{1,2}/\d{1,2})\s+"
-        r"(?P<merchant>.+?)\s+"
-        r"(?P<amount>-?[\d,]+(?:\.\d{2})?)"
-        r"(?:\s+\d{4})?$"
-    )
     _last4_patterns = (
         re.compile(r"末四碼\s*(?P<last4>\d{4})"),
         re.compile(r"卡號末四碼\s*(?P<last4>\d{4})"),
@@ -281,18 +275,18 @@ class CtbcDailyStatementParser(BaseStatementParser):
             if not line or any(token in line.upper() for token in self._skip_tokens):
                 continue
 
-            match = self._line_pattern.match(line)
-            if not match:
+            parsed_line = parse_ctbc_roc_statement_line(line)
+            if parsed_line is None:
                 continue
 
             transactions.append(
                 self._build_transaction(
                     source_path=source_path,
                     card_last4=card_last4,
-                    transaction_date=roc_date_to_iso(match.group("transaction_date")),
-                    posted_date=roc_date_to_iso(match.group("posted_date")),
-                    merchant_raw=match.group("merchant"),
-                    raw_amount=parse_amount(match.group("amount")),
+                    transaction_date=roc_date_to_iso(parsed_line.transaction_date),
+                    posted_date=roc_date_to_iso(parsed_line.posted_date),
+                    merchant_raw=parsed_line.merchant,
+                    raw_amount=parsed_line.amount,
                     category_engine=category_engine,
                 )
             )

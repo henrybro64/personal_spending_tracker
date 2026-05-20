@@ -35,7 +35,7 @@ def merge_run_to_postgres(
     *,
     user_id: int,
     run_id: int | None = None,
-    include_needs_review: bool = False,
+    include_needs_review: bool = True,
     include_excluded: bool = False,
 ) -> dict[str, int | None]:
     effective_run_id = run_id or store._latest_run_id()

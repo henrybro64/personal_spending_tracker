@@ -48,7 +48,7 @@ def test_parse_chase_fixture_covers_us_and_iso_lines() -> None:
 def test_parse_ctbc_fixture_converts_roc_dates_and_twd_currency() -> None:
     transactions = parse_transactions(_read_fixture("ctbc_sample.txt"))
 
-    assert len(transactions) == 2
+    assert len(transactions) == 4
 
     foodpanda = _transaction_by_merchant(transactions, "FOODPANDA")
     assert foodpanda == {
@@ -58,6 +58,21 @@ def test_parse_ctbc_fixture_converts_roc_dates_and_twd_currency() -> None:
         "category": "Dining",
         "currency": "TWD",
     }
+
+    uber_twd = _transaction_by_merchant(transactions, "UBER TRIP")
+    assert uber_twd["date"] == "2025-04-19"
+    assert uber_twd["amount"] == 350.0
+    assert uber_twd["category"] == "Transport"
+    assert uber_twd["currency"] == "TWD"
+
+    uber_usd = next(
+        transaction
+        for transaction in transactions
+        if transaction["merchant"] == "UBER TRIP"
+        and transaction["amount"] == 365.0
+    )
+    assert uber_usd["date"] == "2025-04-20"
+    assert uber_usd["category"] == "Transport"
 
     cpc = _transaction_by_merchant(transactions, "台灣中油")
     assert cpc["date"] == "2025-04-21"
@@ -92,4 +107,10 @@ def test_parse_dbs_fixture_parses_taiwan_statement_lines_and_refunds() -> None:
 def test_categorize_merchant_handles_known_merchants() -> None:
     assert categorize_merchant("STARBUCKS RESERVE", 7.5) == "Dining"
     assert categorize_merchant("OPENAI API", 20.0) == "Digital Services"
+    assert categorize_merchant("Cursor Pro Team", 20.0) == "Digital Services"
+    assert categorize_merchant("Perplexity AI", 20.0) == "Digital Services"
     assert categorize_merchant("台灣中油", 900.0) == "Transport"
+    assert categorize_merchant("優步 Uber *Trip", 220.0) == "Transport"
+    assert categorize_merchant("富邦ｍｏｍｏ", 500.0) == "Shopping"
+    assert categorize_merchant("ＣＯＵＰＡＮＧ 酷澎", 500.0) == "Shopping"
+    assert categorize_merchant("陳耀訓 麵包埠", 120.0) == "Dining"

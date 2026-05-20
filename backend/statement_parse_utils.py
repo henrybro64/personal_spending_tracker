@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
 
 US_STATEMENT_PERIOD_PATTERN = re.compile(
@@ -146,3 +147,55 @@ def infer_us_transaction_date(
         raise ValueError(f"Unable to infer year for US date: {transaction_date_text}")
 
     return transaction_date_text
+
+
+CTBC_ROC_DATE_LINE = re.compile(
+    r"^\s*"
+    r"(?P<transaction_date>\d{2,3}/\d{1,2}/\d{1,2})\s+"
+    r"(?P<posted_date>\d{2,3}/\d{1,2}/\d{1,2})\s+"
+    r"(?P<rest>.+)$"
+)
+
+CTBC_AMOUNT_TRAILING = re.compile(
+    r"^(?P<merchant>.+?)\s+"
+    r"(?:USD\s+(?P<foreign_amount>[-\d,.]+)\s+)?"
+    r"(?P<amount>-?[\d,]+(?:\.\d{2})?)"
+    r"(?:\s+(?P<mcc>\d{4}))?"
+    r"\s*$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CtbcRocLineParts:
+    transaction_date: str
+    posted_date: str
+    merchant: str
+    amount: float
+    mcc: str | None
+
+
+def parse_ctbc_roc_statement_line(line: str) -> CtbcRocLineParts | None:
+    """Parse CTBC 消費日/入帳日 lines, including foreign-currency Uber-style rows."""
+    normalized_line = " ".join(line.split())
+    if not normalized_line:
+        return None
+
+    header_match = CTBC_ROC_DATE_LINE.match(normalized_line)
+    if not header_match:
+        return None
+
+    trailing_match = CTBC_AMOUNT_TRAILING.match(header_match.group("rest").strip())
+    if not trailing_match:
+        return None
+
+    merchant = " ".join(trailing_match.group("merchant").split())
+    if not merchant:
+        merchant = "(no description)"
+
+    return CtbcRocLineParts(
+        transaction_date=header_match.group("transaction_date"),
+        posted_date=header_match.group("posted_date"),
+        merchant=merchant,
+        amount=parse_amount(trailing_match.group("amount")),
+        mcc=trailing_match.group("mcc"),
+    )
