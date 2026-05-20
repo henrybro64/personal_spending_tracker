@@ -24,13 +24,14 @@ import {
   shorthands,
   tokens,
 } from "@fluentui/react-components";
-import { apiFetchJson, ApiError } from "../api";
+import { apiFetch, apiFetchJson, ApiError } from "../api";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
 import { translate } from "../messages";
 
 type Transaction = {
+  id: number;
   date: string;
   merchant: string;
   amount: number;
@@ -40,6 +41,10 @@ type Transaction = {
 
 type TransactionsResponse = {
   transactions: Transaction[];
+};
+
+type TransactionUpdateResponse = {
+  transaction: Transaction;
 };
 
 type AmountFilter = "all" | "spend" | "refunds";
@@ -62,6 +67,28 @@ type YearGroup = {
   year: string;
   months: MonthGroup[];
 };
+
+const transactionCategories = [
+  "Transportation",
+  "Shopping / Online Retail",
+  "Digital Services",
+  "Dining",
+  "Dining / Food",
+  "Groceries",
+  "Travel",
+  "Utilities / Telecom",
+  "Healthcare / Medical",
+  "Subscription / Membership",
+  "Insurance",
+  "Education / Certification",
+  "Tax / Accounting",
+  "Government / Consular",
+  "Bank Fees / Interest",
+  "Cash & Fees",
+  "Payment / Credit",
+  "Refunds & Credits",
+  "Other Spending",
+] as const;
 
 const useStyles = makeStyles({
   page: {
@@ -260,6 +287,11 @@ const useStyles = makeStyles({
     ...shorthands.border("1px", "solid", tokens.colorNeutralStroke1),
     ...shorthands.borderRadius(tokens.borderRadiusMedium),
   },
+  categoryControl: {
+    minWidth: "180px",
+    height: "32px",
+    fontSize: tokens.fontSizeBase200,
+  },
 });
 
 function formatCurrency(amount: number, currencyCode: string = "USD") {
@@ -356,6 +388,7 @@ export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const [amountFilter, setAmountFilter] = useState<AmountFilter>("all");
@@ -363,11 +396,14 @@ export default function TransactionsPage() {
   const [selectedMerchant, setSelectedMerchant] = useState<string | null>(null);
   const [selectedYear, setSelectedYear] = useState<string | null>(null);
   const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
+  const [savingTransactionId, setSavingTransactionId] = useState<number | null>(null);
+  const [categoryDrafts, setCategoryDrafts] = useState<Record<number, string>>({});
 
   useEffect(() => {
     async function loadTransactions() {
       setLoading(true);
       setError("");
+      setMessage("");
       try {
         const payload = await apiFetchJson<TransactionsResponse>(
           "/transactions?range=all&limit=5000",
@@ -482,6 +518,58 @@ export default function TransactionsPage() {
         : nextYearGroup.months[0].monthKey;
     setSelectedMonthKey(nextMonth);
   }, [groupedTransactions, selectedYear, selectedMonthKey]);
+
+  function draftCategory(transaction: Transaction): string {
+    return categoryDrafts[transaction.id] ?? transaction.category;
+  }
+
+  async function saveTransactionCategory(transaction: Transaction) {
+    const category = draftCategory(transaction).trim();
+    if (!category) {
+      setError("Category is required.");
+      return;
+    }
+    setSavingTransactionId(transaction.id);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch(`/transactions/${transaction.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category }),
+      });
+      const payload = (await response.json()) as
+        | TransactionUpdateResponse
+        | { detail?: string };
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
+        throw new Error(
+          "detail" in payload && typeof payload.detail === "string"
+            ? payload.detail
+            : "Failed to update category."
+        );
+      }
+      const updated = (payload as TransactionUpdateResponse).transaction;
+      setTransactions((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item))
+      );
+      setCategoryDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[transaction.id];
+        return nextDrafts;
+      });
+      setMessage(`Updated category for ${updated.merchant}.`);
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error ? saveError.message : "Failed to update category."
+      );
+    } finally {
+      setSavingTransactionId(null);
+    }
+  }
 
   if (status === "loading") {
     return (
@@ -646,6 +734,7 @@ export default function TransactionsPage() {
             <Body1>
               {filteredTransactions.length} records | Net total: {formatCurrency(totalAmount)}
             </Body1>
+            {message ? <Body1>{message}</Body1> : null}
           </div>
 
           <Card className={styles.card}>
@@ -712,17 +801,45 @@ export default function TransactionsPage() {
                             <TableHeaderCell className={styles.tableHeaderCell}>Merchant</TableHeaderCell>
                             <TableHeaderCell className={styles.tableHeaderCell}>Category</TableHeaderCell>
                             <TableHeaderCell className={styles.tableHeaderCell}>Amount</TableHeaderCell>
+                            <TableHeaderCell className={styles.tableHeaderCell}>Action</TableHeaderCell>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {activeMonthGroup.transactions.map((transaction, index) => (
                             <TableRow
                               className={index % 2 ? styles.rowAlt : undefined}
-                              key={`${transaction.date}-${transaction.merchant}-${index}`}
+                              key={transaction.id}
                             >
                               <TableCell className={styles.tableCell}>{transaction.date}</TableCell>
                               <TableCell className={styles.tableCell}>{transaction.merchant}</TableCell>
-                              <TableCell className={styles.tableCell}>{transaction.category}</TableCell>
+                              <TableCell className={styles.tableCell}>
+                                <select
+                                  className={mergeClasses(
+                                    styles.selectControl,
+                                    styles.categoryControl
+                                  )}
+                                  value={draftCategory(transaction)}
+                                  onChange={(event) =>
+                                    setCategoryDrafts((currentDrafts) => ({
+                                      ...currentDrafts,
+                                      [transaction.id]: event.target.value,
+                                    }))
+                                  }
+                                >
+                                  {transactionCategories.map((categoryOption) => (
+                                    <option key={categoryOption} value={categoryOption}>
+                                      {categoryOption}
+                                    </option>
+                                  ))}
+                                  {!transactionCategories.includes(
+                                    transaction.category as (typeof transactionCategories)[number]
+                                  ) ? (
+                                    <option value={transaction.category}>
+                                      {transaction.category}
+                                    </option>
+                                  ) : null}
+                                </select>
+                              </TableCell>
                               <TableCell
                                 className={mergeClasses(
                                   styles.tableCell,
@@ -730,6 +847,18 @@ export default function TransactionsPage() {
                                 )}
                               >
                                 {formatCurrency(transaction.amount, transaction.currency ?? "USD")}
+                              </TableCell>
+                              <TableCell className={styles.tableCell}>
+                                <Button
+                                  appearance="secondary"
+                                  disabled={savingTransactionId === transaction.id}
+                                  onClick={() => void saveTransactionCategory(transaction)}
+                                  size="small"
+                                >
+                                  {savingTransactionId === transaction.id
+                                    ? "Saving..."
+                                    : "Save"}
+                                </Button>
                               </TableCell>
                             </TableRow>
                           ))}

@@ -107,6 +107,17 @@ type BatchTransactionsResponse = {
   transactions: BatchTransaction[];
 };
 
+type NeedsReviewMerchantSummary = {
+  merchant_raw: string;
+  transaction_count: number;
+  sample_category: string;
+  sample_excluded: boolean;
+};
+
+type NeedsReviewMerchantsResponse = {
+  merchants: NeedsReviewMerchantSummary[];
+};
+
 type DraftState = {
   category: string;
   exclude_from_spending: boolean;
@@ -128,7 +139,7 @@ const reviewCategories = [
   "Healthcare / Medical",
   "Bank Fees / Interest",
   "Cash Advance / ATM",
-  "Unknown / Needs Review",
+  "Other Spending",
 ] as const;
 
 const useStyles = makeStyles({
@@ -270,6 +281,12 @@ const useStyles = makeStyles({
   merchantCell: {
     minWidth: "220px",
   },
+  merchantRuleRow: {
+    display: "grid",
+    gridTemplateColumns: "minmax(200px, 1fr) auto auto",
+    gap: "10px",
+    alignItems: "center",
+  },
 });
 
 function formatCurrency(amount: number, currencyCode: string) {
@@ -310,23 +327,38 @@ export default function BatchReviewPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [skippedFiles, setSkippedFiles] = useState<SkippedFile[]>([]);
+  const [needsReviewMerchants, setNeedsReviewMerchants] = useState<
+    NeedsReviewMerchantSummary[]
+  >([]);
+  const [merchantCategoryDrafts, setMerchantCategoryDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [bulkSavingMerchant, setBulkSavingMerchant] = useState<string | null>(null);
 
   async function loadBatchState(reviewOnly: boolean) {
     setLoading(true);
     setError("");
     try {
-      const [latestPayload, transactionsPayload] = await Promise.all([
-        apiFetchJson<BatchImportLatestResponse>(
-          "/batch-imports/latest",
-          "Failed to load batch-import status."
-        ),
+      const latestPayload = await apiFetchJson<BatchImportLatestResponse>(
+        "/batch-imports/latest",
+        "Failed to load batch-import status."
+      );
+      const activeRunId = latestPayload.run?.id ?? null;
+      const [transactionsPayload, merchantsPayload] = await Promise.all([
         apiFetchJson<BatchTransactionsResponse>(
           `/batch-imports/transactions?needs_review_only=${reviewOnly}&limit=500`,
           "Failed to load batch-import transactions."
         ),
+        activeRunId
+          ? apiFetchJson<NeedsReviewMerchantsResponse>(
+              `/batch-imports/needs-review-merchants?run_id=${activeRunId}&limit=20`,
+              "Failed to load review merchants."
+            )
+          : Promise.resolve({ merchants: [] }),
       ]);
       setRun(latestPayload.run);
       setTransactions(transactionsPayload.transactions);
+      setNeedsReviewMerchants(merchantsPayload.merchants);
     } catch (loadError) {
       if (loadError instanceof ApiError && loadError.status === 401) {
         await refreshSession();
@@ -372,6 +404,60 @@ export default function BatchReviewPage() {
       ...currentDrafts,
       [transactionId]: nextDraft,
     }));
+  }
+
+  function merchantDraftCategory(item: NeedsReviewMerchantSummary): string {
+    return merchantCategoryDrafts[item.merchant_raw] ?? item.sample_category;
+  }
+
+  async function onBulkSaveMerchant(item: NeedsReviewMerchantSummary) {
+    if (!run) {
+      return;
+    }
+    const category = merchantDraftCategory(item);
+    setBulkSavingMerchant(item.merchant_raw);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch("/batch-imports/review/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          run_id: run.id,
+          merchant_raw: item.merchant_raw,
+          category,
+          exclude_from_spending: false,
+          save_rule: true,
+        }),
+      });
+      const payload = (await response.json()) as
+        | { updated_count: number }
+        | { detail?: string };
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
+        throw new Error(
+          "detail" in payload && typeof payload.detail === "string"
+            ? payload.detail
+            : "Failed to apply merchant review rule."
+        );
+      }
+      const updatedCount = (payload as { updated_count: number }).updated_count;
+      setMessage(
+        `Applied ${category} to ${updatedCount} row(s) for ${item.merchant_raw}.`
+      );
+      await loadBatchState(needsReviewOnly);
+    } catch (bulkSaveError) {
+      setError(
+        bulkSaveError instanceof Error
+          ? bulkSaveError.message
+          : "Failed to apply merchant review rule."
+      );
+    } finally {
+      setBulkSavingMerchant(null);
+    }
   }
 
   async function onSyncToDashboard() {
@@ -712,6 +798,50 @@ export default function BatchReviewPage() {
                       Example: {files[0].detail}
                     </Body1>
                   ) : null}
+                </div>
+              ))}
+            </Card>
+          ) : null}
+
+          {needsReviewMerchants.length > 0 ? (
+            <Card className={mergeClasses(styles.card, styles.sidebarPanel)}>
+              <Title2>Top merchants needing review</Title2>
+              <Body1 className={styles.quietText}>
+                Apply one category + rule to clear repeated unknown merchants.
+              </Body1>
+              {needsReviewMerchants.map((item) => (
+                <div className={styles.merchantRuleRow} key={item.merchant_raw}>
+                  <div>
+                    <div>{item.merchant_raw}</div>
+                    <Body1 className={styles.quietText}>
+                      {item.transaction_count} row(s)
+                    </Body1>
+                  </div>
+                  <select
+                    className={styles.selectControl}
+                    value={merchantDraftCategory(item)}
+                    onChange={(event) =>
+                      setMerchantCategoryDrafts((currentDrafts) => ({
+                        ...currentDrafts,
+                        [item.merchant_raw]: event.target.value,
+                      }))
+                    }
+                  >
+                    {reviewCategories.map((categoryOption) => (
+                      <option key={categoryOption} value={categoryOption}>
+                        {categoryOption}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    appearance="secondary"
+                    disabled={bulkSavingMerchant === item.merchant_raw}
+                    onClick={() => void onBulkSaveMerchant(item)}
+                  >
+                    {bulkSavingMerchant === item.merchant_raw
+                      ? "Applying..."
+                      : "Apply to all"}
+                  </Button>
                 </div>
               ))}
             </Card>

@@ -34,6 +34,7 @@ class ExistingUpload(TypedDict):
 
 
 class StoredTransaction(TypedDict):
+    id: int
     date: str
     merchant: str
     amount: float
@@ -857,6 +858,7 @@ def insert_manual_transaction(
         connection.commit()
 
     return {
+        "id": 0,
         "date": transaction_date,
         "merchant": normalized_merchant,
         "amount": amount,
@@ -865,6 +867,58 @@ def insert_manual_transaction(
         "payment_method": normalized_payment_method,
         "file_name": file_name,
         "original_file_name": original_file_name,
+    }
+
+
+def update_transaction_category(
+    *,
+    user_id: int,
+    transaction_id: int,
+    category: str,
+    database_url: str | None = None,
+) -> StoredTransaction | None:
+    resolved_database_url = init_db(database_url)
+    normalized_category = category.strip()
+    if not normalized_category:
+        return None
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE transactions
+                SET category = %s
+                WHERE id = %s
+                  AND user_id = %s
+                RETURNING
+                    id,
+                    date,
+                    merchant,
+                    amount,
+                    COALESCE(category, '') AS category,
+                    COALESCE(currency, 'USD') AS currency,
+                    payment_method,
+                    file_name,
+                    COALESCE(original_file_name, file_name) AS original_file_name
+                """,
+                (normalized_category, transaction_id, user_id),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+
+    if row is None:
+        return None
+
+    return {
+        "id": int(row[0]),
+        "date": str(row[1]),
+        "merchant": str(row[2]),
+        "amount": float(row[3]),
+        "category": _normalize_category_for_storage(str(row[4]), float(row[3])),
+        "currency": str(row[5]),
+        "payment_method": str(row[6]) if row[6] is not None else None,
+        "file_name": str(row[7]),
+        "original_file_name": str(row[8]),
     }
 
 
@@ -996,6 +1050,7 @@ def get_transactions(
     date_filter_clause, range_params = _build_user_date_filter_clause(user_id, range_key)
     transaction_query = f"""
         SELECT
+            id,
             date,
             merchant,
             amount,
@@ -1024,14 +1079,15 @@ def get_transactions(
 
     return [
         {
-            "date": str(row[0]),
-            "merchant": str(row[1]),
-            "amount": float(row[2]),
-            "category": _normalize_category_for_storage(str(row[3]), float(row[2])),
-            "currency": str(row[4]),
-            "payment_method": str(row[5]) if row[5] is not None else None,
-            "file_name": str(row[6]),
-            "original_file_name": str(row[7]),
+            "id": int(row[0]),
+            "date": str(row[1]),
+            "merchant": str(row[2]),
+            "amount": float(row[3]),
+            "category": _normalize_category_for_storage(str(row[4]), float(row[3])),
+            "currency": str(row[5]),
+            "payment_method": str(row[6]) if row[6] is not None else None,
+            "file_name": str(row[7]),
+            "original_file_name": str(row[8]),
         }
         for row in rows
     ]

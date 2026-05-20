@@ -74,6 +74,8 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "TEXACO",
             "TRAIN",
             "UBER",
+            "優步",
+            "优步",
             "UBIKE",
             "TAXI",
             "台鐵",
@@ -128,6 +130,8 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "UBER EATS",
             "FOODPANDA",
             "熊貓",
+            "陳耀訓",
+            "麵包埠",
             "麥當勞",
             "摩斯",
             "肯德基",
@@ -153,6 +157,10 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "WALMART",
             "PCHOME",
             "MOMO",
+            "ＭＯＭＯ",
+            "COUPANG",
+            "ＣＯＵＰＡＮＧ",
+            "酷澎",
             "SHOPEE",
             "蝦皮",
             "博客來",
@@ -260,6 +268,8 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "ICLOUD",
             "OPENAI",
             "CHATGPT",
+            "CURSOR",
+            "PERPLEXITY",
             "NOTION",
             "FIGMA",
             "GITHUB",
@@ -472,6 +482,13 @@ OTHER_SPENDING_GRANULAR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
     ),
 ]
 
+AI_SERVICE_KEYWORDS: tuple[str, ...] = (
+    "OPENAI",
+    "CHATGPT",
+    "CURSOR",
+    "PERPLEXITY",
+)
+
 
 def categorize_merchant(merchant: str, amount: float | None = None) -> str:
     if is_credit_card_bill_payment(merchant):
@@ -479,6 +496,11 @@ def categorize_merchant(merchant: str, amount: float | None = None) -> str:
 
     merchant_upper = " ".join(merchant.upper().split())
     normalized_merchant = re.sub(r"[^A-Z0-9]+", " ", merchant_upper).strip()
+    if any(
+        keyword in normalized_merchant or keyword in merchant_upper
+        for keyword in AI_SERVICE_KEYWORDS
+    ):
+        return "Digital Services"
 
     for category, keywords in CATEGORY_KEYWORDS:
         if any(

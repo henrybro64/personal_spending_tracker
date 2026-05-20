@@ -68,7 +68,8 @@ def test_parse_ctbc_fixture_converts_roc_dates_and_twd_currency() -> None:
     uber_usd = next(
         transaction
         for transaction in transactions
-        if transaction["merchant"] == "UBER TRIP" and transaction["amount"] == 365.0
+        if transaction["merchant"] == "UBER TRIP"
+        and transaction["amount"] == 365.0
     )
     assert uber_usd["date"] == "2025-04-20"
     assert uber_usd["category"] == "Transport"
@@ -106,4 +107,10 @@ def test_parse_dbs_fixture_parses_taiwan_statement_lines_and_refunds() -> None:
 def test_categorize_merchant_handles_known_merchants() -> None:
     assert categorize_merchant("STARBUCKS RESERVE", 7.5) == "Dining"
     assert categorize_merchant("OPENAI API", 20.0) == "Digital Services"
+    assert categorize_merchant("Cursor Pro Team", 20.0) == "Digital Services"
+    assert categorize_merchant("Perplexity AI", 20.0) == "Digital Services"
     assert categorize_merchant("台灣中油", 900.0) == "Transport"
+    assert categorize_merchant("優步 Uber *Trip", 220.0) == "Transport"
+    assert categorize_merchant("富邦ｍｏｍｏ", 500.0) == "Shopping"
+    assert categorize_merchant("ＣＯＵＰＡＮＧ 酷澎", 500.0) == "Shopping"
+    assert categorize_merchant("陳耀訓 麵包埠", 120.0) == "Dining"

@@ -44,6 +44,20 @@ class CategoryEngineTests(unittest.TestCase):
         self.assertTrue(payment_match.exclude_from_spending)
         self.assertEqual("payment_or_credit", payment_match.transaction_type)
 
+        uber_zh_match = engine.categorize("優步 台灣", 220.00)
+        self.assertEqual("Transportation", uber_zh_match.category)
+        self.assertFalse(uber_zh_match.exclude_from_spending)
+        self.assertEqual("purchase", uber_zh_match.transaction_type)
+
+        couapang_match = engine.categorize("ＣＯＵＰＡＮＧ 酷澎", 520.00)
+        self.assertEqual("Shopping / Online Retail", couapang_match.category)
+
+        ai_match = engine.categorize("Cursor Pro Team", 20.00)
+        self.assertEqual("Digital Services", ai_match.category)
+
+        bakery_match = engine.categorize("陳耀訓 麵包埠", 120.00)
+        self.assertEqual("Dining / Food", bakery_match.category)
+
         bill_payment_match = engine.categorize("ATM/網路繳款/本行帳戶繳款", 37628.16)
         self.assertEqual("Payment / Credit", bill_payment_match.category)
         self.assertTrue(bill_payment_match.exclude_from_spending)

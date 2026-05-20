@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TypedDict
 
 from .category import (
-    UNKNOWN_CATEGORY,
     CategoryRule,
     normalize_merchant_key,
     transaction_type_for_category,
@@ -46,6 +45,13 @@ class BatchImportRunSummary(TypedDict):
     sqlite_output_path: str
     pdf_source_dir: str
     text_source_dir: str
+
+
+class NeedsReviewMerchantSummary(TypedDict):
+    merchant_raw: str
+    transaction_count: int
+    sample_category: str
+    sample_excluded: bool
 
 
 class BatchImportStore:
@@ -422,6 +428,127 @@ class BatchImportStore:
             ).fetchall()
 
         return [self._row_to_transaction(row) for row in rows]
+
+    def list_needs_review_merchants(
+        self,
+        *,
+        run_id: int | None = None,
+        limit: int = 20,
+    ) -> list[NeedsReviewMerchantSummary]:
+        effective_run_id = run_id or self._latest_run_id()
+        if effective_run_id is None:
+            return []
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    merchant_raw,
+                    COUNT(*) AS transaction_count,
+                    MIN(category) AS sample_category,
+                    MIN(exclude_from_spending) AS sample_excluded
+                FROM imported_transactions
+                WHERE import_run_id = ?
+                  AND needs_review = 1
+                GROUP BY merchant_raw
+                ORDER BY COUNT(*) DESC, merchant_raw ASC
+                LIMIT ?
+                """,
+                (effective_run_id, limit),
+            ).fetchall()
+
+        return [
+            {
+                "merchant_raw": str(row["merchant_raw"]),
+                "transaction_count": int(row["transaction_count"]),
+                "sample_category": str(row["sample_category"]),
+                "sample_excluded": bool(row["sample_excluded"]),
+            }
+            for row in rows
+        ]
+
+    def bulk_update_merchant_review(
+        self,
+        *,
+        run_id: int,
+        merchant_raw: str,
+        category: str,
+        exclude_from_spending: bool,
+        save_rule: bool,
+    ) -> int:
+        transaction_type = transaction_type_for_category(
+            category,
+            exclude_from_spending,
+        )
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, amount
+                FROM imported_transactions
+                WHERE import_run_id = ?
+                  AND merchant_raw = ?
+                  AND needs_review = 1
+                """,
+                (run_id, merchant_raw),
+            ).fetchall()
+            if not rows:
+                return 0
+
+            updates: list[tuple[float, str, int, int, str, int]] = []
+            for row in rows:
+                normalized_amount = (
+                    -abs(float(row["amount"]))
+                    if transaction_type == "payment_or_credit"
+                    else abs(float(row["amount"]))
+                )
+                updates.append(
+                    (
+                        normalized_amount,
+                        category,
+                        int(exclude_from_spending),
+                        0,
+                        transaction_type,
+                        int(row["id"]),
+                    )
+                )
+
+            connection.executemany(
+                """
+                UPDATE imported_transactions
+                SET
+                    amount = ?,
+                    category = ?,
+                    exclude_from_spending = ?,
+                    needs_review = ?,
+                    transaction_type = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
+
+            if save_rule:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO merchant_rules (
+                        merchant_pattern,
+                        category,
+                        exclude_from_spending,
+                        priority,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalize_merchant_key(merchant_raw),
+                        category,
+                        int(exclude_from_spending),
+                        10,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+
+        return len(rows)
 
     def is_transaction_synced(self, transaction_id: int) -> bool:
         with self._connect() as connection:
