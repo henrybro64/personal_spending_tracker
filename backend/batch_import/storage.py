@@ -440,8 +440,9 @@ class BatchImportStore:
         if effective_run_id is None:
             return []
 
-        fetch_cap = max(limit * 50, 200)
-
+        # No SQL LIMIT: digit-only CTBC noise can be hundreds of distinct
+        # merchant_raw values; capping the query before Python filtering
+        # would drop real merchants from the bulk-review panel.
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -455,9 +456,8 @@ class BatchImportStore:
                   AND needs_review = 1
                 GROUP BY merchant_raw
                 ORDER BY COUNT(*) DESC, merchant_raw ASC
-                LIMIT ?
                 """,
-                (effective_run_id, fetch_cap),
+                (effective_run_id,),
             ).fetchall()
 
         summaries: list[NeedsReviewMerchantSummary] = []

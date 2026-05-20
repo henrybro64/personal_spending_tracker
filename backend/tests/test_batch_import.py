@@ -509,6 +509,60 @@ class MerchantDigitNoiseTests(unittest.TestCase):
             self.assertEqual("REAL STORE", merchants[0]["merchant_raw"])
             self.assertEqual(1, merchants[0]["transaction_count"])
 
+    def test_needs_review_merchants_survives_many_digit_noise_groups(self) -> None:
+        """Real merchants must appear even when numeric junk dominates by row count."""
+        from backend.batch_import.category import UNKNOWN_CATEGORY
+        from backend.batch_import.models import NormalizedTransaction
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            db_path = Path(temp_dir_name) / "batch.sqlite3"
+            store = BatchImportStore(db_path)
+            store.initialize()
+            txs: list[NormalizedTransaction] = []
+            for noise_index in range(250):
+                txs.append(
+                    NormalizedTransaction(
+                        statement_file="s.pdf",
+                        bank="CTBC",
+                        card_last4="1234",
+                        transaction_date="2024-01-01",
+                        posted_date=None,
+                        merchant_raw=str(noise_index),
+                        amount=float(noise_index),
+                        currency="TWD",
+                        transaction_type="purchase",
+                        category=UNKNOWN_CATEGORY,
+                        exclude_from_spending=False,
+                        needs_review=True,
+                    )
+                )
+            txs.append(
+                NormalizedTransaction(
+                    statement_file="s.pdf",
+                    bank="CTBC",
+                    card_last4="1234",
+                    transaction_date="2024-01-02",
+                    posted_date=None,
+                    merchant_raw="UBER TRIP",
+                    amount=99.0,
+                    currency="TWD",
+                    transaction_type="purchase",
+                    category=UNKNOWN_CATEGORY,
+                    exclude_from_spending=False,
+                    needs_review=True,
+                )
+            )
+            run_id, _, _ = store.record_import_run(
+                txs,
+                pdf_source_dir="/tmp",
+                text_source_dir="/tmp",
+                csv_output_path="/tmp/out.csv",
+                statement_count=1,
+            )
+            merchants = store.list_needs_review_merchants(run_id=run_id, limit=5)
+            self.assertEqual(1, len(merchants))
+            self.assertEqual("UBER TRIP", merchants[0]["merchant_raw"])
+
     def test_bulk_dismiss_digit_only_noise(self) -> None:
         from backend.batch_import.category import UNKNOWN_CATEGORY
         from backend.batch_import.models import NormalizedTransaction
