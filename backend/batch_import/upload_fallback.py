@@ -28,6 +28,32 @@ def upload_fallback_supported(parser_name: str) -> bool:
     return parser_name in UPLOAD_FALLBACK_PARSER_NAMES
 
 
+def _normalized_transaction_key(
+    transaction: NormalizedTransaction,
+) -> tuple[str, str, float]:
+    return (
+        transaction["transaction_date"],
+        transaction["merchant_raw"].upper(),
+        round(float(transaction["amount"]), 2),
+    )
+
+
+def merge_normalized_transactions(
+    primary: list[NormalizedTransaction],
+    supplemental: list[NormalizedTransaction],
+) -> list[NormalizedTransaction]:
+    """Union batch-parsed rows with upload-parser rows, deduping identical charges."""
+    seen = {_normalized_transaction_key(transaction) for transaction in primary}
+    merged = list(primary)
+    for transaction in supplemental:
+        key = _normalized_transaction_key(transaction)
+        if key in seen:
+            continue
+        merged.append(transaction)
+        seen.add(key)
+    return merged
+
+
 def _is_valid_iso_date(date_text: str) -> bool:
     if not _ISO_DATE.fullmatch(date_text.strip()):
         return False

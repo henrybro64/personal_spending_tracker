@@ -198,7 +198,7 @@ class BatchImportRequest(BaseModel):
 
 class BatchImportMergeRequest(BaseModel):
     run_id: int | None = None
-    include_needs_review: bool = False
+    include_needs_review: bool = True
     include_excluded: bool = False
     sqlite_output_path: str | None = None
 

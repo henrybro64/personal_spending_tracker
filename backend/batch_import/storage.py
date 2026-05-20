@@ -384,7 +384,7 @@ class BatchImportStore:
         self,
         *,
         run_id: int,
-        include_needs_review: bool = False,
+        include_needs_review: bool = True,
         include_excluded: bool = False,
     ) -> list[BatchStoredTransaction]:
         filters = ["import_run_id = ?"]
@@ -492,7 +492,7 @@ class BatchImportStore:
                 if transaction_type == "payment_or_credit"
                 else abs(float(row["amount"]))
             )
-            needs_review = category == UNKNOWN_CATEGORY
+            needs_review = False
 
             connection.execute(
                 """

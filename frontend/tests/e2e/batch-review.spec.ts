@@ -42,7 +42,7 @@ const sampleTransactions = [
     amount: 12.34,
     currency: "USD",
     transaction_type: "purchase",
-    category: "Unknown / Needs Review",
+    category: "Other Spending",
     exclude_from_spending: false,
     needs_review: true,
   },

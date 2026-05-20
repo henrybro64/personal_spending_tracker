@@ -15,6 +15,7 @@ from .paths import (
 )
 from .storage import BatchImportStore
 from .upload_fallback import (
+    merge_normalized_transactions,
     transactions_from_upload_parser,
     upload_fallback_supported,
 )
@@ -78,13 +79,20 @@ class StatementImporter:
                     statement_text=statement_text,
                     category_engine=category_engine,
                 )
-                if not parsed_transactions and upload_fallback_supported(parser.name):
-                    parsed_transactions = transactions_from_upload_parser(
+                if upload_fallback_supported(parser.name):
+                    fallback_transactions = transactions_from_upload_parser(
                         source_path,
                         statement_text,
                         category_engine,
                         bank=parser.bank,
                     )
+                    if not parsed_transactions:
+                        parsed_transactions = fallback_transactions
+                    elif fallback_transactions:
+                        parsed_transactions = merge_normalized_transactions(
+                            parsed_transactions,
+                            fallback_transactions,
+                        )
                 if not parsed_transactions:
                     skipped_files.append(
                         {

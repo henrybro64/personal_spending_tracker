@@ -226,7 +226,7 @@ class CategoryEngine:
                 )
 
         return CategoryMatch(
-            category=UNKNOWN_CATEGORY,
+            category="Other Spending",
             exclude_from_spending=amount < 0,
             transaction_type="payment_or_credit" if amount < 0 else "purchase",
             needs_review=True,

@@ -49,7 +49,7 @@ class CategoryEngineTests(unittest.TestCase):
         self.assertTrue(bill_payment_match.exclude_from_spending)
 
         unknown_match = engine.categorize("MYSTERY MERCHANT", 12.34)
-        self.assertEqual("Unknown / Needs Review", unknown_match.category)
+        self.assertEqual("Other Spending", unknown_match.category)
         self.assertTrue(unknown_match.needs_review)
 
 
@@ -77,8 +77,8 @@ class ParserFixtureTests(unittest.TestCase):
                 "CBGCC-DAILYSTMT_20240215.txt",
                 "CTBC",
                 "4321",
-                2,
-                ["Dining / Food", "Unknown / Needs Review"],
+                3,
+                ["Dining / Food", "Transportation", "Other Spending"],
             ),
             (
                 "ctbc_card_statement.txt",
