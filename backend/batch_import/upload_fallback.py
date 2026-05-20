@@ -9,8 +9,9 @@ from backend.parser import parse_transactions
 from .category import CategoryEngine
 from .models import NormalizedTransaction
 
-# PDF text for Taiwan banks (CTBC/DBS) is parsed reliably by parser.py; US cards
-# need statement period metadata that batch parsers enforce, so do not fallback.
+# PDF text for Taiwan banks (CTBC/DBS) is parsed reliably by parser.py.
+# US cards need statement period metadata that batch parsers enforce.
+# Therefore, do not fallback for US-card parsers.
 UPLOAD_FALLBACK_PARSER_NAMES = frozenset({"ctbc_daily", "ctbc_card", "dbs"})
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -32,9 +33,9 @@ def _normalized_transaction_key(
     transaction: NormalizedTransaction,
 ) -> tuple[str, str, float]:
     return (
-        transaction["transaction_date"],
-        transaction["merchant_raw"].upper(),
-        round(float(transaction["amount"]), 2),
+        transaction.transaction_date,
+        transaction.merchant_raw.upper(),
+        round(float(transaction.amount), 2),
     )
 
 
@@ -42,7 +43,7 @@ def merge_normalized_transactions(
     primary: list[NormalizedTransaction],
     supplemental: list[NormalizedTransaction],
 ) -> list[NormalizedTransaction]:
-    """Union batch-parsed rows with upload-parser rows, deduping identical charges."""
+    """Union batch-parser and upload-parser rows, deduping identical charges."""
     seen = {_normalized_transaction_key(transaction) for transaction in primary}
     merged = list(primary)
     for transaction in supplemental:

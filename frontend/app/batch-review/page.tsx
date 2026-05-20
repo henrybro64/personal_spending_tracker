@@ -230,8 +230,13 @@ const useStyles = makeStyles({
     gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
     gap: "12px",
   },
-  metaItemWide: {
-    gridColumn: "1 / -1",
+  metaPaths: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+    marginTop: "12px",
+    paddingTop: "12px",
+    ...shorthands.borderTop("1px", "solid", tokens.colorNeutralStroke2),
   },
   metaItem: {
     display: "flex",
@@ -707,53 +712,57 @@ export default function BatchReviewPage() {
             </div>
 
             {run ? (
-              <div className={styles.metaGrid}>
-                <div className={styles.metaItem}>
-                  <div className={styles.metaLabel}>Imported</div>
-                  <Body1>{formatDateTime(run.imported_at)}</Body1>
+              <>
+                <div className={styles.metaGrid}>
+                  <div className={styles.metaItem}>
+                    <div className={styles.metaLabel}>Imported</div>
+                    <Body1>{formatDateTime(run.imported_at)}</Body1>
+                  </div>
+                  <div className={styles.metaItem}>
+                    <div className={styles.metaLabel}>Statements</div>
+                    <Body1>{run.statement_count}</Body1>
+                  </div>
+                  <div className={styles.metaItem}>
+                    <div className={styles.metaLabel}>Needs review</div>
+                    <Body1>{run.needs_review_count}</Body1>
+                  </div>
                 </div>
-                <div className={styles.metaItem}>
-                  <div className={styles.metaLabel}>Statements</div>
-                  <Body1>{run.statement_count}</Body1>
+                <div className={styles.metaPaths}>
+                  <div className={styles.metaItem}>
+                    <div className={styles.metaLabel}>CSV output</div>
+                    <Body1
+                      className={styles.metaPathValue}
+                      title={run.csv_output_path}
+                    >
+                      {run.csv_output_path}
+                    </Body1>
+                  </div>
+                  <div className={styles.metaItem}>
+                    <div className={styles.metaLabel}>SQLite output</div>
+                    <Body1
+                      className={styles.metaPathValue}
+                      title={run.sqlite_output_path}
+                    >
+                      {run.sqlite_output_path}
+                    </Body1>
+                  </div>
+                  <div className={styles.metaItem}>
+                    <div className={styles.metaLabel}>Source directories</div>
+                    <Body1
+                      className={styles.metaPathValue}
+                      title={run.pdf_source_dir}
+                    >
+                      {run.pdf_source_dir}
+                    </Body1>
+                    <Body1
+                      className={styles.metaPathValue}
+                      title={run.text_source_dir}
+                    >
+                      {run.text_source_dir}
+                    </Body1>
+                  </div>
                 </div>
-                <div className={styles.metaItem}>
-                  <div className={styles.metaLabel}>Needs review</div>
-                  <Body1>{run.needs_review_count}</Body1>
-                </div>
-                <div className={mergeClasses(styles.metaItem, styles.metaItemWide)}>
-                  <div className={styles.metaLabel}>CSV output</div>
-                  <Body1
-                    className={styles.metaPathValue}
-                    title={run.csv_output_path}
-                  >
-                    {run.csv_output_path}
-                  </Body1>
-                </div>
-                <div className={mergeClasses(styles.metaItem, styles.metaItemWide)}>
-                  <div className={styles.metaLabel}>SQLite output</div>
-                  <Body1
-                    className={styles.metaPathValue}
-                    title={run.sqlite_output_path}
-                  >
-                    {run.sqlite_output_path}
-                  </Body1>
-                </div>
-                <div className={mergeClasses(styles.metaItem, styles.metaItemWide)}>
-                  <div className={styles.metaLabel}>Source directories</div>
-                  <Body1
-                    className={styles.metaPathValue}
-                    title={run.pdf_source_dir}
-                  >
-                    {run.pdf_source_dir}
-                  </Body1>
-                  <Body1
-                    className={styles.metaPathValue}
-                    title={run.text_source_dir}
-                  >
-                    {run.text_source_dir}
-                  </Body1>
-                </div>
-              </div>
+              </>
             ) : (
               <Body1 className={styles.quietText}>
                 No batch import has been run yet on the default SQLite store.

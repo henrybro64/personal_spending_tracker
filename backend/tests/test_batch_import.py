@@ -199,7 +199,7 @@ class StatementImporterTests(unittest.TestCase):
                 self._restore_batch_env(previous_values)
 
             self.assertEqual(5, result.statement_count)
-            self.assertEqual(10, result.transaction_count)
+            self.assertEqual(11, result.transaction_count)
             self.assertEqual(1, result.needs_review_count)
             self.assertTrue(csv_path.exists())
             self.assertTrue(sqlite_path.exists())
@@ -208,7 +208,7 @@ class StatementImporterTests(unittest.TestCase):
             latest_run = store.get_latest_run()
             self.assertIsNotNone(latest_run)
             assert latest_run is not None
-            self.assertEqual(10, latest_run["transaction_count"])
+            self.assertEqual(11, latest_run["transaction_count"])
 
             review_queue = store.list_transactions(needs_review_only=True)
             self.assertEqual(1, len(review_queue))
@@ -228,7 +228,7 @@ class StatementImporterTests(unittest.TestCase):
             self.assertEqual("Shopping / Online Retail", learned_match.category)
 
             csv_lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
-            self.assertEqual(11, len(csv_lines))
+            self.assertEqual(12, len(csv_lines))
 
     def test_importer_skips_password_protected_pdfs(self) -> None:
         from backend.pdf_utils import PdfPasswordProtectedError
@@ -349,7 +349,7 @@ class StatementImporterTests(unittest.TestCase):
                 self._restore_batch_env(previous_values)
 
             self.assertEqual(1, result.statement_count)
-            self.assertEqual(2, result.transaction_count)
+            self.assertEqual(4, result.transaction_count)
             self.assertEqual(
                 "CBGCC-DAILYSTMT_20240215.pdf", result.parsed_files[0]
             )
