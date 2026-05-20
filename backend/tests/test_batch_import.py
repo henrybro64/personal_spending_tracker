@@ -442,5 +442,190 @@ class StatementImporterTests(unittest.TestCase):
             self.assertEqual("GOOD", rows[0].merchant_raw)
 
 
+class MerchantDigitNoiseTests(unittest.TestCase):
+    def test_digit_only_noise_detection(self) -> None:
+        from backend.batch_import.category import merchant_raw_is_digit_only_noise
+
+        self.assertTrue(merchant_raw_is_digit_only_noise("500"))
+        self.assertTrue(merchant_raw_is_digit_only_noise("2,585"))
+        self.assertTrue(merchant_raw_is_digit_only_noise("  10  "))
+        self.assertTrue(merchant_raw_is_digit_only_noise("\uff15\uff10\uff10"))
+        self.assertFalse(merchant_raw_is_digit_only_noise("7-ELEVEN"))
+        self.assertFalse(
+            merchant_raw_is_digit_only_noise("社團法人台灣社區照顧協會")
+        )
+        self.assertFalse(merchant_raw_is_digit_only_noise(""))
+
+    def test_needs_review_merchants_list_skips_digit_only(self) -> None:
+        from backend.batch_import.category import UNKNOWN_CATEGORY
+        from backend.batch_import.models import NormalizedTransaction
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            db_path = Path(temp_dir_name) / "batch.sqlite3"
+            store = BatchImportStore(db_path)
+            store.initialize()
+            txs = [
+                NormalizedTransaction(
+                    statement_file="s.pdf",
+                    bank="CTBC",
+                    card_last4="1234",
+                    transaction_date="2024-01-01",
+                    posted_date=None,
+                    merchant_raw="500",
+                    amount=float(i),
+                    currency="TWD",
+                    transaction_type="purchase",
+                    category=UNKNOWN_CATEGORY,
+                    exclude_from_spending=False,
+                    needs_review=True,
+                )
+                for i in range(3)
+            ]
+            txs.append(
+                NormalizedTransaction(
+                    statement_file="s.pdf",
+                    bank="CTBC",
+                    card_last4="1234",
+                    transaction_date="2024-01-02",
+                    posted_date=None,
+                    merchant_raw="REAL STORE",
+                    amount=10.0,
+                    currency="TWD",
+                    transaction_type="purchase",
+                    category=UNKNOWN_CATEGORY,
+                    exclude_from_spending=False,
+                    needs_review=True,
+                )
+            )
+            run_id, _, _ = store.record_import_run(
+                txs,
+                pdf_source_dir="/tmp",
+                text_source_dir="/tmp",
+                csv_output_path="/tmp/out.csv",
+                statement_count=1,
+            )
+            merchants = store.list_needs_review_merchants(run_id=run_id, limit=10)
+            self.assertEqual(1, len(merchants))
+            self.assertEqual("REAL STORE", merchants[0]["merchant_raw"])
+            self.assertEqual(1, merchants[0]["transaction_count"])
+
+    def test_needs_review_merchants_survives_many_digit_noise_groups(self) -> None:
+        """Real merchants must appear even when numeric junk dominates by row count."""
+        from backend.batch_import.category import UNKNOWN_CATEGORY
+        from backend.batch_import.models import NormalizedTransaction
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            db_path = Path(temp_dir_name) / "batch.sqlite3"
+            store = BatchImportStore(db_path)
+            store.initialize()
+            txs: list[NormalizedTransaction] = []
+            for noise_index in range(250):
+                txs.append(
+                    NormalizedTransaction(
+                        statement_file="s.pdf",
+                        bank="CTBC",
+                        card_last4="1234",
+                        transaction_date="2024-01-01",
+                        posted_date=None,
+                        merchant_raw=str(noise_index),
+                        amount=float(noise_index),
+                        currency="TWD",
+                        transaction_type="purchase",
+                        category=UNKNOWN_CATEGORY,
+                        exclude_from_spending=False,
+                        needs_review=True,
+                    )
+                )
+            txs.append(
+                NormalizedTransaction(
+                    statement_file="s.pdf",
+                    bank="CTBC",
+                    card_last4="1234",
+                    transaction_date="2024-01-02",
+                    posted_date=None,
+                    merchant_raw="UBER TRIP",
+                    amount=99.0,
+                    currency="TWD",
+                    transaction_type="purchase",
+                    category=UNKNOWN_CATEGORY,
+                    exclude_from_spending=False,
+                    needs_review=True,
+                )
+            )
+            run_id, _, _ = store.record_import_run(
+                txs,
+                pdf_source_dir="/tmp",
+                text_source_dir="/tmp",
+                csv_output_path="/tmp/out.csv",
+                statement_count=1,
+            )
+            merchants = store.list_needs_review_merchants(run_id=run_id, limit=5)
+            self.assertEqual(1, len(merchants))
+            self.assertEqual("UBER TRIP", merchants[0]["merchant_raw"])
+
+    def test_bulk_dismiss_digit_only_noise(self) -> None:
+        from backend.batch_import.category import UNKNOWN_CATEGORY
+        from backend.batch_import.models import NormalizedTransaction
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            db_path = Path(temp_dir_name) / "batch.sqlite3"
+            store = BatchImportStore(db_path)
+            store.initialize()
+            txs = [
+                NormalizedTransaction(
+                    statement_file="s.pdf",
+                    bank="CTBC",
+                    card_last4="1234",
+                    transaction_date="2024-01-01",
+                    posted_date=None,
+                    merchant_raw="500",
+                    amount=100.0,
+                    currency="TWD",
+                    transaction_type="purchase",
+                    category=UNKNOWN_CATEGORY,
+                    exclude_from_spending=False,
+                    needs_review=True,
+                ),
+                NormalizedTransaction(
+                    statement_file="s.pdf",
+                    bank="CTBC",
+                    card_last4="1234",
+                    transaction_date="2024-01-02",
+                    posted_date=None,
+                    merchant_raw="REAL STORE",
+                    amount=20.0,
+                    currency="TWD",
+                    transaction_type="purchase",
+                    category=UNKNOWN_CATEGORY,
+                    exclude_from_spending=False,
+                    needs_review=True,
+                ),
+            ]
+            run_id, _, _ = store.record_import_run(
+                txs,
+                pdf_source_dir="/tmp",
+                text_source_dir="/tmp",
+                csv_output_path="/tmp/out.csv",
+                statement_count=1,
+            )
+            self.assertEqual(1, store.count_digit_only_noise_pending(run_id=run_id))
+            updated = store.bulk_dismiss_digit_only_noise(run_id=run_id)
+            self.assertEqual(1, updated)
+            self.assertEqual(
+                0, store.count_digit_only_noise_pending(run_id=run_id)
+            )
+            remaining = store.list_transactions(
+                run_id=run_id, needs_review_only=True
+            )
+            self.assertEqual(1, len(remaining))
+            self.assertEqual("REAL STORE", remaining[0]["merchant_raw"])
+            dismissed = store.list_transactions(
+                run_id=run_id, needs_review_only=False
+            )
+            junk = next(r for r in dismissed if r["merchant_raw"] == "500")
+            self.assertTrue(junk["exclude_from_spending"])
+            self.assertFalse(junk["needs_review"])
+
+
 if __name__ == "__main__":
     unittest.main()

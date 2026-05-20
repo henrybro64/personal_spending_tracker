@@ -8,6 +8,7 @@ from typing import TypedDict
 
 from .category import (
     CategoryRule,
+    merchant_raw_is_digit_only_noise,
     normalize_merchant_key,
     transaction_type_for_category,
 )
@@ -439,6 +440,9 @@ class BatchImportStore:
         if effective_run_id is None:
             return []
 
+        # No SQL LIMIT: digit-only CTBC noise can be hundreds of distinct
+        # merchant_raw values; capping the query before Python filtering
+        # would drop real merchants from the bulk-review panel.
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -452,20 +456,27 @@ class BatchImportStore:
                   AND needs_review = 1
                 GROUP BY merchant_raw
                 ORDER BY COUNT(*) DESC, merchant_raw ASC
-                LIMIT ?
                 """,
-                (effective_run_id, limit),
+                (effective_run_id,),
             ).fetchall()
 
-        return [
-            {
-                "merchant_raw": str(row["merchant_raw"]),
-                "transaction_count": int(row["transaction_count"]),
-                "sample_category": str(row["sample_category"]),
-                "sample_excluded": bool(row["sample_excluded"]),
-            }
-            for row in rows
-        ]
+        summaries: list[NeedsReviewMerchantSummary] = []
+        for row in rows:
+            raw = str(row["merchant_raw"])
+            if merchant_raw_is_digit_only_noise(raw):
+                continue
+            summaries.append(
+                {
+                    "merchant_raw": raw,
+                    "transaction_count": int(row["transaction_count"]),
+                    "sample_category": str(row["sample_category"]),
+                    "sample_excluded": bool(row["sample_excluded"]),
+                }
+            )
+            if len(summaries) >= limit:
+                break
+
+        return summaries
 
     def bulk_update_merchant_review(
         self,
@@ -549,6 +560,78 @@ class BatchImportStore:
                 )
 
         return len(rows)
+
+    def count_digit_only_noise_pending(self, *, run_id: int | None = None) -> int:
+        effective_run_id = run_id or self._latest_run_id()
+        if effective_run_id is None:
+            return 0
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT merchant_raw
+                FROM imported_transactions
+                WHERE import_run_id = ?
+                  AND needs_review = 1
+                """,
+                (effective_run_id,),
+            ).fetchall()
+
+        return sum(
+            1
+            for row in rows
+            if merchant_raw_is_digit_only_noise(str(row["merchant_raw"]))
+        )
+
+    def bulk_dismiss_digit_only_noise(self, *, run_id: int) -> int:
+        """Exclude and clear review on rows whose merchant is only digits."""
+        junk_category = "Other Spending"
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, amount, merchant_raw
+                FROM imported_transactions
+                WHERE import_run_id = ?
+                  AND needs_review = 1
+                """,
+                (run_id,),
+            ).fetchall()
+
+            updates: list[tuple[float, str, int, int, str, int]] = []
+            for row in rows:
+                if not merchant_raw_is_digit_only_noise(str(row["merchant_raw"])):
+                    continue
+                amount = abs(float(row["amount"]))
+                updates.append(
+                    (
+                        amount,
+                        junk_category,
+                        1,
+                        0,
+                        "purchase",
+                        int(row["id"]),
+                    )
+                )
+
+            if not updates:
+                return 0
+
+            connection.executemany(
+                """
+                UPDATE imported_transactions
+                SET
+                    amount = ?,
+                    category = ?,
+                    exclude_from_spending = ?,
+                    needs_review = ?,
+                    transaction_type = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
+
+        return len(updates)
 
     def is_transaction_synced(self, transaction_id: int) -> bool:
         with self._connect() as connection:

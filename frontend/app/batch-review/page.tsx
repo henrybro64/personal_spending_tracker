@@ -292,6 +292,13 @@ const useStyles = makeStyles({
     gap: "10px",
     alignItems: "center",
   },
+  cleanupRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "10px",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
 });
 
 function formatCurrency(amount: number, currencyCode: string) {
@@ -339,6 +346,8 @@ export default function BatchReviewPage() {
     Record<string, string>
   >({});
   const [bulkSavingMerchant, setBulkSavingMerchant] = useState<string | null>(null);
+  const [digitNoisePendingCount, setDigitNoisePendingCount] = useState(0);
+  const [dismissingDigitNoise, setDismissingDigitNoise] = useState(false);
 
   async function loadBatchState(reviewOnly: boolean) {
     setLoading(true);
@@ -349,21 +358,29 @@ export default function BatchReviewPage() {
         "Failed to load batch-import status."
       );
       const activeRunId = latestPayload.run?.id ?? null;
-      const [transactionsPayload, merchantsPayload] = await Promise.all([
-        apiFetchJson<BatchTransactionsResponse>(
-          `/batch-imports/transactions?needs_review_only=${reviewOnly}&limit=500`,
-          "Failed to load batch-import transactions."
-        ),
-        activeRunId
-          ? apiFetchJson<NeedsReviewMerchantsResponse>(
-              `/batch-imports/needs-review-merchants?run_id=${activeRunId}&limit=20`,
-              "Failed to load review merchants."
-            )
-          : Promise.resolve({ merchants: [] }),
-      ]);
+      const [transactionsPayload, merchantsPayload, digitNoisePayload] =
+        await Promise.all([
+          apiFetchJson<BatchTransactionsResponse>(
+            `/batch-imports/transactions?needs_review_only=${reviewOnly}&limit=500`,
+            "Failed to load batch-import transactions."
+          ),
+          activeRunId
+            ? apiFetchJson<NeedsReviewMerchantsResponse>(
+                `/batch-imports/needs-review-merchants?run_id=${activeRunId}&limit=20`,
+                "Failed to load review merchants."
+              )
+            : Promise.resolve({ merchants: [] }),
+          activeRunId
+            ? apiFetchJson<{ pending_count: number }>(
+                `/batch-imports/digit-noise-pending-count?run_id=${activeRunId}`,
+                "Failed to load junk merchant count."
+              )
+            : Promise.resolve({ pending_count: 0 }),
+        ]);
       setRun(latestPayload.run);
       setTransactions(transactionsPayload.transactions);
       setNeedsReviewMerchants(merchantsPayload.merchants);
+      setDigitNoisePendingCount(digitNoisePayload.pending_count);
     } catch (loadError) {
       if (loadError instanceof ApiError && loadError.status === 401) {
         await refreshSession();
@@ -413,6 +430,54 @@ export default function BatchReviewPage() {
 
   function merchantDraftCategory(item: NeedsReviewMerchantSummary): string {
     return merchantCategoryDrafts[item.merchant_raw] ?? item.sample_category;
+  }
+
+  async function onDismissDigitNoise() {
+    if (!run) {
+      return;
+    }
+    setDismissingDigitNoise(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch(
+        "/batch-imports/review/dismiss-digit-noise",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ run_id: run.id }),
+        }
+      );
+      const payload = (await response.json()) as
+        | { updated_count: number }
+        | { detail?: string };
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
+        throw new Error(
+          "detail" in payload && typeof payload.detail === "string"
+            ? payload.detail
+            : "Failed to exclude junk numeric merchants."
+        );
+      }
+      const updatedCount = (payload as { updated_count: number }).updated_count;
+      setMessage(
+        updatedCount > 0
+          ? `Excluded ${updatedCount} junk row(s) with numeric-only merchants (not real shops).`
+          : "No junk numeric-merchant rows were pending review."
+      );
+      await loadBatchState(needsReviewOnly);
+    } catch (dismissError) {
+      setError(
+        dismissError instanceof Error
+          ? dismissError.message
+          : "Failed to exclude junk numeric merchants."
+      );
+    } finally {
+      setDismissingDigitNoise(false);
+    }
   }
 
   async function onBulkSaveMerchant(item: NeedsReviewMerchantSummary) {
@@ -809,6 +874,30 @@ export default function BatchReviewPage() {
                   ) : null}
                 </div>
               ))}
+            </Card>
+          ) : null}
+
+          {digitNoisePendingCount > 0 ? (
+            <Card className={mergeClasses(styles.card, styles.sidebarPanel)}>
+              <div className={styles.cleanupRow}>
+                <div>
+                  <Title2>Junk rows from statement parsing</Title2>
+                  <Body1 className={styles.quietText}>
+                    {digitNoisePendingCount} row(s) have merchant names that are
+                    only numbers (e.g. 500, 2,585). These are not real shops—usually
+                    CTBC PDF table noise. Exclude them from spending and clear review.
+                  </Body1>
+                </div>
+                <Button
+                  appearance="secondary"
+                  disabled={dismissingDigitNoise || !run}
+                  onClick={() => void onDismissDigitNoise()}
+                >
+                  {dismissingDigitNoise
+                    ? "Excluding..."
+                    : `Exclude ${digitNoisePendingCount} junk row(s)`}
+                </Button>
+              </div>
             </Card>
           ) : null}
 
