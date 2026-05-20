@@ -46,6 +46,25 @@ class CategoryEngineTests(unittest.TestCase):
 
         uber_zh_match = engine.categorize("優步 台灣", 220.00)
         self.assertEqual("Transportation", uber_zh_match.category)
+
+        taxi_app_match = engine.categorize("５５６８８ＡＰＰ", 180.00)
+        self.assertEqual("Transportation", taxi_app_match.category)
+        fleet_match = engine.categorize("台灣大車隊", 220.00)
+        self.assertEqual("Transportation", fleet_match.category)
+
+        dept_store = engine.categorize("新光三越信義A11", 1200.00)
+        self.assertEqual("Shopping / Department Store", dept_store.category)
+        breeze = engine.categorize("微風南山", 800.00)
+        self.assertEqual("Shopping / Department Store", breeze.category)
+        uniqlo = engine.categorize("台北優衣庫 信義店", 990.00)
+        self.assertEqual("Shopping / Department Store", uniqlo.category)
+
+        trip_com = engine.categorize("TRIP.COM HOTEL", 4500.00)
+        self.assertEqual("Travel", trip_com.category)
+        self.assertEqual("Travel", engine.categorize("Agoda.com booking", 2000.00).category)
+        self.assertEqual(
+            "Travel", engine.categorize("HOTELS.COM", 1500.00).category
+        )
         self.assertFalse(uber_zh_match.exclude_from_spending)
         self.assertEqual("purchase", uber_zh_match.transaction_type)
 

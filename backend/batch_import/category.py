@@ -85,6 +85,18 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
     ),
     CategoryRule(
         patterns=(
+            "新光三越",
+            "微風",
+            "優衣庫",
+            "UNIQLO",
+        ),
+        category="Shopping / Department Store",
+        exclude_from_spending=False,
+        transaction_type="purchase",
+        priority=380,
+    ),
+    CategoryRule(
+        patterns=(
             "AMAZON",
             "AMZN",
             "MOMO",
@@ -177,6 +189,11 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
             "UBER",
             "優步",
             "优步",
+            "55688",
+            "55688APP",
+            "５５６８８ＡＰＰ",
+            "５５６８８",
+            "台灣大車隊",
             "LYFT",
             "PARKING",
             "捷運",
@@ -192,9 +209,13 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
     CategoryRule(
         patterns=(
             "HOTEL",
+            "HOTELS.COM",
+            "HOTEL.COM",
             "AIRBNB",
             "BOOKING",
             "AGODA",
+            "TRIP.COM",
+            "TRIP COM",
             "DELTA",
             "UNITED",
             "EVA AIR",

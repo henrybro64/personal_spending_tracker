@@ -70,6 +70,7 @@ type YearGroup = {
 
 const transactionCategories = [
   "Transportation",
+  "Shopping / Department Store",
   "Shopping / Online Retail",
   "Digital Services",
   "Dining",

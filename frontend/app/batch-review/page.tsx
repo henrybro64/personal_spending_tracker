@@ -127,6 +127,7 @@ const reviewCategories = [
   "Payment / Credit",
   "Education / Certification",
   "Tax / Accounting",
+  "Shopping / Department Store",
   "Shopping / Online Retail",
   "Subscription / Membership",
   "Government / Consular",
