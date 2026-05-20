@@ -98,6 +98,23 @@ test("batch review page loads queue, runs import, and syncs to dashboard", async
     });
   });
 
+  await page.route("**/api/batch-imports/needs-review-merchants**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        merchants: [
+          {
+            merchant_raw: "UNKNOWN MERCHANT",
+            transaction_count: 1,
+            sample_category: "Other Spending",
+            sample_excluded: false,
+          },
+        ],
+      }),
+    });
+  });
+
   await page.route("**/api/batch-imports/run", async (route) => {
     await route.fulfill({
       status: 201,
