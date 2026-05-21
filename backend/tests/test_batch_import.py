@@ -154,6 +154,15 @@ class CategoryEngineTests(unittest.TestCase):
         self.assertEqual("Other Spending", unknown_match.category)
         self.assertTrue(unknown_match.needs_review)
 
+    def test_merchant_not_in_pdf_does_not_require_review(self) -> None:
+        from backend.batch_import.category import MERCHANT_MISSING_FROM_PDF_CATEGORY
+        from backend.statement_parse_utils import MERCHANT_NOT_IN_PDF
+
+        engine = CategoryEngine()
+        match = engine.categorize(MERCHANT_NOT_IN_PDF, 320.0)
+        self.assertEqual(MERCHANT_MISSING_FROM_PDF_CATEGORY, match.category)
+        self.assertFalse(match.needs_review)
+
     def test_review_panel_merchants_match_builtin_rules(self) -> None:
         engine = CategoryEngine()
         cases = [

@@ -132,6 +132,24 @@ sudo k3s kubectl -n spending-tracker exec -it "$POD" -c backend -- \
 
 Paste the full output into a bug report. Compare **sample raw lines** (text in PDF) vs **parsed merchants** (what the importer stored).
 
+## Reset import data (test batch re-import)
+
+After deploying new parser/category code, clear merged Postgres rows and batch SQLite so the next **Run batch import** starts fresh. PDFs under `/app/batch/pdf` are kept.
+
+```bash
+# On the cluster node
+KUBECTL='sudo k3s kubectl' ./scripts/reset-import-data.sh --k3s -y
+```
+
+Local dev (requires `DATABASE_URL` and `psql`):
+
+```bash
+export DATABASE_URL='postgresql://...'
+./scripts/reset-import-data.sh -y
+```
+
+Options: `--dry-run`, `--full-postgres` (also deletes users — you must sign up again).
+
 ## Data persistence on redeploy
 
 **Normal redeploy keeps your data.** `scripts/deploy-k3s.sh` only runs `kubectl apply`. It does not delete the namespace, PVCs, or Postgres data.

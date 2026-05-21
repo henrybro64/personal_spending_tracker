@@ -143,6 +143,7 @@ const reviewCategories = [
   "Healthcare / Medical",
   "Bank Fees / Interest",
   "Cash Advance / ATM",
+  "Merchant Missing From PDF",
   "Other Spending",
 ] as const;
 

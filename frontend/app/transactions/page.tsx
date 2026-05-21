@@ -86,6 +86,7 @@ const transactionCategories = [
   "Tax / Accounting",
   "Government / Consular",
   "Bank Fees / Interest",
+  "Merchant Missing From PDF",
   "Cash & Fees",
   "Payment / Credit",
   "Refunds & Credits",

@@ -2,12 +2,15 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from backend.statement_parse_utils import MERCHANT_NOT_IN_PDF
+
 from .models import TransactionType
 
 
 UNKNOWN_CATEGORY = "Unknown / Needs Review"
 PAYMENT_CATEGORY = "Payment / Credit"
 FEE_CATEGORY = "Bank Fees / Interest"
+MERCHANT_MISSING_FROM_PDF_CATEGORY = "Merchant Missing From PDF"
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,6 +447,14 @@ class CategoryEngine:
         self._rules = sorted(ordered_rules, key=lambda rule: rule.priority)
 
     def categorize(self, merchant_raw: str, amount: float) -> CategoryMatch:
+        if merchant_raw.strip() == MERCHANT_NOT_IN_PDF:
+            return CategoryMatch(
+                category=MERCHANT_MISSING_FROM_PDF_CATEGORY,
+                exclude_from_spending=False,
+                transaction_type="purchase",
+                needs_review=False,
+            )
+
         merchant_upper = " ".join(merchant_raw.upper().split())
         merchant_key = normalize_merchant_key(merchant_raw)
 
