@@ -68,6 +68,7 @@ from backend.database import (  # noqa: E402
     maybe_claim_legacy_data_for_first_user,
     record_audit_event,
     revoke_session,
+    update_transaction as update_stored_transaction,
     update_transaction_category,
     update_user_last_login,
 )
@@ -239,6 +240,7 @@ class BatchReviewUpdateRequest(BaseModel):
     category: str
     exclude_from_spending: bool
     save_rule: bool = True
+    merchant_raw: str | None = None
 
 
 class BatchReviewBulkUpdateRequest(BaseModel):
@@ -257,8 +259,9 @@ class ManualTransactionResponse(TypedDict):
     transaction: StoredTransaction
 
 
-class TransactionCategoryUpdateRequest(BaseModel):
-    category: str
+class TransactionUpdateRequest(BaseModel):
+    category: str | None = None
+    merchant: str | None = None
 
 
 class AuthRequest(BaseModel):
@@ -886,19 +889,28 @@ async def create_manual_transaction(
 
 
 @app.patch("/transactions/{transaction_id}")
-async def update_transaction(
+async def patch_transaction(
     transaction_id: int,
-    payload: TransactionCategoryUpdateRequest,
+    payload: TransactionUpdateRequest,
     current_user: UserRecord = Depends(require_current_user),
 ) -> ManualTransactionResponse:
-    category = payload.category.strip()
-    if not category:
-        raise HTTPException(status_code=400, detail="Category is required.")
+    category = payload.category.strip() if payload.category is not None else None
+    merchant = payload.merchant.strip() if payload.merchant is not None else None
+    if category == "":
+        raise HTTPException(status_code=400, detail="Category cannot be empty.")
+    if merchant == "":
+        raise HTTPException(status_code=400, detail="Merchant cannot be empty.")
+    if category is None and merchant is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide category and/or merchant to update.",
+        )
 
-    updated = update_transaction_category(
+    updated = update_stored_transaction(
         user_id=current_user["id"],
         transaction_id=transaction_id,
         category=category,
+        merchant=merchant,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="Transaction not found.")
@@ -1020,12 +1032,19 @@ async def update_batch_import_transaction(
         raise HTTPException(status_code=400, detail="Category is required.")
 
     store = _get_batch_import_store(current_user["id"], sqlite_path)
+    merchant_raw = (
+        payload.merchant_raw.strip() if payload.merchant_raw is not None else None
+    )
+    if merchant_raw == "":
+        raise HTTPException(status_code=400, detail="Merchant cannot be empty.")
+
     try:
         updated_transaction = store.update_transaction_review(
             transaction_id,
             category=category,
             exclude_from_spending=payload.exclude_from_spending,
             save_rule=payload.save_rule,
+            merchant_raw=merchant_raw,
         )
     except KeyError:
         raise HTTPException(

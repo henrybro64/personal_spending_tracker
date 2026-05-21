@@ -8,6 +8,7 @@ import {
   Body1,
   Button,
   Card,
+  Input,
   MessageBar,
   MessageBarBody,
   Spinner,
@@ -121,6 +122,7 @@ type NeedsReviewMerchantsResponse = {
 };
 
 type DraftState = {
+  merchant_raw: string;
   category: string;
   exclude_from_spending: boolean;
 };
@@ -268,6 +270,18 @@ const useStyles = makeStyles({
   tableHeaderCell: {
     backgroundColor: tokens.colorNeutralBackground2,
     fontWeight: tokens.fontWeightSemibold,
+  },
+  merchantInput: {
+    width: "100%",
+    minWidth: "200px",
+    height: "36px",
+    paddingLeft: "10px",
+    paddingRight: "10px",
+    fontSize: tokens.fontSizeBase200,
+    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    backgroundColor: tokens.colorNeutralBackground1,
+    marginBottom: "6px",
   },
   selectControl: {
     width: "220px",
@@ -421,6 +435,7 @@ export default function BatchReviewPage() {
   function getDraft(transaction: BatchTransaction): DraftState {
     return (
       drafts[transaction.id] ?? {
+        merchant_raw: transaction.merchant_raw,
         category: transaction.category,
         exclude_from_spending: transaction.exclude_from_spending,
       }
@@ -687,6 +702,11 @@ export default function BatchReviewPage() {
 
   async function onSave(transaction: BatchTransaction) {
     const draft = getDraft(transaction);
+    const merchantRaw = draft.merchant_raw.trim();
+    if (!merchantRaw) {
+      setError("Merchant is required.");
+      return;
+    }
     setSavingId(transaction.id);
     setError("");
     setMessage("");
@@ -697,6 +717,7 @@ export default function BatchReviewPage() {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            merchant_raw: merchantRaw,
             category: draft.category,
             exclude_from_spending: draft.exclude_from_spending,
             save_rule: true,
@@ -1069,7 +1090,17 @@ export default function BatchReviewPage() {
                       <TableRow key={transaction.id}>
                         <TableCell>{transaction.transaction_date}</TableCell>
                         <TableCell className={styles.merchantCell}>
-                          <div>{transaction.merchant_raw}</div>
+                          <Input
+                            className={styles.merchantInput}
+                            value={draft.merchant_raw}
+                            onChange={(_event, data) =>
+                              updateDraft(transaction.id, {
+                                ...draft,
+                                merchant_raw: data.value,
+                              })
+                            }
+                            aria-label={`Merchant for transaction ${transaction.id}`}
+                          />
                           <Body1 className={styles.quietText}>
                             {transaction.statement_file}
                             {transaction.card_last4 ? ` • ${transaction.card_last4}` : ""}

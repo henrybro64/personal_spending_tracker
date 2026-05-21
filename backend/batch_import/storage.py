@@ -765,6 +765,7 @@ class BatchImportStore:
         category: str,
         exclude_from_spending: bool,
         save_rule: bool,
+        merchant_raw: str | None = None,
     ) -> BatchStoredTransaction:
         with self._connect() as connection:
             row = connection.execute(
@@ -789,6 +790,14 @@ class BatchImportStore:
             if row is None:
                 raise KeyError(transaction_id)
 
+            effective_merchant_raw = (
+                " ".join(merchant_raw.split())
+                if merchant_raw is not None
+                else str(row["merchant_raw"])
+            )
+            if not effective_merchant_raw:
+                raise ValueError("Merchant cannot be empty.")
+
             transaction_type = transaction_type_for_category(
                 category,
                 exclude_from_spending,
@@ -804,6 +813,8 @@ class BatchImportStore:
                 """
                 UPDATE imported_transactions
                 SET
+                    merchant_raw = ?,
+                    merchant_key = ?,
                     amount = ?,
                     category = ?,
                     exclude_from_spending = ?,
@@ -812,6 +823,8 @@ class BatchImportStore:
                 WHERE id = ?
                 """,
                 (
+                    effective_merchant_raw,
+                    normalize_merchant_key(effective_merchant_raw),
                     normalized_amount,
                     category,
                     int(exclude_from_spending),
@@ -834,7 +847,7 @@ class BatchImportStore:
                     VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        normalize_merchant_key(str(row["merchant_raw"])),
+                        normalize_merchant_key(effective_merchant_raw),
                         category,
                         int(exclude_from_spending),
                         10,

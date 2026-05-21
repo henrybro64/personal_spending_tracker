@@ -877,17 +877,72 @@ def update_transaction_category(
     category: str,
     database_url: str | None = None,
 ) -> StoredTransaction | None:
+    return update_transaction(
+        user_id=user_id,
+        transaction_id=transaction_id,
+        category=category,
+        database_url=database_url,
+    )
+
+
+def update_transaction(
+    *,
+    user_id: int,
+    transaction_id: int,
+    category: str | None = None,
+    merchant: str | None = None,
+    database_url: str | None = None,
+) -> StoredTransaction | None:
     resolved_database_url = init_db(database_url)
-    normalized_category = category.strip()
-    if not normalized_category:
+    normalized_category = category.strip() if category is not None else None
+    if normalized_category == "":
+        return None
+
+    normalized_merchant: str | None = None
+    if merchant is not None:
+        normalized_merchant = " ".join(merchant.split())
+        if not normalized_merchant:
+            return None
+
+    if normalized_category is None and normalized_merchant is None:
         return None
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
+                SELECT merchant, amount, COALESCE(category, '') AS category
+                FROM transactions
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (transaction_id, user_id),
+            )
+            existing = cursor.fetchone()
+            if existing is None:
+                return None
+
+            effective_merchant = (
+                normalized_merchant
+                if normalized_merchant is not None
+                else str(existing[0])
+            )
+            effective_amount = float(existing[1])
+            if normalized_category is not None:
+                effective_category = normalized_category
+            elif normalized_merchant is not None:
+                effective_category = categorize_merchant(
+                    effective_merchant, effective_amount
+                )
+            else:
+                effective_category = str(existing[2])
+
+            cursor.execute(
+                """
                 UPDATE transactions
-                SET category = %s
+                SET
+                    merchant = %s,
+                    category = %s
                 WHERE id = %s
                   AND user_id = %s
                 RETURNING
@@ -901,7 +956,14 @@ def update_transaction_category(
                     file_name,
                     COALESCE(original_file_name, file_name) AS original_file_name
                 """,
-                (normalized_category, transaction_id, user_id),
+                (
+                    effective_merchant,
+                    _normalize_category_for_storage(
+                        effective_category, effective_amount
+                    ),
+                    transaction_id,
+                    user_id,
+                ),
             )
             row = cursor.fetchone()
         connection.commit()
