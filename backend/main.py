@@ -68,6 +68,8 @@ from backend.database import (  # noqa: E402
     maybe_claim_legacy_data_for_first_user,
     record_audit_event,
     revoke_session,
+    delete_transaction,
+    delete_transaction_by_match,
     update_transaction as update_stored_transaction,
     update_transaction_category,
     update_user_last_login,
@@ -917,6 +919,19 @@ async def patch_transaction(
     return {"transaction": updated}
 
 
+@app.delete("/transactions/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_dashboard_transaction(
+    transaction_id: int,
+    current_user: UserRecord = Depends(require_current_user),
+) -> None:
+    deleted = delete_transaction(
+        user_id=current_user["id"],
+        transaction_id=transaction_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Transaction not found.")
+
+
 @app.post("/batch-imports/run", status_code=status.HTTP_201_CREATED)
 async def run_batch_import(
     payload: BatchImportRequest | None = None,
@@ -1053,6 +1068,38 @@ async def update_batch_import_transaction(
         ) from None
 
     return {"transaction": updated_transaction}
+
+
+@app.delete(
+    "/batch-imports/transactions/{transaction_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_batch_import_transaction(
+    transaction_id: int,
+    sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
+) -> None:
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    if store.is_transaction_synced(transaction_id):
+        row = store.get_transaction(transaction_id)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Batch-import transaction {transaction_id} was not found.",
+            )
+        delete_transaction_by_match(
+            user_id=current_user["id"],
+            transaction_date=row["transaction_date"],
+            merchant=row["merchant_raw"],
+            amount=float(row["amount"]),
+        )
+
+    run_id = store.delete_imported_transaction(transaction_id)
+    if run_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Batch-import transaction {transaction_id} was not found.",
+        )
 
 
 @app.get("/batch-imports/needs-review-merchants")

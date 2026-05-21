@@ -984,6 +984,57 @@ def update_transaction(
     }
 
 
+def delete_transaction(
+    *,
+    user_id: int,
+    transaction_id: int,
+    database_url: str | None = None,
+) -> bool:
+    resolved_database_url = init_db(database_url)
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM transactions
+                WHERE id = %s
+                  AND user_id = %s
+                RETURNING id
+                """,
+                (transaction_id, user_id),
+            )
+            deleted = cursor.fetchone() is not None
+        connection.commit()
+    return deleted
+
+
+def delete_transaction_by_match(
+    *,
+    user_id: int,
+    transaction_date: str,
+    merchant: str,
+    amount: float,
+    database_url: str | None = None,
+) -> bool:
+    """Remove a dashboard row that came from batch merge (best-effort match)."""
+    resolved_database_url = init_db(database_url)
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM transactions
+                WHERE user_id = %s
+                  AND date = %s
+                  AND merchant = %s
+                  AND amount = %s
+                RETURNING id
+                """,
+                (user_id, transaction_date, merchant, amount),
+            )
+            deleted = cursor.fetchone() is not None
+        connection.commit()
+    return deleted
+
+
 def _since_date_for_range(range_key: TimeRange) -> date | None:
     today = date.today()
     if range_key == "week":

@@ -880,6 +880,80 @@ class BatchImportStore:
 
         return self._row_to_transaction(updated)
 
+    def get_transaction(self, transaction_id: int) -> BatchStoredTransaction | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    id,
+                    import_run_id,
+                    statement_file,
+                    bank,
+                    card_last4,
+                    transaction_date,
+                    posted_date,
+                    merchant_raw,
+                    amount,
+                    currency,
+                    transaction_type,
+                    category,
+                    exclude_from_spending,
+                    needs_review
+                FROM imported_transactions
+                WHERE id = ?
+                """,
+                (transaction_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_transaction(row)
+
+    def delete_imported_transaction(self, transaction_id: int) -> int | None:
+        """Delete one batch row and refresh run counts. Returns import_run_id or None."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT import_run_id
+                FROM imported_transactions
+                WHERE id = ?
+                """,
+                (transaction_id,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            run_id = int(row["import_run_id"])
+            connection.execute(
+                "DELETE FROM imported_transactions WHERE id = ?",
+                (transaction_id,),
+            )
+            self._refresh_import_run_counts(connection, run_id=run_id)
+
+        return run_id
+
+    def _refresh_import_run_counts(
+        self, connection: sqlite3.Connection, *, run_id: int
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE import_runs
+            SET
+                transaction_count = (
+                    SELECT COUNT(*)
+                    FROM imported_transactions
+                    WHERE import_run_id = ?
+                ),
+                needs_review_count = (
+                    SELECT COUNT(*)
+                    FROM imported_transactions
+                    WHERE import_run_id = ?
+                      AND needs_review = 1
+                )
+            WHERE id = ?
+            """,
+            (run_id, run_id, run_id),
+        )
+
     def _latest_run_id(self) -> int | None:
         with self._connect() as connection:
             row = connection.execute(

@@ -355,6 +355,7 @@ export default function BatchReviewPage() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [savingId, setSavingId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [skippedFiles, setSkippedFiles] = useState<SkippedFile[]>([]);
@@ -697,6 +698,55 @@ export default function BatchReviewPage() {
       );
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function onDelete(transaction: BatchTransaction) {
+    const confirmed = window.confirm(
+      `Delete this row from the import queue?\n\n${transaction.transaction_date} · ${transaction.merchant_raw} · ${formatCurrency(transaction.amount, transaction.currency)}`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingId(transaction.id);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch(
+        `/batch-imports/transactions/${transaction.id}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        throw new Error(
+          typeof payload.detail === "string"
+            ? payload.detail
+            : "Failed to delete transaction."
+        );
+      }
+      setTransactions((currentTransactions) =>
+        currentTransactions.filter((item) => item.id !== transaction.id)
+      );
+      setDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[transaction.id];
+        return nextDrafts;
+      });
+      setMessage(`Deleted ${transaction.merchant_raw}.`);
+      await loadBatchState(needsReviewOnly);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Failed to delete transaction."
+      );
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -1150,10 +1200,23 @@ export default function BatchReviewPage() {
                             </label>
                             <Button
                               appearance="secondary"
-                              disabled={savingId === transaction.id}
+                              disabled={
+                                savingId === transaction.id ||
+                                deletingId === transaction.id
+                              }
                               onClick={() => void onSave(transaction)}
                             >
                               {savingId === transaction.id ? "Saving..." : "Save"}
+                            </Button>
+                            <Button
+                              appearance="outline"
+                              disabled={
+                                savingId === transaction.id ||
+                                deletingId === transaction.id
+                              }
+                              onClick={() => void onDelete(transaction)}
+                            >
+                              {deletingId === transaction.id ? "Deleting..." : "Delete"}
                             </Button>
                           </div>
                         </TableCell>
