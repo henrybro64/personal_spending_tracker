@@ -13,7 +13,9 @@ from .models import NormalizedTransaction
 # PDF text for Taiwan banks (CTBC/DBS) is parsed reliably by parser.py.
 # US cards need statement period metadata that batch parsers enforce.
 # Therefore, do not fallback for US-card parsers.
-UPLOAD_FALLBACK_PARSER_NAMES = frozenset({"ctbc_daily", "ctbc_card", "dbs"})
+UPLOAD_FALLBACK_PARSER_NAMES = frozenset(
+    {"ctbc_daily", "ctbc_card", "dbs", "esun"}
+)
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 

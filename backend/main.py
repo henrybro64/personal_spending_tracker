@@ -75,6 +75,7 @@ from backend.batch_import import (  # noqa: E402
     BatchImportRunSummary,
     BatchImportStore,
     BatchStoredTransaction,
+    CategoryEngine,
     StatementImporter,
     default_sqlite_output_path,
     merge_run_to_postgres,
@@ -132,6 +133,8 @@ class NeedsReviewMerchantSummary(TypedDict):
     transaction_count: int
     sample_category: str
     sample_excluded: bool
+    suggested_category: str
+    can_auto_apply: bool
 
 
 class BatchImportNeedsReviewMerchantsResponse(TypedDict):
@@ -152,6 +155,11 @@ class BatchImportDigitNoisePendingResponse(TypedDict):
 
 class BatchImportDismissDigitNoiseResponse(TypedDict):
     updated_count: int
+
+
+class BatchImportAutoCategorizeResponse(TypedDict):
+    updated_count: int
+    needs_review_count: int
 
 
 class BatchImportMergeResponse(TypedDict):
@@ -1036,12 +1044,18 @@ async def batch_import_needs_review_merchants(
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportNeedsReviewMerchantsResponse:
     store = _get_batch_import_store(current_user["id"], sqlite_path)
-    return {
-        "merchants": store.list_needs_review_merchants(
-            run_id=run_id,
-            limit=limit,
+    category_engine = CategoryEngine(store.load_learned_rules())
+    merchants: list[NeedsReviewMerchantSummary] = []
+    for item in store.list_needs_review_merchants(run_id=run_id, limit=limit):
+        category_match = category_engine.categorize(item["merchant_raw"], 100.0)
+        merchants.append(
+            {
+                **item,
+                "suggested_category": category_match.category,
+                "can_auto_apply": not category_match.needs_review,
+            }
         )
-    }
+    return {"merchants": merchants}
 
 
 @app.post("/batch-imports/review/bulk", status_code=status.HTTP_200_OK)
@@ -1089,6 +1103,24 @@ async def dismiss_batch_import_digit_noise(
     store = _get_batch_import_store(current_user["id"], sqlite_path)
     updated_count = store.bulk_dismiss_digit_only_noise(run_id=payload.run_id)
     return {"updated_count": int(updated_count)}
+
+
+@app.post("/batch-imports/review/auto-categorize", status_code=status.HTTP_200_OK)
+async def auto_categorize_batch_import_review(
+    payload: BatchReviewDismissDigitNoiseRequest,
+    sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
+) -> BatchImportAutoCategorizeResponse:
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    category_engine = CategoryEngine(store.load_learned_rules())
+    updated_count = store.auto_apply_default_categories(
+        run_id=payload.run_id,
+        category_engine=category_engine,
+    )
+    return {
+        "updated_count": int(updated_count),
+        "needs_review_count": store.count_needs_review(run_id=payload.run_id),
+    }
 
 
 @app.post("/upload", status_code=status.HTTP_201_CREATED)

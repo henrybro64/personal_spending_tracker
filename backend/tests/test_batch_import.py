@@ -154,6 +154,24 @@ class CategoryEngineTests(unittest.TestCase):
         self.assertEqual("Other Spending", unknown_match.category)
         self.assertTrue(unknown_match.needs_review)
 
+    def test_review_panel_merchants_match_builtin_rules(self) -> None:
+        engine = CategoryEngine()
+        cases = [
+            ("foodpanda /TW Taipei City", "Dining / Food"),
+            ("社團法人台灣社區照顧協會 / TW TAIPEI CITY", "Healthcare / Medical"),
+            ("Deliveroo /HKG Hong Kong", "Dining / Food"),
+            ("英商奧天股份有限公司 /TW TAIPEI", "Dining / Food"),
+            ("藍新－ZADON渣等精緻早午 / TW TAIPEI", "Dining / Food"),
+            ("中油－光復北路站 (D2176 /TW TAIPEI", "Transportation"),
+            ("三友藥妝－南港中信店 /TW Taipei City", "Healthcare / Medical"),
+            ("信用卡年費", "Bank Fees / Interest"),
+        ]
+        for merchant, expected_category in cases:
+            with self.subTest(merchant=merchant):
+                match = engine.categorize(merchant, 100.0)
+                self.assertEqual(expected_category, match.category)
+                self.assertFalse(match.needs_review)
+
 
 class ParserFixtureTests(unittest.TestCase):
     def test_supported_bank_fixtures_parse_expected_transactions(self) -> None:
@@ -751,6 +769,78 @@ class MerchantDigitNoiseTests(unittest.TestCase):
             junk = next(r for r in dismissed if r["merchant_raw"] == "500")
             self.assertTrue(junk["exclude_from_spending"])
             self.assertFalse(junk["needs_review"])
+
+    def test_auto_apply_default_categories_clears_known_merchants(self) -> None:
+        from backend.batch_import.category import CategoryEngine
+        from backend.batch_import.models import NormalizedTransaction
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            db_path = Path(temp_dir_name) / "batch.sqlite3"
+            store = BatchImportStore(db_path)
+            store.initialize()
+            txs = [
+                NormalizedTransaction(
+                    statement_file="s.pdf",
+                    bank="CTBC",
+                    card_last4="1234",
+                    transaction_date="2024-01-01",
+                    posted_date=None,
+                    merchant_raw="foodpanda /TW Taipei City",
+                    amount=250.0,
+                    currency="TWD",
+                    transaction_type="purchase",
+                    category="Other Spending",
+                    exclude_from_spending=False,
+                    needs_review=True,
+                ),
+                NormalizedTransaction(
+                    statement_file="s.pdf",
+                    bank="CTBC",
+                    card_last4="1234",
+                    transaction_date="2024-01-02",
+                    posted_date=None,
+                    merchant_raw="MYSTERY SHOP",
+                    amount=12.0,
+                    currency="TWD",
+                    transaction_type="purchase",
+                    category="Other Spending",
+                    exclude_from_spending=False,
+                    needs_review=True,
+                ),
+            ]
+            run_id, _, needs_review_count = store.record_import_run(
+                txs,
+                pdf_source_dir="/tmp",
+                text_source_dir="/tmp",
+                csv_output_path="/tmp/out.csv",
+                statement_count=1,
+            )
+            self.assertEqual(2, needs_review_count)
+
+            engine = CategoryEngine()
+            updated = store.auto_apply_default_categories(
+                run_id=run_id,
+                category_engine=engine,
+            )
+            self.assertEqual(1, updated)
+            self.assertEqual(1, store.count_needs_review(run_id=run_id))
+
+            remaining = store.list_transactions(
+                run_id=run_id, needs_review_only=True
+            )
+            self.assertEqual(1, len(remaining))
+            self.assertEqual("MYSTERY SHOP", remaining[0]["merchant_raw"])
+
+            cleared = store.list_transactions(
+                run_id=run_id, needs_review_only=False
+            )
+            foodpanda = next(
+                row
+                for row in cleared
+                if row["merchant_raw"] == "foodpanda /TW Taipei City"
+            )
+            self.assertEqual("Dining / Food", foodpanda["category"])
+            self.assertFalse(foodpanda["needs_review"])
 
 
 if __name__ == "__main__":

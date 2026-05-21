@@ -117,6 +117,8 @@ test("batch review page loads queue, runs import, and syncs to dashboard", async
             transaction_count: 1,
             sample_category: "Other Spending",
             sample_excluded: false,
+            suggested_category: "Other Spending",
+            can_auto_apply: false,
           },
         ],
       }),

@@ -8,11 +8,14 @@ from pathlib import Path
 from backend.statement_parse_utils import (
     extract_us_statement_date,
     extract_us_statement_period,
+    infer_esun_statement_roc_year,
     infer_us_transaction_date,
     normalize_statement_text,
     parse_amount,
+    ctbc_line_dates_to_iso,
+    parse_ctbc_gregorian_statement_line,
     parse_ctbc_roc_statement_line,
-    roc_date_to_iso,
+    parse_esun_statement_line,
 )
 
 from .category import CategoryEngine
@@ -277,14 +280,17 @@ class CtbcDailyStatementParser(BaseStatementParser):
 
             parsed_line = parse_ctbc_roc_statement_line(line)
             if parsed_line is None:
+                parsed_line = parse_ctbc_gregorian_statement_line(line)
+            if parsed_line is None:
                 continue
 
+            transaction_date, posted_date = ctbc_line_dates_to_iso(parsed_line)
             transactions.append(
                 self._build_transaction(
                     source_path=source_path,
                     card_last4=card_last4,
-                    transaction_date=roc_date_to_iso(parsed_line.transaction_date),
-                    posted_date=roc_date_to_iso(parsed_line.posted_date),
+                    transaction_date=transaction_date,
+                    posted_date=posted_date,
                     merchant_raw=parsed_line.merchant,
                     raw_amount=parsed_line.amount,
                     category_engine=category_engine,
@@ -375,6 +381,70 @@ class DbsStatementParser(BaseStatementParser):
         return transactions
 
 
+class EsunStatementParser(BaseStatementParser):
+    _last4_patterns = (
+        re.compile(r"(?P<last4>\d{4})\s*[-－]\s*XXXX\s*[-－]\s*XXXX\s*[-－]\s*\d{4}"),
+        re.compile(r"末四碼\s*(?P<last4>\d{4})"),
+    )
+    _skip_tokens = (
+        "ESUN_ESTATEMENT",
+        "玉山銀行",
+        "消費日 入帳日",
+        "本期合計",
+        "上期應繳",
+        "續下頁",
+        "卡號",
+        "信用額度",
+        "總計",
+        "合計",
+    )
+
+    def matches(self, file_name: str, statement_text: str) -> bool:
+        upper_name = file_name.upper()
+        if upper_name.startswith("ESUN_ESTATEMENT_"):
+            return True
+        return "玉山" in statement_text and "TWD" in statement_text
+
+    def parse(
+        self,
+        source_path: Path,
+        statement_text: str,
+        category_engine: CategoryEngine,
+    ) -> list[NormalizedTransaction]:
+        normalized_text = normalize_statement_text(statement_text)
+        roc_year = infer_esun_statement_roc_year(
+            normalized_text, source_path.name
+        )
+        if roc_year is None:
+            return []
+
+        card_last4 = _extract_last4(normalized_text, self._last4_patterns)
+        transactions: list[NormalizedTransaction] = []
+
+        for raw_line in normalized_text.splitlines():
+            line = _normalize_line(raw_line)
+            if not line or any(token in line for token in self._skip_tokens):
+                continue
+
+            parsed_line = parse_esun_statement_line(line, roc_year)
+            if parsed_line is None:
+                continue
+
+            transactions.append(
+                self._build_transaction(
+                    source_path=source_path,
+                    card_last4=card_last4,
+                    transaction_date=parsed_line.transaction_date,
+                    posted_date=parsed_line.posted_date,
+                    merchant_raw=parsed_line.merchant,
+                    raw_amount=parsed_line.amount,
+                    category_engine=category_engine,
+                )
+            )
+
+        return transactions
+
+
 _PARSERS: tuple[BaseStatementParser, ...] = (
     CtbcDailyStatementParser(
         name="ctbc_daily",
@@ -389,6 +459,11 @@ _PARSERS: tuple[BaseStatementParser, ...] = (
     DbsStatementParser(
         name="dbs",
         bank="DBS",
+        currency="TWD",
+    ),
+    EsunStatementParser(
+        name="esun",
+        bank="ESUN",
         currency="TWD",
     ),
     ChaseStatementParser(

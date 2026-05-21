@@ -256,6 +256,10 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
     CategoryRule(
         patterns=(
             "FOODPANDA",
+            "DELIVEROO",
+            "GRABFOOD",
+            "英商奧天",
+            "奧天股份",
             "UBEREATS",
             "UBER EATS",
             "STARBUCKS",
@@ -302,6 +306,8 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
             "錵鑶日本料理",
             "乾杯",
             "小食泰",
+            "ZADON",
+            "渣等",
         ),
         category="Dining / Food",
         exclude_from_spending=False,
@@ -310,6 +316,10 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
     ),
     CategoryRule(
         patterns=(
+            "中油",
+            "台灣中油",
+            "CPC",
+            "台塑石油",
             "UBER",
             "優步",
             "优步",
@@ -394,6 +404,9 @@ DEFAULT_RULES: tuple[CategoryRule, ...] = (
             "維康醫療",
             "新光醫療",
             "大樹健康",
+            "三友藥妝",
+            "社區照顧",
+            "社團法人台灣社區照顧",
         ),
         category="Healthcare / Medical",
         exclude_from_spending=False,
