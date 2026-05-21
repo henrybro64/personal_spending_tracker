@@ -3,6 +3,8 @@ import re
 from typing import TypedDict
 
 from backend.statement_parse_utils import (
+    MERCHANT_MISSING_FROM_PDF_CATEGORY,
+    MERCHANT_NOT_IN_PDF,
     extract_us_statement_date,
     extract_us_statement_period,
     infer_esun_statement_roc_year,
@@ -643,6 +645,9 @@ AI_SERVICE_KEYWORDS: tuple[str, ...] = (
 def categorize_merchant(merchant: str, amount: float | None = None) -> str:
     if is_credit_card_bill_payment(merchant):
         return PAYMENT_CATEGORY
+
+    if merchant.strip() == MERCHANT_NOT_IN_PDF:
+        return MERCHANT_MISSING_FROM_PDF_CATEGORY
 
     merchant_upper = " ".join(merchant.upper().split())
     normalized_merchant = re.sub(r"[^A-Z0-9]+", " ", merchant_upper).strip()

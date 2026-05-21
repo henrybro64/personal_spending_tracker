@@ -1,6 +1,7 @@
 from .category import (
     DEFAULT_RULES,
     FEE_CATEGORY,
+    MERCHANT_MISSING_FROM_PDF_CATEGORY,
     PAYMENT_CATEGORY,
     UNKNOWN_CATEGORY,
     CategoryEngine,
@@ -46,6 +47,7 @@ __all__ = [
     "DEFAULT_SQLITE_OUTPUT_NAME",
     "DEFAULT_TEXT_SOURCE_DIRNAME",
     "FEE_CATEGORY",
+    "MERCHANT_MISSING_FROM_PDF_CATEGORY",
     "NormalizedTransaction",
     "PAYMENT_CATEGORY",
     "StatementImporter",

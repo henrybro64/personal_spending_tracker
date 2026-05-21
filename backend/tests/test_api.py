@@ -100,6 +100,33 @@ def test_manual_transaction_rejects_empty_merchant(client: TestClient) -> None:
     assert response.json() == {"detail": "Merchant is required."}
 
 
+def test_delete_dashboard_transaction(client: TestClient) -> None:
+    _register_user(client)
+
+    created = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2024-04-20",
+            "merchant": "Bad Parse Row",
+            "amount": 123.45,
+            "category": "Other Spending",
+            "payment_method": None,
+        },
+    )
+    assert created.status_code == 201
+    transaction_id = created.json()["transaction"]["id"]
+
+    deleted = client.delete(f"/transactions/{transaction_id}")
+    assert deleted.status_code == 204
+
+    missing = client.delete(f"/transactions/{transaction_id}")
+    assert missing.status_code == 404
+
+    summary = client.get("/summary")
+    assert summary.status_code == 200
+    assert summary.json()["number_of_transactions"] == 0
+
+
 def test_manual_transaction_rejects_zero_amount(client: TestClient) -> None:
     _register_user(client)
 

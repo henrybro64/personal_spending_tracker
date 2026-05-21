@@ -8,6 +8,7 @@ import {
   Body1,
   Button,
   Card,
+  Input,
   MessageBar,
   MessageBarBody,
   Spinner,
@@ -121,6 +122,7 @@ type NeedsReviewMerchantsResponse = {
 };
 
 type DraftState = {
+  merchant_raw: string;
   category: string;
   exclude_from_spending: boolean;
 };
@@ -143,6 +145,7 @@ const reviewCategories = [
   "Healthcare / Medical",
   "Bank Fees / Interest",
   "Cash Advance / ATM",
+  "Merchant Missing From PDF",
   "Other Spending",
 ] as const;
 
@@ -268,6 +271,18 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2,
     fontWeight: tokens.fontWeightSemibold,
   },
+  merchantInput: {
+    width: "100%",
+    minWidth: "200px",
+    height: "36px",
+    paddingLeft: "10px",
+    paddingRight: "10px",
+    fontSize: tokens.fontSizeBase200,
+    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    backgroundColor: tokens.colorNeutralBackground1,
+    marginBottom: "6px",
+  },
   selectControl: {
     width: "220px",
     height: "36px",
@@ -340,6 +355,7 @@ export default function BatchReviewPage() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [savingId, setSavingId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [skippedFiles, setSkippedFiles] = useState<SkippedFile[]>([]);
@@ -420,6 +436,7 @@ export default function BatchReviewPage() {
   function getDraft(transaction: BatchTransaction): DraftState {
     return (
       drafts[transaction.id] ?? {
+        merchant_raw: transaction.merchant_raw,
         category: transaction.category,
         exclude_from_spending: transaction.exclude_from_spending,
       }
@@ -684,8 +701,62 @@ export default function BatchReviewPage() {
     }
   }
 
+  async function onDelete(transaction: BatchTransaction) {
+    const confirmed = window.confirm(
+      `Delete this row from the import queue?\n\n${transaction.transaction_date} · ${transaction.merchant_raw} · ${formatCurrency(transaction.amount, transaction.currency)}`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingId(transaction.id);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch(
+        `/batch-imports/transactions/${transaction.id}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        throw new Error(
+          typeof payload.detail === "string"
+            ? payload.detail
+            : "Failed to delete transaction."
+        );
+      }
+      setTransactions((currentTransactions) =>
+        currentTransactions.filter((item) => item.id !== transaction.id)
+      );
+      setDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[transaction.id];
+        return nextDrafts;
+      });
+      setMessage(`Deleted ${transaction.merchant_raw}.`);
+      await loadBatchState(needsReviewOnly);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Failed to delete transaction."
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   async function onSave(transaction: BatchTransaction) {
     const draft = getDraft(transaction);
+    const merchantRaw = draft.merchant_raw.trim();
+    if (!merchantRaw) {
+      setError("Merchant is required.");
+      return;
+    }
     setSavingId(transaction.id);
     setError("");
     setMessage("");
@@ -696,6 +767,7 @@ export default function BatchReviewPage() {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            merchant_raw: merchantRaw,
             category: draft.category,
             exclude_from_spending: draft.exclude_from_spending,
             save_rule: true,
@@ -1068,7 +1140,17 @@ export default function BatchReviewPage() {
                       <TableRow key={transaction.id}>
                         <TableCell>{transaction.transaction_date}</TableCell>
                         <TableCell className={styles.merchantCell}>
-                          <div>{transaction.merchant_raw}</div>
+                          <Input
+                            className={styles.merchantInput}
+                            value={draft.merchant_raw}
+                            onChange={(_event, data) =>
+                              updateDraft(transaction.id, {
+                                ...draft,
+                                merchant_raw: data.value,
+                              })
+                            }
+                            aria-label={`Merchant for transaction ${transaction.id}`}
+                          />
                           <Body1 className={styles.quietText}>
                             {transaction.statement_file}
                             {transaction.card_last4 ? ` • ${transaction.card_last4}` : ""}
@@ -1118,10 +1200,23 @@ export default function BatchReviewPage() {
                             </label>
                             <Button
                               appearance="secondary"
-                              disabled={savingId === transaction.id}
+                              disabled={
+                                savingId === transaction.id ||
+                                deletingId === transaction.id
+                              }
                               onClick={() => void onSave(transaction)}
                             >
                               {savingId === transaction.id ? "Saving..." : "Save"}
+                            </Button>
+                            <Button
+                              appearance="outline"
+                              disabled={
+                                savingId === transaction.id ||
+                                deletingId === transaction.id
+                              }
+                              onClick={() => void onDelete(transaction)}
+                            >
+                              {deletingId === transaction.id ? "Deleting..." : "Delete"}
                             </Button>
                           </div>
                         </TableCell>

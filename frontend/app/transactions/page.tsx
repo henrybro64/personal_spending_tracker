@@ -86,6 +86,7 @@ const transactionCategories = [
   "Tax / Accounting",
   "Government / Consular",
   "Bank Fees / Interest",
+  "Merchant Missing From PDF",
   "Cash & Fees",
   "Payment / Credit",
   "Refunds & Credits",
@@ -294,6 +295,12 @@ const useStyles = makeStyles({
     height: "32px",
     fontSize: tokens.fontSizeBase200,
   },
+  merchantControl: {
+    minWidth: "200px",
+    width: "100%",
+    height: "32px",
+    fontSize: tokens.fontSizeBase200,
+  },
 });
 
 function formatCurrency(amount: number, currencyCode: string = "USD") {
@@ -399,7 +406,9 @@ export default function TransactionsPage() {
   const [selectedYear, setSelectedYear] = useState<string | null>(null);
   const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
   const [savingTransactionId, setSavingTransactionId] = useState<number | null>(null);
+  const [deletingTransactionId, setDeletingTransactionId] = useState<number | null>(null);
   const [categoryDrafts, setCategoryDrafts] = useState<Record<number, string>>({});
+  const [merchantDrafts, setMerchantDrafts] = useState<Record<number, string>>({});
 
   useEffect(() => {
     async function loadTransactions() {
@@ -525,10 +534,77 @@ export default function TransactionsPage() {
     return categoryDrafts[transaction.id] ?? transaction.category;
   }
 
-  async function saveTransactionCategory(transaction: Transaction) {
+  function draftMerchant(transaction: Transaction): string {
+    return merchantDrafts[transaction.id] ?? transaction.merchant;
+  }
+
+  async function deleteTransaction(transaction: Transaction) {
+    const confirmed = window.confirm(
+      `Delete this transaction?\n\n${transaction.date} · ${transaction.merchant} · ${formatCurrency(transaction.amount, transaction.currency ?? "USD")}`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingTransactionId(transaction.id);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch(`/transactions/${transaction.id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
+        const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+        throw new Error(
+          typeof payload.detail === "string"
+            ? payload.detail
+            : "Failed to delete transaction."
+        );
+      }
+      setTransactions((current) =>
+        current.filter((item) => item.id !== transaction.id)
+      );
+      setCategoryDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[transaction.id];
+        return nextDrafts;
+      });
+      setMerchantDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[transaction.id];
+        return nextDrafts;
+      });
+      setMessage(`Deleted ${transaction.merchant}.`);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Failed to delete transaction."
+      );
+    } finally {
+      setDeletingTransactionId(null);
+    }
+  }
+
+  async function saveTransactionEdits(transaction: Transaction) {
     const category = draftCategory(transaction).trim();
+    const merchant = draftMerchant(transaction).trim();
     if (!category) {
       setError("Category is required.");
+      return;
+    }
+    if (!merchant) {
+      setError("Merchant is required.");
+      return;
+    }
+    const categoryChanged = category !== transaction.category;
+    const merchantChanged = merchant !== transaction.merchant;
+    if (!categoryChanged && !merchantChanged) {
+      setMessage("No changes to save.");
       return;
     }
     setSavingTransactionId(transaction.id);
@@ -538,7 +614,10 @@ export default function TransactionsPage() {
       const response = await apiFetch(`/transactions/${transaction.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category }),
+        body: JSON.stringify({
+          category: categoryChanged ? category : undefined,
+          merchant: merchantChanged ? merchant : undefined,
+        }),
       });
       const payload = (await response.json()) as
         | TransactionUpdateResponse
@@ -551,7 +630,7 @@ export default function TransactionsPage() {
         throw new Error(
           "detail" in payload && typeof payload.detail === "string"
             ? payload.detail
-            : "Failed to update category."
+            : "Failed to update transaction."
         );
       }
       const updated = (payload as TransactionUpdateResponse).transaction;
@@ -563,10 +642,15 @@ export default function TransactionsPage() {
         delete nextDrafts[transaction.id];
         return nextDrafts;
       });
-      setMessage(`Updated category for ${updated.merchant}.`);
+      setMerchantDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[transaction.id];
+        return nextDrafts;
+      });
+      setMessage(`Saved ${updated.merchant}.`);
     } catch (saveError) {
       setError(
-        saveError instanceof Error ? saveError.message : "Failed to update category."
+        saveError instanceof Error ? saveError.message : "Failed to update transaction."
       );
     } finally {
       setSavingTransactionId(null);
@@ -813,7 +897,22 @@ export default function TransactionsPage() {
                               key={transaction.id}
                             >
                               <TableCell className={styles.tableCell}>{transaction.date}</TableCell>
-                              <TableCell className={styles.tableCell}>{transaction.merchant}</TableCell>
+                              <TableCell className={styles.tableCell}>
+                                <Input
+                                  className={mergeClasses(
+                                    styles.selectControl,
+                                    styles.merchantControl
+                                  )}
+                                  value={draftMerchant(transaction)}
+                                  onChange={(_event, data) =>
+                                    setMerchantDrafts((currentDrafts) => ({
+                                      ...currentDrafts,
+                                      [transaction.id]: data.value,
+                                    }))
+                                  }
+                                  aria-label={`Merchant for transaction ${transaction.id}`}
+                                />
+                              </TableCell>
                               <TableCell className={styles.tableCell}>
                                 <select
                                   className={mergeClasses(
@@ -851,16 +950,34 @@ export default function TransactionsPage() {
                                 {formatCurrency(transaction.amount, transaction.currency ?? "USD")}
                               </TableCell>
                               <TableCell className={styles.tableCell}>
-                                <Button
-                                  appearance="secondary"
-                                  disabled={savingTransactionId === transaction.id}
-                                  onClick={() => void saveTransactionCategory(transaction)}
-                                  size="small"
-                                >
-                                  {savingTransactionId === transaction.id
-                                    ? "Saving..."
-                                    : "Save"}
-                                </Button>
+                                <div className={styles.actions}>
+                                  <Button
+                                    appearance="secondary"
+                                    disabled={
+                                      savingTransactionId === transaction.id ||
+                                      deletingTransactionId === transaction.id
+                                    }
+                                    onClick={() => void saveTransactionEdits(transaction)}
+                                    size="small"
+                                  >
+                                    {savingTransactionId === transaction.id
+                                      ? "Saving..."
+                                      : "Save"}
+                                  </Button>
+                                  <Button
+                                    appearance="outline"
+                                    disabled={
+                                      savingTransactionId === transaction.id ||
+                                      deletingTransactionId === transaction.id
+                                    }
+                                    onClick={() => void deleteTransaction(transaction)}
+                                    size="small"
+                                  >
+                                    {deletingTransactionId === transaction.id
+                                      ? "Deleting..."
+                                      : "Delete"}
+                                  </Button>
+                                </div>
                               </TableCell>
                             </TableRow>
                           ))}

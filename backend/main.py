@@ -68,6 +68,9 @@ from backend.database import (  # noqa: E402
     maybe_claim_legacy_data_for_first_user,
     record_audit_event,
     revoke_session,
+    delete_transaction,
+    delete_transaction_by_match,
+    update_transaction as update_stored_transaction,
     update_transaction_category,
     update_user_last_login,
 )
@@ -239,6 +242,7 @@ class BatchReviewUpdateRequest(BaseModel):
     category: str
     exclude_from_spending: bool
     save_rule: bool = True
+    merchant_raw: str | None = None
 
 
 class BatchReviewBulkUpdateRequest(BaseModel):
@@ -257,8 +261,9 @@ class ManualTransactionResponse(TypedDict):
     transaction: StoredTransaction
 
 
-class TransactionCategoryUpdateRequest(BaseModel):
-    category: str
+class TransactionUpdateRequest(BaseModel):
+    category: str | None = None
+    merchant: str | None = None
 
 
 class AuthRequest(BaseModel):
@@ -886,23 +891,45 @@ async def create_manual_transaction(
 
 
 @app.patch("/transactions/{transaction_id}")
-async def update_transaction(
+async def patch_transaction(
     transaction_id: int,
-    payload: TransactionCategoryUpdateRequest,
+    payload: TransactionUpdateRequest,
     current_user: UserRecord = Depends(require_current_user),
 ) -> ManualTransactionResponse:
-    category = payload.category.strip()
-    if not category:
-        raise HTTPException(status_code=400, detail="Category is required.")
+    category = payload.category.strip() if payload.category is not None else None
+    merchant = payload.merchant.strip() if payload.merchant is not None else None
+    if category == "":
+        raise HTTPException(status_code=400, detail="Category cannot be empty.")
+    if merchant == "":
+        raise HTTPException(status_code=400, detail="Merchant cannot be empty.")
+    if category is None and merchant is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide category and/or merchant to update.",
+        )
 
-    updated = update_transaction_category(
+    updated = update_stored_transaction(
         user_id=current_user["id"],
         transaction_id=transaction_id,
         category=category,
+        merchant=merchant,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="Transaction not found.")
     return {"transaction": updated}
+
+
+@app.delete("/transactions/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_dashboard_transaction(
+    transaction_id: int,
+    current_user: UserRecord = Depends(require_current_user),
+) -> None:
+    deleted = delete_transaction(
+        user_id=current_user["id"],
+        transaction_id=transaction_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Transaction not found.")
 
 
 @app.post("/batch-imports/run", status_code=status.HTTP_201_CREATED)
@@ -1020,12 +1047,19 @@ async def update_batch_import_transaction(
         raise HTTPException(status_code=400, detail="Category is required.")
 
     store = _get_batch_import_store(current_user["id"], sqlite_path)
+    merchant_raw = (
+        payload.merchant_raw.strip() if payload.merchant_raw is not None else None
+    )
+    if merchant_raw == "":
+        raise HTTPException(status_code=400, detail="Merchant cannot be empty.")
+
     try:
         updated_transaction = store.update_transaction_review(
             transaction_id,
             category=category,
             exclude_from_spending=payload.exclude_from_spending,
             save_rule=payload.save_rule,
+            merchant_raw=merchant_raw,
         )
     except KeyError:
         raise HTTPException(
@@ -1034,6 +1068,38 @@ async def update_batch_import_transaction(
         ) from None
 
     return {"transaction": updated_transaction}
+
+
+@app.delete(
+    "/batch-imports/transactions/{transaction_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_batch_import_transaction(
+    transaction_id: int,
+    sqlite_path: str | None = Query(default=None),
+    current_user: UserRecord = Depends(require_current_user),
+) -> None:
+    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    if store.is_transaction_synced(transaction_id):
+        row = store.get_transaction(transaction_id)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Batch-import transaction {transaction_id} was not found.",
+            )
+        delete_transaction_by_match(
+            user_id=current_user["id"],
+            transaction_date=row["transaction_date"],
+            merchant=row["merchant_raw"],
+            amount=float(row["amount"]),
+        )
+
+    run_id = store.delete_imported_transaction(transaction_id)
+    if run_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Batch-import transaction {transaction_id} was not found.",
+        )
 
 
 @app.get("/batch-imports/needs-review-merchants")

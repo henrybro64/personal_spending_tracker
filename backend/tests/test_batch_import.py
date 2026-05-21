@@ -154,6 +154,110 @@ class CategoryEngineTests(unittest.TestCase):
         self.assertEqual("Other Spending", unknown_match.category)
         self.assertTrue(unknown_match.needs_review)
 
+    def test_delete_imported_transaction_updates_run_counts(self) -> None:
+        from backend.batch_import.models import NormalizedTransaction
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            store = BatchImportStore(Path(temp_dir_name) / "batch.sqlite3")
+            store.initialize()
+            run_id, _, _ = store.record_import_run(
+                [
+                    NormalizedTransaction(
+                        statement_file="s.pdf",
+                        bank="CTBC",
+                        card_last4="1234",
+                        transaction_date="2026-04-14",
+                        posted_date=None,
+                        merchant_raw="JUNK ROW",
+                        amount=99.0,
+                        currency="TWD",
+                        transaction_type="purchase",
+                        category="Other Spending",
+                        exclude_from_spending=False,
+                        needs_review=True,
+                    ),
+                    NormalizedTransaction(
+                        statement_file="s.pdf",
+                        bank="CTBC",
+                        card_last4="1234",
+                        transaction_date="2026-04-15",
+                        posted_date=None,
+                        merchant_raw="KEEP ROW",
+                        amount=50.0,
+                        currency="TWD",
+                        transaction_type="purchase",
+                        category="Dining / Food",
+                        exclude_from_spending=False,
+                        needs_review=False,
+                    ),
+                ],
+                pdf_source_dir="/tmp",
+                text_source_dir="/tmp",
+                csv_output_path="/tmp/out.csv",
+                statement_count=1,
+            )
+            rows = store.list_transactions(run_id=run_id)
+            deleted_run_id = store.delete_imported_transaction(rows[0]["id"])
+            self.assertEqual(run_id, deleted_run_id)
+
+            remaining = store.list_transactions(run_id=run_id)
+            self.assertEqual(1, len(remaining))
+            self.assertEqual("KEEP ROW", remaining[0]["merchant_raw"])
+
+            latest = store.get_latest_run()
+            assert latest is not None
+            self.assertEqual(1, latest["transaction_count"])
+            self.assertEqual(0, latest["needs_review_count"])
+
+    def test_update_transaction_review_can_rename_merchant(self) -> None:
+        from backend.batch_import.models import NormalizedTransaction
+        from backend.statement_parse_utils import MERCHANT_NOT_IN_PDF
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            store = BatchImportStore(Path(temp_dir_name) / "batch.sqlite3")
+            store.initialize()
+            run_id, _, _ = store.record_import_run(
+                [
+                    NormalizedTransaction(
+                        statement_file="CTBC_card_Estatement_11504.pdf",
+                        bank="CTBC",
+                        card_last4="1234",
+                        transaction_date="2026-04-14",
+                        posted_date=None,
+                        merchant_raw=MERCHANT_NOT_IN_PDF,
+                        amount=320.0,
+                        currency="TWD",
+                        transaction_type="purchase",
+                        category="Merchant Missing From PDF",
+                        exclude_from_spending=False,
+                        needs_review=False,
+                    )
+                ],
+                pdf_source_dir="/tmp",
+                text_source_dir="/tmp",
+                csv_output_path="/tmp/out.csv",
+                statement_count=1,
+            )
+            rows = store.list_transactions(run_id=run_id)
+            updated = store.update_transaction_review(
+                rows[0]["id"],
+                category="Dining / Food",
+                exclude_from_spending=False,
+                save_rule=True,
+                merchant_raw="UBER TRIP / TW Taipei City",
+            )
+            self.assertEqual("UBER TRIP / TW Taipei City", updated["merchant_raw"])
+            self.assertEqual("Dining / Food", updated["category"])
+
+    def test_merchant_not_in_pdf_does_not_require_review(self) -> None:
+        from backend.batch_import.category import MERCHANT_MISSING_FROM_PDF_CATEGORY
+        from backend.statement_parse_utils import MERCHANT_NOT_IN_PDF
+
+        engine = CategoryEngine()
+        match = engine.categorize(MERCHANT_NOT_IN_PDF, 320.0)
+        self.assertEqual(MERCHANT_MISSING_FROM_PDF_CATEGORY, match.category)
+        self.assertFalse(match.needs_review)
+
     def test_review_panel_merchants_match_builtin_rules(self) -> None:
         engine = CategoryEngine()
         cases = [

@@ -840,6 +840,16 @@ def insert_manual_transaction(
                     currency
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    date,
+                    merchant,
+                    amount,
+                    COALESCE(category, '') AS category,
+                    COALESCE(currency, 'USD') AS currency,
+                    payment_method,
+                    file_name,
+                    COALESCE(original_file_name, file_name) AS original_file_name
                 """,
                 (
                     user_id,
@@ -855,18 +865,22 @@ def insert_manual_transaction(
                     "USD",
                 ),
             )
+            row = cursor.fetchone()
         connection.commit()
 
+    if row is None:
+        raise RuntimeError("Failed to insert manual transaction.")
+
     return {
-        "id": 0,
-        "date": transaction_date,
-        "merchant": normalized_merchant,
-        "amount": amount,
-        "category": normalized_category,
-        "currency": "USD",
-        "payment_method": normalized_payment_method,
-        "file_name": file_name,
-        "original_file_name": original_file_name,
+        "id": int(row[0]),
+        "date": str(row[1]),
+        "merchant": str(row[2]),
+        "amount": float(row[3]),
+        "category": _normalize_category_for_storage(str(row[4]), float(row[3])),
+        "currency": str(row[5]),
+        "payment_method": str(row[6]) if row[6] is not None else None,
+        "file_name": str(row[7]),
+        "original_file_name": str(row[8]),
     }
 
 
@@ -877,17 +891,72 @@ def update_transaction_category(
     category: str,
     database_url: str | None = None,
 ) -> StoredTransaction | None:
+    return update_transaction(
+        user_id=user_id,
+        transaction_id=transaction_id,
+        category=category,
+        database_url=database_url,
+    )
+
+
+def update_transaction(
+    *,
+    user_id: int,
+    transaction_id: int,
+    category: str | None = None,
+    merchant: str | None = None,
+    database_url: str | None = None,
+) -> StoredTransaction | None:
     resolved_database_url = init_db(database_url)
-    normalized_category = category.strip()
-    if not normalized_category:
+    normalized_category = category.strip() if category is not None else None
+    if normalized_category == "":
+        return None
+
+    normalized_merchant: str | None = None
+    if merchant is not None:
+        normalized_merchant = " ".join(merchant.split())
+        if not normalized_merchant:
+            return None
+
+    if normalized_category is None and normalized_merchant is None:
         return None
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
+                SELECT merchant, amount, COALESCE(category, '') AS category
+                FROM transactions
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (transaction_id, user_id),
+            )
+            existing = cursor.fetchone()
+            if existing is None:
+                return None
+
+            effective_merchant = (
+                normalized_merchant
+                if normalized_merchant is not None
+                else str(existing[0])
+            )
+            effective_amount = float(existing[1])
+            if normalized_category is not None:
+                effective_category = normalized_category
+            elif normalized_merchant is not None:
+                effective_category = categorize_merchant(
+                    effective_merchant, effective_amount
+                )
+            else:
+                effective_category = str(existing[2])
+
+            cursor.execute(
+                """
                 UPDATE transactions
-                SET category = %s
+                SET
+                    merchant = %s,
+                    category = %s
                 WHERE id = %s
                   AND user_id = %s
                 RETURNING
@@ -901,7 +970,14 @@ def update_transaction_category(
                     file_name,
                     COALESCE(original_file_name, file_name) AS original_file_name
                 """,
-                (normalized_category, transaction_id, user_id),
+                (
+                    effective_merchant,
+                    _normalize_category_for_storage(
+                        effective_category, effective_amount
+                    ),
+                    transaction_id,
+                    user_id,
+                ),
             )
             row = cursor.fetchone()
         connection.commit()
@@ -920,6 +996,57 @@ def update_transaction_category(
         "file_name": str(row[7]),
         "original_file_name": str(row[8]),
     }
+
+
+def delete_transaction(
+    *,
+    user_id: int,
+    transaction_id: int,
+    database_url: str | None = None,
+) -> bool:
+    resolved_database_url = init_db(database_url)
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM transactions
+                WHERE id = %s
+                  AND user_id = %s
+                RETURNING id
+                """,
+                (transaction_id, user_id),
+            )
+            deleted = cursor.fetchone() is not None
+        connection.commit()
+    return deleted
+
+
+def delete_transaction_by_match(
+    *,
+    user_id: int,
+    transaction_date: str,
+    merchant: str,
+    amount: float,
+    database_url: str | None = None,
+) -> bool:
+    """Remove a dashboard row that came from batch merge (best-effort match)."""
+    resolved_database_url = init_db(database_url)
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM transactions
+                WHERE user_id = %s
+                  AND date = %s
+                  AND merchant = %s
+                  AND amount = %s
+                RETURNING id
+                """,
+                (user_id, transaction_date, merchant, amount),
+            )
+            deleted = cursor.fetchone() is not None
+        connection.commit()
+    return deleted
 
 
 def _since_date_for_range(range_key: TimeRange) -> date | None:
