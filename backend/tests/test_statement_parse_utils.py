@@ -1,4 +1,7 @@
-from backend.statement_parse_utils import parse_ctbc_roc_statement_line
+from backend.statement_parse_utils import (
+    MERCHANT_NOT_IN_PDF,
+    parse_ctbc_roc_statement_line,
+)
 
 
 def test_parse_ctbc_roc_line_accepts_any_mcc_and_foreign_currency() -> None:
@@ -37,6 +40,26 @@ def test_parse_ctbc_roc_line_rejects_digit_only_merchant() -> None:
         parse_ctbc_roc_statement_line("114/09/16 114/09/17 CTBC 6,232.00 5411")
         is None
     )
+    assert (
+        parse_ctbc_roc_statement_line("113/02/20 113/02/21 -1117 6764.00 5411")
+        is None
+    )
+    assert (
+        parse_ctbc_roc_statement_line("113/02/20 113/02/21 -74457 6764.00")
+        is None
+    )
+    assert (
+        parse_ctbc_roc_statement_line(
+            "112/12/27 112/12/28 03-03 CTBC 1,843.00 5411"
+        )
+        is None
+    )
+    assert (
+        parse_ctbc_roc_statement_line(
+            "112/12/27 112/12/28 02-03 CTBC 1,843.00"
+        )
+        is None
+    )
 
 
 def test_parse_ctbc_roc_line_keeps_integer_amount_without_mcc() -> None:
@@ -48,6 +71,23 @@ def test_parse_ctbc_roc_line_keeps_integer_amount_without_mcc() -> None:
     assert parsed.merchant == "TEST SHOP"
     assert parsed.amount == 1000.0
     assert parsed.mcc is None
+
+
+def test_parse_ctbc_card_estatement_amount_only_when_merchant_missing_from_pdf() -> None:
+    """CTBC 115xx PDFs often drop merchant glyphs (Uber visible, not extractable)."""
+    parsed = parse_ctbc_roc_statement_line("115/02/11 115/02/23 320 0051 TW")
+    assert parsed is not None
+    assert parsed.merchant == MERCHANT_NOT_IN_PDF
+    assert parsed.amount == 320.0
+
+    disney = parse_ctbc_roc_statement_line(
+        "115/02/14 115/02/23 DISNEY PLUS 335 0051 SG TWD 335.00"
+    )
+    assert disney is not None
+    assert disney.merchant == "DISNEY PLUS"
+    assert disney.amount == 335.0
+
+    assert parse_ctbc_roc_statement_line("115/02/14 115/02/23 5 0051") is None
 
 
 def test_parse_ctbc_roc_line_with_location_suffix_before_amount() -> None:

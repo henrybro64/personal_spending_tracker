@@ -20,9 +20,12 @@ _MERCHANT_HEADER_NOISE: frozenset[str] = frozenset(
     }
 )
 
-# Optional sign + digits (and optional .xx), e.g. -62, +12, 6,232.00 as merchant span.
-_SIGNED_NUMERIC_MERCHANT = re.compile(
-    r"^[+\-−－]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?$"
+_SIGN_PREFIXES = "+-−－"
+
+# CTBC installment rows: "03-03" or "03-03 CTBC" (current/total periods).
+_INSTALLMENT_MERCHANT = re.compile(
+    r"^(?:\d{1,2}[-/]\d{1,2})(?:\s+CTBC)?$",
+    re.IGNORECASE,
 )
 
 
@@ -30,11 +33,35 @@ def _normalize_probe(merchant_raw: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", merchant_raw).upper().split())
 
 
+def _compact_merchant(merchant_raw: str) -> str:
+    return re.sub(r"[\s,]+", "", unicodedata.normalize("NFKC", merchant_raw))
+
+
+def _is_numeric_merchant_token(compact: str) -> bool:
+    """True when compact text is only an optional sign and a number."""
+    if not compact:
+        return False
+
+    body = compact
+    if body[0] in _SIGN_PREFIXES:
+        body = body[1:]
+    if not body:
+        return False
+
+    if body.count(".") > 1:
+        return False
+    if "." in body:
+        whole, fraction = body.split(".", 1)
+        return whole.isdigit() and fraction.isdigit()
+    return body.isdigit()
+
+
 def merchant_raw_is_parse_noise(merchant_raw: str) -> bool:
     """True when *merchant_raw* is not a real shop name (CTBC PDF/table junk).
 
-    Covers digit-only spans (``500``), signed numeric fragments (``-62``),
-    and bank/header tokens leaked into the merchant column (``CTBC``).
+    Covers bare numbers (``500``), signed amounts used as merchants
+    (``-62``, ``-1,117``, ``-74,457``), installment markers (``03-03 CTBC``),
+    and bank/header tokens (``CTBC``).
     """
     collapsed = unicodedata.normalize("NFKC", merchant_raw).strip()
     if not collapsed:
@@ -43,17 +70,10 @@ def merchant_raw_is_parse_noise(merchant_raw: str) -> bool:
     if _normalize_probe(collapsed) in _MERCHANT_HEADER_NOISE:
         return True
 
-    compact = re.sub(r"[\s,]+", "", collapsed)
-    if not compact:
-        return False
-
-    if all(ch.isdigit() for ch in compact):
+    if _INSTALLMENT_MERCHANT.match(collapsed):
         return True
 
-    if _SIGNED_NUMERIC_MERCHANT.fullmatch(compact):
-        return True
-
-    return False
+    return _is_numeric_merchant_token(_compact_merchant(collapsed))
 
 
 def merchant_raw_is_digit_only_noise(merchant_raw: str) -> bool:

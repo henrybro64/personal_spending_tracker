@@ -171,6 +171,27 @@ CTBC_AMOUNT_MCC_TRAILING = re.compile(
     r"\s*$"
 )
 
+# CTBC card e-statement (115xx): merchant column often missing from PDF text.
+CTBC_CARD_TWD_0051 = re.compile(
+    r"^(?P<merchant>.+?)\s+(?P<card_amount>[\d,]+)\s+0051\s+"
+    r"(?P<country>[A-Z]{2})\s+TWD\s+(?P<amount>[\d,]+(?:\.\d{1,2})?)\s*$",
+    re.IGNORECASE,
+)
+CTBC_CARD_FX_0051 = re.compile(
+    r"^(?P<merchant>.+?)\s+(?P<card_amount>[\d,]+)\s+0051\s+"
+    r"(?P<country>[A-Z]{2})\b.*?\bUSD\s+(?P<amount>[\d.]+)\s*$",
+    re.IGNORECASE,
+)
+CTBC_CARD_PLAIN_0051 = re.compile(
+    r"^(?:(?P<merchant>[A-Za-z][A-Za-z0-9*.,\s/&-]+?)\s+)?"
+    r"(?P<amount>[\d,]+)\s+0051\s+(?P<country>[A-Z]{2})\s*$"
+)
+CTBC_CARD_AMOUNT_ONLY_0051 = re.compile(
+    r"^(?P<amount>[\d,]+)\s+0051\s*$"
+)
+
+MERCHANT_NOT_IN_PDF = "(merchant not in PDF)"
+
 
 def _parse_ctbc_line_rest(rest: str) -> tuple[str, float, str | None] | None:
     """Parse merchant + TWD amount (+ optional MCC) from the CTBC line tail."""
@@ -179,6 +200,40 @@ def _parse_ctbc_line_rest(rest: str) -> tuple[str, float, str | None] | None:
         return None
     if "20,000/20,000" in normalized_rest or "7.99%" in normalized_rest:
         return None
+
+    twd_0051 = CTBC_CARD_TWD_0051.match(normalized_rest)
+    if twd_0051:
+        return (
+            twd_0051.group("merchant").strip(),
+            parse_amount(twd_0051.group("amount")),
+            None,
+        )
+
+    fx_0051 = CTBC_CARD_FX_0051.match(normalized_rest)
+    if fx_0051:
+        return (
+            fx_0051.group("merchant").strip(),
+            parse_amount(fx_0051.group("amount")),
+            None,
+        )
+
+    plain_0051 = CTBC_CARD_PLAIN_0051.match(normalized_rest)
+    if plain_0051:
+        merchant = (plain_0051.group("merchant") or "").strip()
+        if not merchant:
+            merchant = MERCHANT_NOT_IN_PDF
+        return (
+            merchant,
+            parse_amount(plain_0051.group("amount")),
+            None,
+        )
+
+    amount_only_0051 = CTBC_CARD_AMOUNT_ONLY_0051.match(normalized_rest)
+    if amount_only_0051:
+        amount = parse_amount(amount_only_0051.group("amount"))
+        if amount < 10:
+            return None
+        return (MERCHANT_NOT_IN_PDF, amount, None)
 
     usd_match = CTBC_USD_AMOUNT_TRAILING.search(normalized_rest)
     if usd_match:
@@ -197,7 +252,7 @@ def _parse_ctbc_line_rest(rest: str) -> tuple[str, float, str | None] | None:
 
     merchant = normalized_rest[: amount_match.start()].strip()
     if not merchant:
-        return None
+        merchant = MERCHANT_NOT_IN_PDF
     return (
         merchant,
         parse_amount(amount_match.group("amount")),
@@ -234,7 +289,7 @@ def parse_ctbc_roc_statement_line(line: str) -> CtbcRocLineParts | None:
     if not merchant:
         merchant = "(no description)"
 
-    if merchant_raw_is_parse_noise(merchant):
+    if merchant != MERCHANT_NOT_IN_PDF and merchant_raw_is_parse_noise(merchant):
         return None
 
     return CtbcRocLineParts(

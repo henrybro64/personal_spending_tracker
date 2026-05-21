@@ -19,17 +19,36 @@ class PdfDecryptError(Exception):
 
 
 def _best_page_text(page: Any) -> str:
-    """Pick plain or layout extraction — layout often preserves aligned columns."""
-    plain = page.extract_text() or ""
+    """Pick extraction mode that preserves CTBC card table rows (dates + amounts)."""
+    candidates: list[str] = []
+    for kwargs in (
+        {"x_tolerance": 2, "y_tolerance": 2},
+        {},
+    ):
+        try:
+            text = page.extract_text(**kwargs) or ""
+        except TypeError:
+            text = page.extract_text() or ""
+        if text.strip():
+            candidates.append(text)
     try:
         layout = page.extract_text(layout=True) or ""
     except (TypeError, ValueError, AttributeError):
         layout = ""
-    plain_stripped = plain.strip()
-    layout_stripped = layout.strip()
-    if len(layout_stripped) > len(plain_stripped):
-        return layout
-    return plain
+    if layout.strip():
+        candidates.append(layout)
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda text: _ctbc_table_line_count(text))
+
+
+def _ctbc_table_line_count(text: str) -> int:
+    import re
+
+    pattern = re.compile(
+        r"^\s*\d{2,3}/\d{1,2}/\d{1,2}\s+\d{2,3}/\d{1,2}/\d{1,2}\s+",
+    )
+    return sum(1 for raw in text.splitlines() if pattern.match(raw.strip()))
 
 
 def _unwrap_pdfminer_exception(exc: BaseException) -> BaseException:

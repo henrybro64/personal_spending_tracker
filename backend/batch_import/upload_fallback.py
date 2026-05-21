@@ -4,6 +4,7 @@ import re
 from datetime import date
 from pathlib import Path
 
+from backend.merchant_noise import merchant_raw_is_parse_noise
 from backend.parser import parse_transactions
 
 from .category import CategoryEngine
@@ -90,6 +91,9 @@ def transactions_from_upload_parser(
             continue
 
         merchant = row["merchant"]
+        if merchant_raw_is_parse_noise(merchant):
+            continue
+
         raw_amount = float(row["amount"])
         category_match = category_engine.categorize(merchant, raw_amount)
         absolute_amount = abs(raw_amount)

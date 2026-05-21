@@ -80,6 +80,54 @@ class CategoryEngineTests(unittest.TestCase):
         self.assertEqual(
             "Groceries", engine.categorize("義美股份", 120.00).category
         )
+        self.assertEqual(
+            "Healthcare / Medical",
+            engine.categorize("國泰健康管理顧問股份有限公司", 500.00).category,
+        )
+        self.assertEqual(
+            "Healthcare / Medical",
+            engine.categorize("松本清藥妝", 320.00).category,
+        )
+        self.assertEqual(
+            "Travel",
+            engine.categorize("屏東海生館門票", 800.00).category,
+        )
+        self.assertEqual(
+            "Travel",
+            engine.categorize("臺灣鐵路管理局網路購票", 650.00).category,
+        )
+        self.assertEqual(
+            "Subscription / Membership",
+            engine.categorize("WWW.WHIZLABS.COM", 29.00).category,
+        )
+        self.assertEqual(
+            "Shopping / Retail",
+            engine.categorize("誠品生活松菸", 450.00).category,
+        )
+        self.assertEqual(
+            "Shopping / Online Retail",
+            engine.categorize("樂購蝦皮－某某店", 199.00).category,
+        )
+        self.assertEqual(
+            "Dining / Food",
+            engine.categorize("空腹熊貓股份有限公司", 280.00).category,
+        )
+        self.assertEqual(
+            "Bank Fees / Interest",
+            engine.categorize("信用卡年費", 3000.00).category,
+        )
+        self.assertEqual(
+            "Education / Certification",
+            engine.categorize("國立台灣師範大學", 12000.00).category,
+        )
+        self.assertEqual(
+            "Tax / Accounting",
+            engine.categorize("台北市地價稅", 5000.00).category,
+        )
+        self.assertEqual(
+            "Tax / Accounting",
+            engine.categorize("房屋稅", 3000.00).category,
+        )
         trip_com = engine.categorize("TRIP.COM HOTEL", 4500.00)
         self.assertEqual("Travel", trip_com.category)
         self.assertEqual("Travel", engine.categorize("Agoda.com booking", 2000.00).category)
@@ -492,7 +540,15 @@ class MerchantDigitNoiseTests(unittest.TestCase):
         self.assertTrue(merchant_raw_is_parse_noise("\uff15\uff10\uff10"))
         self.assertTrue(merchant_raw_is_parse_noise("-62"))
         self.assertTrue(merchant_raw_is_parse_noise("+12"))
+        self.assertTrue(merchant_raw_is_parse_noise("-1,117"))
+        self.assertTrue(merchant_raw_is_parse_noise("-74,457"))
+        self.assertTrue(merchant_raw_is_parse_noise("-22,691"))
+        self.assertTrue(merchant_raw_is_parse_noise("-1117"))
         self.assertTrue(merchant_raw_is_parse_noise("CTBC"))
+        self.assertTrue(merchant_raw_is_parse_noise("03-03 CTBC"))
+        self.assertTrue(merchant_raw_is_parse_noise("02-03 CTBC"))
+        self.assertTrue(merchant_raw_is_parse_noise("01-03 CTBC"))
+        self.assertTrue(merchant_raw_is_parse_noise("03/03"))
         self.assertTrue(merchant_raw_is_parse_noise("中國信託"))
         self.assertFalse(merchant_raw_is_parse_noise("7-ELEVEN"))
         self.assertFalse(merchant_raw_is_parse_noise("社團法人台灣社區照顧協會"))
@@ -608,6 +664,7 @@ class MerchantDigitNoiseTests(unittest.TestCase):
     def test_bulk_dismiss_digit_only_noise(self) -> None:
         from backend.batch_import.category import UNKNOWN_CATEGORY
         from backend.batch_import.models import NormalizedTransaction
+        from backend.merchant_noise import merchant_raw_is_parse_noise
 
         with tempfile.TemporaryDirectory() as temp_dir_name:
             db_path = Path(temp_dir_name) / "batch.sqlite3"
@@ -650,6 +707,31 @@ class MerchantDigitNoiseTests(unittest.TestCase):
                 csv_output_path="/tmp/out.csv",
                 statement_count=1,
             )
+            installment = NormalizedTransaction(
+                statement_file="CTBC_card_Estatement_11303.pdf",
+                bank="CTBC",
+                card_last4="1234",
+                transaction_date="2023-12-27",
+                posted_date=None,
+                merchant_raw="03-03",
+                amount=1843.0,
+                currency="TWD",
+                transaction_type="purchase",
+                category=UNKNOWN_CATEGORY,
+                exclude_from_spending=False,
+                needs_review=True,
+            )
+            run_id2, _, _ = store.record_import_run(
+                [installment],
+                pdf_source_dir="/tmp",
+                text_source_dir="/tmp",
+                csv_output_path="/tmp/out2.csv",
+                statement_count=1,
+            )
+            self.assertTrue(merchant_raw_is_parse_noise("03-03"))
+            self.assertEqual(1, store.count_digit_only_noise_pending(run_id=run_id2))
+            self.assertEqual(1, store.bulk_dismiss_digit_only_noise(run_id=run_id2))
+
             self.assertEqual(1, store.count_digit_only_noise_pending(run_id=run_id))
             updated = store.bulk_dismiss_digit_only_noise(run_id=run_id)
             self.assertEqual(1, updated)
