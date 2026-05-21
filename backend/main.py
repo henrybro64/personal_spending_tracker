@@ -74,6 +74,10 @@ from backend.database import (  # noqa: E402
     update_transaction_category,
     update_user_last_login,
 )
+from backend.bulk_import import (  # noqa: E402
+    BulkImportParseError,
+    parse_import_content,
+)
 from backend.batch_import import (  # noqa: E402
     BatchImportRunSummary,
     BatchImportStore,
@@ -255,6 +259,22 @@ class BatchReviewBulkUpdateRequest(BaseModel):
 
 class BatchReviewDismissDigitNoiseRequest(BaseModel):
     run_id: int
+
+
+class BulkContentImportRequest(BaseModel):
+    content: str
+    format: Literal["auto", "json", "text"] = "auto"
+    bank: str = "Manual"
+    currency: str = "TWD"
+    source_name: str = "import"
+    destination: Literal["batch", "dashboard"] = "batch"
+    sqlite_output_path: str | None = None
+
+
+class BulkContentImportResponse(TypedDict):
+    destination: str
+    imported_count: int
+    run: dict[str, object] | None
 
 
 class ManualTransactionResponse(TypedDict):
@@ -975,6 +995,86 @@ async def run_batch_import(
         len(result.skipped_files),
     )
     return {"run": result.to_payload()}
+
+
+@app.post("/batch-imports/import", status_code=status.HTTP_201_CREATED)
+async def import_batch_content(
+    payload: BulkContentImportRequest,
+    current_user: UserRecord = Depends(require_current_user),
+) -> BulkContentImportResponse:
+    store = _get_batch_import_store(
+        current_user["id"],
+        payload.sqlite_output_path,
+    )
+    store.initialize()
+    category_engine = CategoryEngine(store.load_learned_rules())
+    try:
+        transactions = parse_import_content(
+            payload.content,
+            format=payload.format,
+            bank=payload.bank,
+            currency=payload.currency,
+            source_name=payload.source_name,
+            category_engine=category_engine,
+        )
+    except BulkImportParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if payload.destination == "dashboard":
+        upload_record = create_statement_upload(
+            user_id=current_user["id"],
+            original_file_name=payload.source_name,
+            stored_file_name=f"import-{uuid4().hex[:12]}.json",
+            file_fingerprint_sha256=sha256(
+                payload.content.encode("utf-8")
+            ).hexdigest(),
+            parse_status="imported",
+            currency=payload.currency.upper(),
+        )
+        dashboard_rows: list[Transaction] = [
+            {
+                "date": item.transaction_date,
+                "merchant": item.merchant_raw,
+                "amount": item.amount,
+                "category": item.category,
+                "currency": item.currency,
+            }
+            for item in transactions
+        ]
+        inserted = insert_transactions(
+            dashboard_rows,
+            user_id=current_user["id"],
+            file_name=upload_record["file_name"],
+            file_fingerprint=sha256(payload.content.encode("utf-8")).hexdigest(),
+            original_file_name=payload.source_name,
+            statement_upload_id=upload_record["id"],
+        )
+        return {
+            "destination": "dashboard",
+            "imported_count": inserted,
+            "run": None,
+        }
+
+    run_id, _imported_at, needs_review_count = store.record_import_run(
+        transactions,
+        pdf_source_dir="",
+        text_source_dir="",
+        csv_output_path=str(_default_batch_csv_path_for_user(current_user["id"])),
+        statement_count=1,
+    )
+    auto_categorized = store.auto_apply_default_categories(
+        run_id=run_id,
+        category_engine=category_engine,
+    )
+    if auto_categorized:
+        needs_review_count = store.count_needs_review(run_id=run_id)
+    store.export_csv(run_id, _default_batch_csv_path_for_user(current_user["id"]))
+    latest = store.get_latest_run()
+    return {
+        "destination": "batch",
+        "imported_count": len(transactions),
+        "run": latest,
+    }
 
 
 @app.post("/batch-imports/merge", status_code=status.HTTP_200_OK)
