@@ -157,12 +157,10 @@ test("batch review page loads queue, runs import, and syncs to dashboard", async
   await expect(page.getByText("Batch Statement Review")).toBeVisible();
 
   const reviewTable = page.getByRole("table");
-  await expect(
-    reviewTable.getByText("UNKNOWN MERCHANT", { exact: true })
-  ).toBeVisible();
+  await expect(reviewTable.getByDisplayValue("UNKNOWN MERCHANT")).toBeVisible();
 
   await page.getByRole("switch", { name: "Show only flagged rows" }).uncheck();
-  await expect(reviewTable.getByText("STARBUCKS", { exact: true })).toBeVisible();
+  await expect(reviewTable.getByDisplayValue("STARBUCKS")).toBeVisible();
 
   await page.getByRole("button", { name: "Run batch import" }).click();
   await expect(
