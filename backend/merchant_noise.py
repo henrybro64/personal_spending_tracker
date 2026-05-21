@@ -22,9 +22,10 @@ _MERCHANT_HEADER_NOISE: frozenset[str] = frozenset(
 
 _SIGN_PREFIXES = "+-−－"
 
-# CTBC installment rows: "03-03" or "03-03 CTBC" (current/total periods).
+# CTBC installment rows: zero-padded period pairs (03-03) or explicit CTBC suffix.
+# Do not use bare \d{1,2}-\d{1,2} — that would drop real merchants like 7-11.
 _INSTALLMENT_MERCHANT = re.compile(
-    r"^(?:\d{1,2}[-/]\d{1,2})(?:\s+CTBC)?$",
+    r"^(?:\d{2}[-/]\d{2}(?:\s+CTBC)?|\d{1,2}[-/]\d{1,2}\s+CTBC)$",
     re.IGNORECASE,
 )
 
