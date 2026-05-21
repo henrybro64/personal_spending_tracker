@@ -5,9 +5,12 @@ from typing import TypedDict
 from backend.statement_parse_utils import (
     extract_us_statement_date,
     extract_us_statement_period,
+    infer_esun_statement_roc_year,
     infer_us_transaction_date,
     parse_amount,
+    parse_ctbc_gregorian_statement_line,
     parse_ctbc_roc_statement_line,
+    parse_esun_statement_line,
     parse_us_date,
     roc_date_string_to_iso,
 )
@@ -72,6 +75,13 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "新光影城",
             "蘭陽烏石港",
             "烏石港海景酒店",
+            "巧虎夢想樂園",
+            "XPARK",
+            "Ｘｐａｒｋ",
+            "屏東海生館",
+            "臺灣鐵路管理局網路購票",
+            "台灣鐵路管理局網路購票",
+            "宜蘭力麗威斯汀",
         ),
     ),
     (
@@ -126,6 +136,7 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "義美股份",
             "義美",
             "馬可先生",
+            "聖德科斯",
         ),
     ),
     (
@@ -151,6 +162,12 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "TEA",
             "UBER EATS",
             "FOODPANDA",
+            "DELIVEROO",
+            "GRABFOOD",
+            "英商奧天",
+            "奧天股份",
+            "ZADON",
+            "渣等",
             "熊貓",
             "陳耀訓",
             "麵包埠",
@@ -168,6 +185,30 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "光鮨",
             "迴轉壽司",
             "MISS V BAKERY",
+            "明星西點食品",
+            "國泰餐飲",
+            "興波咖啡",
+            "雙月食品社",
+            "好丘複合餐飲",
+            "迷客夏",
+            "九屯咖哩",
+            "食穗",
+            "芳珍蔬食",
+            "空腹熊貓",
+            "穗科",
+            "樂麵屋",
+            "PAUL法國麵",
+            "善屋",
+            "真芳碳烤吐司",
+            "集客",
+            "KOMEDA",
+            "台灣壽司郎",
+            "麵包廚房",
+            "１０１美食街",
+            "柑仔店",
+            "錵鑶日本料理",
+            "乾杯",
+            "小食泰",
         ),
     ),
     (
@@ -209,6 +250,38 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "家樂福",
             "SHOPLINE",
             "ＳＨＯＰＬＩＮＥ",
+            "安琪兒",
+            "雅虎奇摩",
+            "勤美",
+            "誠品",
+            "美麗華百樂園",
+            "遠東SOGO",
+            "遠東ＳＯＧＯ",
+            "廣三崇光",
+            "台灣艾瑪睡眠",
+            "華山1914",
+            "媽咪愛",
+            "日商倍樂生",
+            "樂購蝦皮",
+            "統一時代百貨",
+            "柑仔店有機健康超市",
+            "奶娃的店",
+            "MAMAWAY",
+            "瑪黑家居",
+            "老行家國際",
+            "台灣大創百貨",
+            "小丁婦幼",
+            "三創數位",
+            "生活工場",
+            "黛安芬",
+            "HOLA和樂家居館",
+            "詩肯柚木",
+            "GABEE",
+            "富邦MOM",
+            "富邦ｍｏｍ",
+            "ＰＣＨＯＭＥ",
+            "誠品線上",
+            "博客來",
         ),
     ),
     (
@@ -276,11 +349,21 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "診所",
             "醫院",
             "健身",
+            "國泰健康管理顧問",
             "卡多摩嬰童館",
             "卡多摩",
             "訊聯",
             "杏一醫療",
             "杏一",
+            "松本清",
+            "康是美",
+            "三友藥妝",
+            "社區照顧",
+            "社團法人台灣社區照顧",
+            "屈臣氏",
+            "維康醫療",
+            "新光醫療",
+            "大樹健康",
         ),
     ),
     (
@@ -295,6 +378,8 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "學費",
             "課程",
             "書局",
+            "國立台灣師範大學",
+            "台灣師範大學",
         ),
     ),
     (
@@ -339,6 +424,7 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "SERVICE CHARGE",
             "手續費",
             "年費",
+            "信用卡年費",
             "違約金",
             "利息",
         ),
@@ -430,8 +516,6 @@ OTHER_SPENDING_GRANULAR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "COSMED",
             "POYA",
             "寶雅",
-            "屈臣氏",
-            "康是美",
             "SALON",
             "BARBER",
             "SPA",
@@ -496,15 +580,23 @@ OTHER_SPENDING_GRANULAR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
         ),
     ),
     (
-        "Professional Services",
+        "Tax / Accounting",
         (
-            "ACCOUNTING",
-            "LEGAL",
-            "CONSULTING",
-            "AGENCY",
+            "地價稅",
+            "房屋稅",
             "INTUIT",
             "TURBOTAX",
             "TAX PREP",
+            "H&R BLOCK",
+            "ACCOUNTING",
+        ),
+    ),
+    (
+        "Professional Services",
+        (
+            "LEGAL",
+            "CONSULTING",
+            "AGENCY",
             "手續代辦",
             "代書",
             "律師",
@@ -533,6 +625,9 @@ OTHER_SPENDING_GRANULAR_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "MSBILL.INFO",
             "微軟",
             "台灣微軟",
+            "Ｍｉｃｒｏｓｏｆｔ",
+            "WHIZLABS",
+            "WWW.WHIZLABS.COM",
         ),
     ),
 ]
@@ -605,41 +700,34 @@ def _parse_amount(amount_text: str) -> float:
     return parse_amount(amount_text)
 
 
-def _parse_dbs_tw_line(line: str) -> Transaction | None:
-    """星展台灣 / 澳盛 style: 消費日 入帳日 說明 ... 新台幣金額."""
-    match = re.match(
-        r"^\s*"
-        r"(?P<d1>\d{4}/\d{2}/\d{2})\s+"
-        r"(?P<d2>\d{4}/\d{2}/\d{2})\s+"
-        r"(?P<rest>.+)$",
-        line,
-    )
-    if not match:
+def _parse_esun_tw_line(line: str, roc_year: int) -> Transaction | None:
+    """玉山 ESUN: MM/DD MM/DD merchant TWD amount."""
+    parsed_line = parse_esun_statement_line(line, roc_year)
+    if parsed_line is None:
         return None
 
-    rest = match.group("rest").strip()
-    # Amount at line end; leading whitespace before it avoids matching `/05` in dates.
-    amount_m = re.search(r"\s+(?P<am>-?[\d,]+(?:\.\d{1,2})?)\s*$", rest)
-    if not amount_m:
-        return None
-
-    merchant = rest[: amount_m.start()].strip()
-    if len(merchant) < 1:
-        return None
-
-    # Skip credit-limit / APR banner rows (not single NTD amounts).
-    if "20,000/20,000" in rest or "7.99%" in rest:
-        return None
-
-    try:
-        spent_date = datetime.strptime(match.group("d1"), "%Y/%m/%d").date()
-    except ValueError:
-        return None
-
-    amount_value = _parse_amount(amount_m.group("am"))
+    merchant = parsed_line.merchant
+    amount_value = parsed_line.amount
     return {
-        "date": spent_date.isoformat(),
-        "merchant": " ".join(merchant.split()),
+        "date": parsed_line.transaction_date,
+        "merchant": merchant,
+        "amount": amount_value,
+        "category": categorize_merchant(merchant, amount_value),
+        "currency": "TWD",
+    }
+
+
+def _parse_dbs_tw_line(line: str) -> Transaction | None:
+    """星展台灣 / 澳盛 / CBGCC-DAILYSTMT: 消費日 入帳日 說明 ... 新台幣金額."""
+    parsed_line = parse_ctbc_gregorian_statement_line(line)
+    if parsed_line is None:
+        return None
+
+    amount_value = parsed_line.amount
+    merchant = parsed_line.merchant
+    return {
+        "date": parsed_line.transaction_date,
+        "merchant": merchant,
         "amount": amount_value,
         "category": categorize_merchant(merchant, amount_value),
         "currency": "TWD",
@@ -708,10 +796,20 @@ def parse_transactions(text: str) -> list[Transaction]:
     else:
         statement_currency = "TWD" if has_twd_token else "USD"
 
+    esun_roc_year: int | None = None
+    if "ESUN" in statement_upper or "玉山" in normalized:
+        esun_roc_year = infer_esun_statement_roc_year(normalized, "")
+
     for raw_line in normalized.splitlines():
         line = raw_line.strip()
         if not line:
             continue
+
+        if esun_roc_year is not None:
+            esun_transaction = _parse_esun_tw_line(line, esun_roc_year)
+            if esun_transaction:
+                transactions.append(esun_transaction)
+                continue
 
         match: re.Match[str] | None = None
         for pattern in _TRANSACTION_PATTERNS:

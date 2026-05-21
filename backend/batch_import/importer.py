@@ -127,6 +127,12 @@ class StatementImporter:
             csv_output_path=str(self.csv_output_path),
             statement_count=len(parsed_files),
         )
+        auto_categorized = self.store.auto_apply_default_categories(
+            run_id=run_id,
+            category_engine=category_engine,
+        )
+        if auto_categorized:
+            needs_review_count = self.store.count_needs_review(run_id=run_id)
         csv_output_path = self.store.export_csv(run_id, self.csv_output_path)
 
         return BatchImportResult(

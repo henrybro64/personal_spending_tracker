@@ -112,6 +112,8 @@ type NeedsReviewMerchantSummary = {
   transaction_count: number;
   sample_category: string;
   sample_excluded: boolean;
+  suggested_category: string;
+  can_auto_apply: boolean;
 };
 
 type NeedsReviewMerchantsResponse = {
@@ -350,6 +352,7 @@ export default function BatchReviewPage() {
   const [bulkSavingMerchant, setBulkSavingMerchant] = useState<string | null>(null);
   const [digitNoisePendingCount, setDigitNoisePendingCount] = useState(0);
   const [dismissingDigitNoise, setDismissingDigitNoise] = useState(false);
+  const [autoCategorizing, setAutoCategorizing] = useState(false);
 
   async function loadBatchState(reviewOnly: boolean) {
     setLoading(true);
@@ -431,7 +434,66 @@ export default function BatchReviewPage() {
   }
 
   function merchantDraftCategory(item: NeedsReviewMerchantSummary): string {
-    return merchantCategoryDrafts[item.merchant_raw] ?? item.sample_category;
+    if (merchantCategoryDrafts[item.merchant_raw]) {
+      return merchantCategoryDrafts[item.merchant_raw];
+    }
+    if (item.can_auto_apply && item.suggested_category) {
+      return item.suggested_category;
+    }
+    return item.sample_category;
+  }
+
+  const autoApplicableMerchantCount = useMemo(
+    () => needsReviewMerchants.filter((item) => item.can_auto_apply).length,
+    [needsReviewMerchants]
+  );
+
+  async function onAutoCategorizeKnown() {
+    if (!run) {
+      return;
+    }
+    setAutoCategorizing(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await apiFetch("/batch-imports/review/auto-categorize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: run.id }),
+      });
+      const payload = (await response.json()) as
+        | { updated_count: number; needs_review_count: number }
+        | { detail?: string };
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
+        throw new Error(
+          "detail" in payload && typeof payload.detail === "string"
+            ? payload.detail
+            : "Failed to auto-categorize known merchants."
+        );
+      }
+      const result = payload as {
+        updated_count: number;
+        needs_review_count: number;
+      };
+      setMessage(
+        result.updated_count > 0
+          ? `Auto-categorized ${result.updated_count} row(s). ${result.needs_review_count} still need review.`
+          : "No rows matched built-in category rules."
+      );
+      await loadBatchState(needsReviewOnly);
+    } catch (autoError) {
+      setError(
+        autoError instanceof Error
+          ? autoError.message
+          : "Failed to auto-categorize known merchants."
+      );
+    } finally {
+      setAutoCategorizing(false);
+    }
   }
 
   async function onDismissDigitNoise() {
@@ -905,16 +967,35 @@ export default function BatchReviewPage() {
 
           {needsReviewMerchants.length > 0 ? (
             <Card className={mergeClasses(styles.card, styles.sidebarPanel)}>
-              <Title2>Top merchants needing review</Title2>
-              <Body1 className={styles.quietText}>
-                Apply one category + rule to clear repeated unknown merchants.
-              </Body1>
+              <div className={styles.cleanupRow}>
+                <div>
+                  <Title2>Top merchants needing review</Title2>
+                  <Body1 className={styles.quietText}>
+                    Apply one category + rule to clear repeated unknown merchants.
+                    Known merchants are pre-filled from built-in rules.
+                  </Body1>
+                </div>
+                {autoApplicableMerchantCount > 0 ? (
+                  <Button
+                    appearance="primary"
+                    disabled={autoCategorizing || !run}
+                    onClick={() => void onAutoCategorizeKnown()}
+                  >
+                    {autoCategorizing
+                      ? "Applying..."
+                      : `Auto-categorize known (${autoApplicableMerchantCount})`}
+                  </Button>
+                ) : null}
+              </div>
               {needsReviewMerchants.map((item) => (
                 <div className={styles.merchantRuleRow} key={item.merchant_raw}>
                   <div>
                     <div>{item.merchant_raw}</div>
                     <Body1 className={styles.quietText}>
                       {item.transaction_count} row(s)
+                      {item.can_auto_apply
+                        ? ` · suggested: ${item.suggested_category}`
+                        : ""}
                     </Body1>
                   </div>
                   <select

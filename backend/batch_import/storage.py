@@ -9,6 +9,7 @@ from typing import TypedDict
 from backend.merchant_noise import merchant_raw_is_parse_noise
 
 from .category import (
+    CategoryEngine,
     CategoryRule,
     normalize_merchant_key,
     transaction_type_for_category,
@@ -54,6 +55,8 @@ class NeedsReviewMerchantSummary(TypedDict):
     transaction_count: int
     sample_category: str
     sample_excluded: bool
+    suggested_category: str
+    can_auto_apply: bool
 
 
 class BatchImportStore:
@@ -630,6 +633,98 @@ class BatchImportStore:
                 WHERE id = ?
                 """,
                 updates,
+            )
+
+        return len(updates)
+
+    def count_needs_review(self, *, run_id: int) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS pending_count
+                FROM imported_transactions
+                WHERE import_run_id = ?
+                  AND needs_review = 1
+                """,
+                (run_id,),
+            ).fetchone()
+        return int(row["pending_count"]) if row else 0
+
+    def auto_apply_default_categories(
+        self,
+        *,
+        run_id: int,
+        category_engine: CategoryEngine,
+    ) -> int:
+        """Apply built-in category rules to rows still flagged for review."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, merchant_raw, amount
+                FROM imported_transactions
+                WHERE import_run_id = ?
+                  AND needs_review = 1
+                """,
+                (run_id,),
+            ).fetchall()
+
+            updates: list[tuple[float, str, int, int, str, int]] = []
+            for row in rows:
+                merchant_raw = str(row["merchant_raw"])
+                if merchant_raw_is_parse_noise(merchant_raw):
+                    continue
+
+                amount = float(row["amount"])
+                category_match = category_engine.categorize(merchant_raw, amount)
+                if category_match.needs_review:
+                    continue
+
+                transaction_type = transaction_type_for_category(
+                    category_match.category,
+                    category_match.exclude_from_spending,
+                )
+                normalized_amount = (
+                    -abs(amount)
+                    if transaction_type == "payment_or_credit"
+                    else abs(amount)
+                )
+                updates.append(
+                    (
+                        normalized_amount,
+                        category_match.category,
+                        int(category_match.exclude_from_spending),
+                        0,
+                        transaction_type,
+                        int(row["id"]),
+                    )
+                )
+
+            if not updates:
+                return 0
+
+            connection.executemany(
+                """
+                UPDATE imported_transactions
+                SET
+                    amount = ?,
+                    category = ?,
+                    exclude_from_spending = ?,
+                    needs_review = ?,
+                    transaction_type = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
+
+        with self._connect() as connection:
+            pending = self.count_needs_review(run_id=run_id)
+            connection.execute(
+                """
+                UPDATE import_runs
+                SET needs_review_count = ?
+                WHERE id = ?
+                """,
+                (pending, run_id),
             )
 
         return len(updates)

@@ -4,6 +4,7 @@ import re
 from datetime import date
 from pathlib import Path
 
+from backend.merchant_noise import merchant_raw_is_parse_noise
 from backend.parser import parse_transactions
 
 from .category import CategoryEngine
@@ -12,7 +13,9 @@ from .models import NormalizedTransaction
 # PDF text for Taiwan banks (CTBC/DBS) is parsed reliably by parser.py.
 # US cards need statement period metadata that batch parsers enforce.
 # Therefore, do not fallback for US-card parsers.
-UPLOAD_FALLBACK_PARSER_NAMES = frozenset({"ctbc_daily", "ctbc_card", "dbs"})
+UPLOAD_FALLBACK_PARSER_NAMES = frozenset(
+    {"ctbc_daily", "ctbc_card", "dbs", "esun"}
+)
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -90,6 +93,9 @@ def transactions_from_upload_parser(
             continue
 
         merchant = row["merchant"]
+        if merchant_raw_is_parse_noise(merchant):
+            continue
+
         raw_amount = float(row["amount"])
         category_match = category_engine.categorize(merchant, raw_amount)
         absolute_amount = abs(raw_amount)
