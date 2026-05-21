@@ -840,6 +840,16 @@ def insert_manual_transaction(
                     currency
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    date,
+                    merchant,
+                    amount,
+                    COALESCE(category, '') AS category,
+                    COALESCE(currency, 'USD') AS currency,
+                    payment_method,
+                    file_name,
+                    COALESCE(original_file_name, file_name) AS original_file_name
                 """,
                 (
                     user_id,
@@ -855,18 +865,22 @@ def insert_manual_transaction(
                     "USD",
                 ),
             )
+            row = cursor.fetchone()
         connection.commit()
 
+    if row is None:
+        raise RuntimeError("Failed to insert manual transaction.")
+
     return {
-        "id": 0,
-        "date": transaction_date,
-        "merchant": normalized_merchant,
-        "amount": amount,
-        "category": normalized_category,
-        "currency": "USD",
-        "payment_method": normalized_payment_method,
-        "file_name": file_name,
-        "original_file_name": original_file_name,
+        "id": int(row[0]),
+        "date": str(row[1]),
+        "merchant": str(row[2]),
+        "amount": float(row[3]),
+        "category": _normalize_category_for_storage(str(row[4]), float(row[3])),
+        "currency": str(row[5]),
+        "payment_method": str(row[6]) if row[6] is not None else None,
+        "file_name": str(row[7]),
+        "original_file_name": str(row[8]),
     }
 
 
