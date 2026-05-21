@@ -2,8 +2,8 @@ from datetime import date, datetime
 import re
 from typing import TypedDict
 
-from backend.batch_import.category import MERCHANT_MISSING_FROM_PDF_CATEGORY
 from backend.statement_parse_utils import (
+    MERCHANT_MISSING_FROM_PDF_CATEGORY,
     MERCHANT_NOT_IN_PDF,
     extract_us_statement_date,
     extract_us_statement_period,

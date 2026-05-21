@@ -211,6 +211,7 @@ CTBC_CARD_AMOUNT_ONLY_TRAILING = re.compile(
 _MIN_CARD_AMOUNT_ONLY = 10
 
 MERCHANT_NOT_IN_PDF = "(merchant not in PDF)"
+MERCHANT_MISSING_FROM_PDF_CATEGORY = "Merchant Missing From PDF"
 
 
 def _parse_ctbc_line_rest(rest: str) -> tuple[str, float, str | None] | None:

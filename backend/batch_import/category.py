@@ -2,7 +2,10 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
-from backend.statement_parse_utils import MERCHANT_NOT_IN_PDF
+from backend.statement_parse_utils import (
+    MERCHANT_MISSING_FROM_PDF_CATEGORY,
+    MERCHANT_NOT_IN_PDF,
+)
 
 from .models import TransactionType
 
@@ -10,7 +13,6 @@ from .models import TransactionType
 UNKNOWN_CATEGORY = "Unknown / Needs Review"
 PAYMENT_CATEGORY = "Payment / Credit"
 FEE_CATEGORY = "Bank Fees / Interest"
-MERCHANT_MISSING_FROM_PDF_CATEGORY = "Merchant Missing From PDF"
 
 
 @dataclass(frozen=True, slots=True)
