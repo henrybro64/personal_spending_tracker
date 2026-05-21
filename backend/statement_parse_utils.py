@@ -158,13 +158,18 @@ CTBC_ROC_DATE_LINE = re.compile(
     r"(?P<rest>.+)$"
 )
 
-CTBC_MCC_TRAILING = re.compile(r"\s+(?P<mcc>\d{4})\s*$")
 CTBC_USD_AMOUNT_TRAILING = re.compile(
     r"USD\s+(?P<foreign_amount>[-\d,.]+)\s+"
-    r"(?P<amount>-?[\d,]+(?:\.\d{1,2})?)\s*$",
+    r"(?P<amount>-?[\d,]+(?:\.\d{1,2})?)"
+    r"(?:\s+(?P<mcc>\d{4}))?"
+    r"\s*$",
     re.IGNORECASE,
 )
-CTBC_AMOUNT_TRAILING = re.compile(r"\s+(?P<amount>-?[\d,]+(?:\.\d{1,2})?)\s*$")
+CTBC_AMOUNT_MCC_TRAILING = re.compile(
+    r"\s+(?P<amount>-?[\d,]+(?:\.\d{1,2})?)"
+    r"(?:\s+(?P<mcc>\d{4}))?"
+    r"\s*$"
+)
 
 
 def _parse_ctbc_line_rest(rest: str) -> tuple[str, float, str | None] | None:
@@ -175,27 +180,29 @@ def _parse_ctbc_line_rest(rest: str) -> tuple[str, float, str | None] | None:
     if "20,000/20,000" in normalized_rest or "7.99%" in normalized_rest:
         return None
 
-    mcc: str | None = None
-    mcc_match = CTBC_MCC_TRAILING.search(normalized_rest)
-    if mcc_match:
-        mcc = mcc_match.group("mcc")
-        normalized_rest = normalized_rest[: mcc_match.start()].strip()
-
     usd_match = CTBC_USD_AMOUNT_TRAILING.search(normalized_rest)
     if usd_match:
         merchant = normalized_rest[: usd_match.start()].strip()
         if not merchant:
             return None
-        return merchant, parse_amount(usd_match.group("amount")), mcc
+        return (
+            merchant,
+            parse_amount(usd_match.group("amount")),
+            usd_match.group("mcc"),
+        )
 
-    amount_match = CTBC_AMOUNT_TRAILING.search(normalized_rest)
+    amount_match = CTBC_AMOUNT_MCC_TRAILING.search(normalized_rest)
     if not amount_match:
         return None
 
     merchant = normalized_rest[: amount_match.start()].strip()
     if not merchant:
         return None
-    return merchant, parse_amount(amount_match.group("amount")), mcc
+    return (
+        merchant,
+        parse_amount(amount_match.group("amount")),
+        amount_match.group("mcc"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
