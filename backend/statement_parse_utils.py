@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from backend.merchant_noise import merchant_raw_is_digit_only_noise
+from backend.merchant_noise import merchant_raw_is_parse_noise
 
 US_STATEMENT_PERIOD_PATTERN = re.compile(
     r"Opening/Closing Date\s+"
@@ -158,13 +158,51 @@ CTBC_ROC_DATE_LINE = re.compile(
     r"(?P<rest>.+)$"
 )
 
-CTBC_AMOUNT_TRAILING = re.compile(
-    r"^(?P<merchant>.+?)\s+"
-    r"(?:USD\s+(?P<foreign_amount>[-\d,.]+)\s+)?"
-    r"(?P<amount>-?[\d,]+(?:\.\d{2})?)"
+CTBC_USD_AMOUNT_TRAILING = re.compile(
+    r"USD\s+(?P<foreign_amount>[-\d,.]+)\s+"
+    r"(?P<amount>-?[\d,]+(?:\.\d{1,2})?)"
+    r"(?:\s+(?P<mcc>\d{4}))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+CTBC_AMOUNT_MCC_TRAILING = re.compile(
+    r"\s+(?P<amount>-?[\d,]+(?:\.\d{1,2})?)"
     r"(?:\s+(?P<mcc>\d{4}))?"
     r"\s*$"
 )
+
+
+def _parse_ctbc_line_rest(rest: str) -> tuple[str, float, str | None] | None:
+    """Parse merchant + TWD amount (+ optional MCC) from the CTBC line tail."""
+    normalized_rest = rest.strip()
+    if not normalized_rest:
+        return None
+    if "20,000/20,000" in normalized_rest or "7.99%" in normalized_rest:
+        return None
+
+    usd_match = CTBC_USD_AMOUNT_TRAILING.search(normalized_rest)
+    if usd_match:
+        merchant = normalized_rest[: usd_match.start()].strip()
+        if not merchant:
+            return None
+        return (
+            merchant,
+            parse_amount(usd_match.group("amount")),
+            usd_match.group("mcc"),
+        )
+
+    amount_match = CTBC_AMOUNT_MCC_TRAILING.search(normalized_rest)
+    if not amount_match:
+        return None
+
+    merchant = normalized_rest[: amount_match.start()].strip()
+    if not merchant:
+        return None
+    return (
+        merchant,
+        parse_amount(amount_match.group("amount")),
+        amount_match.group("mcc"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,21 +225,22 @@ def parse_ctbc_roc_statement_line(line: str) -> CtbcRocLineParts | None:
         return None
 
     rest = header_match.group("rest").strip()
-    trailing_match = CTBC_AMOUNT_TRAILING.match(rest)
-    if not trailing_match:
+    parsed_rest = _parse_ctbc_line_rest(rest)
+    if parsed_rest is None:
         return None
 
-    merchant = " ".join(trailing_match.group("merchant").split())
+    merchant, amount, mcc = parsed_rest
+    merchant = " ".join(merchant.split())
     if not merchant:
         merchant = "(no description)"
 
-    if merchant_raw_is_digit_only_noise(merchant):
+    if merchant_raw_is_parse_noise(merchant):
         return None
 
     return CtbcRocLineParts(
         transaction_date=header_match.group("transaction_date"),
         posted_date=header_match.group("posted_date"),
         merchant=merchant,
-        amount=parse_amount(trailing_match.group("amount")),
-        mcc=trailing_match.group("mcc"),
+        amount=amount,
+        mcc=mcc,
     )

@@ -20,10 +20,11 @@ from collections import Counter
 from pathlib import Path
 
 from backend.batch_import.category import CategoryEngine
-from backend.merchant_noise import merchant_raw_is_digit_only_noise
+from backend.merchant_noise import merchant_raw_is_parse_noise
 from backend.batch_import.parsers import resolve_parser
 from backend.batch_import.upload_fallback import transactions_from_upload_parser
 from backend.parser import parse_transactions
+from backend.statement_parse_utils import parse_ctbc_roc_statement_line
 from backend.pdf_utils import (
     PdfDecryptError,
     PdfPasswordProtectedError,
@@ -53,6 +54,20 @@ def _probe_lines(text: str, limit: int = 8) -> list[str]:
 
 def _ctbc_like_line_count(text: str) -> int:
     return sum(1 for raw in text.splitlines() if _CTBC_LINE.match(raw.strip()))
+
+
+def _unparsed_ctbc_line_samples(text: str, limit: int = 5) -> list[str]:
+    samples: list[str] = []
+    for raw in text.splitlines():
+        line = " ".join(raw.split())
+        if not line or not _CTBC_LINE.match(line):
+            continue
+        if parse_ctbc_roc_statement_line(line) is not None:
+            continue
+        samples.append(line[:220])
+        if len(samples) >= limit:
+            break
+    return samples
 
 
 def _row_merchant(row: object) -> str:
@@ -100,18 +115,20 @@ def _analyze_pdf(path: Path, engine: CategoryEngine) -> dict[str, object]:
             parser_probe[merchant] += 1
 
     digit_noise = sum(
-        1 for row in batch_rows if merchant_raw_is_digit_only_noise(_row_merchant(row))
+        1 for row in batch_rows if merchant_raw_is_parse_noise(_row_merchant(row))
     )
+    ctbc_like_lines = _ctbc_like_line_count(text)
 
     return {
         "status": "ok",
         "parser": parser.name,
         "text_chars": len(text),
-        "ctbc_like_lines": _ctbc_like_line_count(text),
+        "ctbc_like_lines": ctbc_like_lines,
+        "unparsed_ctbc_samples": _unparsed_ctbc_line_samples(text),
         "batch_tx_count": len(batch_rows),
         "upload_fallback_count": len(upload_rows),
         "parse_transactions_count": len(upload_dict_rows),
-        "digit_only_noise_batch": digit_noise,
+        "parse_noise_batch": digit_noise,
         "raw_probe_lines": raw_probe_lines,
         "batch_merchants": dict(batch_probe),
         "upload_merchants": dict(upload_probe),
@@ -220,11 +237,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  parser: {result['parser']}")
         print(f"  extracted chars: {result['text_chars']}")
         ctbc_lines = result["ctbc_like_lines"]
+        batch_count = int(result["batch_tx_count"])
         print(f"  CTBC-shaped lines (date date ...): {ctbc_lines}")
-        print(f"  batch parser rows: {result['batch_tx_count']}")
+        if ctbc_lines:
+            parsed_pct = round(100.0 * batch_count / ctbc_lines, 1)
+            print(
+                f"  parse rate: {batch_count}/{ctbc_lines} ({parsed_pct}%)"
+            )
+        print(f"  batch parser rows: {batch_count}")
         print(f"  upload-fallback rows: {result['upload_fallback_count']}")
         print(f"  parse_transactions rows: {result['parse_transactions_count']}")
-        print(f"  digit-only noise (batch): {result['digit_only_noise_batch']}")
+        print(f"  parse noise skipped (batch): {result['parse_noise_batch']}")
 
         raw_lines = result.get("raw_probe_lines") or []
         if raw_lines:
@@ -233,6 +256,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    | {line}")
         else:
             print("  sample raw lines: (none matching uber/優食/優步/eats)")
+
+        unparsed = result.get("unparsed_ctbc_samples") or []
+        if unparsed:
+            print("  sample CTBC-shaped lines that did NOT parse:")
+            for line in unparsed:
+                print(f"    | {line}")
 
         for label, merchants in (
             ("batch", result.get("batch_merchants")),

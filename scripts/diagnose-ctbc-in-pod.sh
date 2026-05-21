@@ -14,7 +14,7 @@ set -euo pipefail
 KUBECTL="${KUBECTL:-sudo k3s kubectl}"
 NS="${NAMESPACE:-spending-tracker}"
 ONLY_FILTER="${1:-}"
-BATCH_SQLITE="${BATCH_SQLITE:-/app/batch/data/batch_imports.sqlite3}"
+BATCH_SQLITE="${BATCH_SQLITE:-}"
 
 KUBECTL_CMD=()
 read -r -a KUBECTL_CMD <<<"$KUBECTL"
@@ -33,6 +33,20 @@ if ! "${KUBECTL_CMD[@]}" -n "$NS" exec "$POD" -c backend -- \
   "${KUBECTL_CMD[@]}" -n "$NS" cp \
     "$REPO_ROOT/backend/diagnose_pdf_merchants.py" \
     "$NS/$POD:/app/backend/diagnose_pdf_merchants.py" -c backend
+fi
+
+if [[ -z "$BATCH_SQLITE" ]]; then
+  BATCH_SQLITE="$("${KUBECTL_CMD[@]}" -n "$NS" exec "$POD" -c backend -- sh -c \
+    'for p in /app/batch/data/batch_imports.sqlite3 /app/batch/data/*.sqlite3 /app/storage/batch_imports.sqlite3; do
+       [ -f "$p" ] && echo "$p" && exit 0
+     done
+     exit 1' 2>/dev/null || true)"
+  if [[ -z "$BATCH_SQLITE" ]]; then
+    BATCH_SQLITE="/app/batch/data/batch_imports.sqlite3"
+    echo "Note: no batch SQLite found in pod; DB section will be skipped."
+  else
+    echo "Using batch SQLite: $BATCH_SQLITE"
+  fi
 fi
 
 ARGS=(python3 -m backend.diagnose_pdf_merchants /app/batch/pdf --sqlite "$BATCH_SQLITE")

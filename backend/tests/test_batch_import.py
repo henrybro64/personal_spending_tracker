@@ -46,6 +46,46 @@ class CategoryEngineTests(unittest.TestCase):
 
         uber_zh_match = engine.categorize("優步 台灣", 220.00)
         self.assertEqual("Transportation", uber_zh_match.category)
+
+        taxi_app_match = engine.categorize("５５６８８ＡＰＰ", 180.00)
+        self.assertEqual("Transportation", taxi_app_match.category)
+        fleet_match = engine.categorize("台灣大車隊", 220.00)
+        self.assertEqual("Transportation", fleet_match.category)
+
+        dept_store = engine.categorize("新光三越信義A11", 1200.00)
+        self.assertEqual("Shopping / Department Store", dept_store.category)
+        breeze = engine.categorize("微風南山", 800.00)
+        self.assertEqual("Shopping / Department Store", breeze.category)
+        uniqlo = engine.categorize("台北優衣庫 信義店", 990.00)
+        self.assertEqual("Shopping / Department Store", uniqlo.category)
+
+        self.assertEqual(
+            "Healthcare / Medical",
+            engine.categorize("杏一醫療用品", 200.00).category,
+        )
+        self.assertEqual(
+            "Travel", engine.categorize("KLOOK* EXPERIENCE", 1200.00).category
+        )
+        self.assertEqual(
+            "Subscription / Membership",
+            engine.categorize("EXPRESSVPN", 15.00).category,
+        )
+        self.assertEqual(
+            "Shopping / Retail",
+            engine.categorize("寶雅生活館", 300.00).category,
+        )
+        self.assertEqual(
+            "Dining / Food", engine.categorize("麥味登", 80.00).category
+        )
+        self.assertEqual(
+            "Groceries", engine.categorize("義美股份", 120.00).category
+        )
+        trip_com = engine.categorize("TRIP.COM HOTEL", 4500.00)
+        self.assertEqual("Travel", trip_com.category)
+        self.assertEqual("Travel", engine.categorize("Agoda.com booking", 2000.00).category)
+        self.assertEqual(
+            "Travel", engine.categorize("HOTELS.COM", 1500.00).category
+        )
         self.assertFalse(uber_zh_match.exclude_from_spending)
         self.assertEqual("purchase", uber_zh_match.transaction_type)
 
@@ -443,18 +483,20 @@ class StatementImporterTests(unittest.TestCase):
 
 
 class MerchantDigitNoiseTests(unittest.TestCase):
-    def test_digit_only_noise_detection(self) -> None:
-        from backend.merchant_noise import merchant_raw_is_digit_only_noise
+    def test_parse_noise_detection(self) -> None:
+        from backend.merchant_noise import merchant_raw_is_parse_noise
 
-        self.assertTrue(merchant_raw_is_digit_only_noise("500"))
-        self.assertTrue(merchant_raw_is_digit_only_noise("2,585"))
-        self.assertTrue(merchant_raw_is_digit_only_noise("  10  "))
-        self.assertTrue(merchant_raw_is_digit_only_noise("\uff15\uff10\uff10"))
-        self.assertFalse(merchant_raw_is_digit_only_noise("7-ELEVEN"))
-        self.assertFalse(
-            merchant_raw_is_digit_only_noise("社團法人台灣社區照顧協會")
-        )
-        self.assertFalse(merchant_raw_is_digit_only_noise(""))
+        self.assertTrue(merchant_raw_is_parse_noise("500"))
+        self.assertTrue(merchant_raw_is_parse_noise("2,585"))
+        self.assertTrue(merchant_raw_is_parse_noise("  10  "))
+        self.assertTrue(merchant_raw_is_parse_noise("\uff15\uff10\uff10"))
+        self.assertTrue(merchant_raw_is_parse_noise("-62"))
+        self.assertTrue(merchant_raw_is_parse_noise("+12"))
+        self.assertTrue(merchant_raw_is_parse_noise("CTBC"))
+        self.assertTrue(merchant_raw_is_parse_noise("中國信託"))
+        self.assertFalse(merchant_raw_is_parse_noise("7-ELEVEN"))
+        self.assertFalse(merchant_raw_is_parse_noise("社團法人台灣社區照顧協會"))
+        self.assertFalse(merchant_raw_is_parse_noise(""))
 
     def test_needs_review_merchants_list_skips_digit_only(self) -> None:
         from backend.batch_import.category import UNKNOWN_CATEGORY
