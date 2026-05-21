@@ -128,6 +128,7 @@ const reviewCategories = [
   "Education / Certification",
   "Tax / Accounting",
   "Shopping / Department Store",
+  "Shopping / Retail",
   "Shopping / Online Retail",
   "Subscription / Membership",
   "Government / Consular",
@@ -466,8 +467,8 @@ export default function BatchReviewPage() {
       const updatedCount = (payload as { updated_count: number }).updated_count;
       setMessage(
         updatedCount > 0
-          ? `Excluded ${updatedCount} junk row(s) with numeric-only merchants (not real shops).`
-          : "No junk numeric-merchant rows were pending review."
+          ? `Excluded ${updatedCount} junk row(s) with bogus merchant names (not real shops).`
+          : "No junk parse-noise rows were pending review."
       );
       await loadBatchState(needsReviewOnly);
     } catch (dismissError) {
@@ -884,9 +885,9 @@ export default function BatchReviewPage() {
                 <div>
                   <Title2>Junk rows from statement parsing</Title2>
                   <Body1 className={styles.quietText}>
-                    {digitNoisePendingCount} row(s) have merchant names that are
-                    only numbers (e.g. 500, 2,585). These are not real shops—usually
-                    CTBC PDF table noise. Exclude them from spending and clear review.
+                    {digitNoisePendingCount} row(s) have junk merchant names (e.g.
+                    500, -62, CTBC)—usually CTBC PDF table or header fragments, not
+                    real shops. Exclude them from spending and clear review.
                   </Body1>
                 </div>
                 <Button

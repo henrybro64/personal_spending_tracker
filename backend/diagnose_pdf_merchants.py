@@ -20,7 +20,7 @@ from collections import Counter
 from pathlib import Path
 
 from backend.batch_import.category import CategoryEngine
-from backend.merchant_noise import merchant_raw_is_digit_only_noise
+from backend.merchant_noise import merchant_raw_is_parse_noise
 from backend.batch_import.parsers import resolve_parser
 from backend.batch_import.upload_fallback import transactions_from_upload_parser
 from backend.parser import parse_transactions
@@ -115,7 +115,7 @@ def _analyze_pdf(path: Path, engine: CategoryEngine) -> dict[str, object]:
             parser_probe[merchant] += 1
 
     digit_noise = sum(
-        1 for row in batch_rows if merchant_raw_is_digit_only_noise(_row_merchant(row))
+        1 for row in batch_rows if merchant_raw_is_parse_noise(_row_merchant(row))
     )
     ctbc_like_lines = _ctbc_like_line_count(text)
 
@@ -128,7 +128,7 @@ def _analyze_pdf(path: Path, engine: CategoryEngine) -> dict[str, object]:
         "batch_tx_count": len(batch_rows),
         "upload_fallback_count": len(upload_rows),
         "parse_transactions_count": len(upload_dict_rows),
-        "digit_only_noise_batch": digit_noise,
+        "parse_noise_batch": digit_noise,
         "raw_probe_lines": raw_probe_lines,
         "batch_merchants": dict(batch_probe),
         "upload_merchants": dict(upload_probe),
@@ -247,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  batch parser rows: {batch_count}")
         print(f"  upload-fallback rows: {result['upload_fallback_count']}")
         print(f"  parse_transactions rows: {result['parse_transactions_count']}")
-        print(f"  digit-only noise (batch): {result['digit_only_noise_batch']}")
+        print(f"  parse noise skipped (batch): {result['parse_noise_batch']}")
 
         raw_lines = result.get("raw_probe_lines") or []
         if raw_lines:

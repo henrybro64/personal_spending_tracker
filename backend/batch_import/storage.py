@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
-from backend.merchant_noise import merchant_raw_is_digit_only_noise
+from backend.merchant_noise import merchant_raw_is_parse_noise
 
 from .category import (
     CategoryRule,
@@ -464,7 +464,7 @@ class BatchImportStore:
         summaries: list[NeedsReviewMerchantSummary] = []
         for row in rows:
             raw = str(row["merchant_raw"])
-            if merchant_raw_is_digit_only_noise(raw):
+            if merchant_raw_is_parse_noise(raw):
                 continue
             summaries.append(
                 {
@@ -581,11 +581,11 @@ class BatchImportStore:
         return sum(
             1
             for row in rows
-            if merchant_raw_is_digit_only_noise(str(row["merchant_raw"]))
+            if merchant_raw_is_parse_noise(str(row["merchant_raw"]))
         )
 
     def bulk_dismiss_digit_only_noise(self, *, run_id: int) -> int:
-        """Exclude and clear review on rows whose merchant is only digits."""
+        """Exclude and clear review on rows with junk parsed merchant names."""
         junk_category = "Other Spending"
 
         with self._connect() as connection:
@@ -601,7 +601,7 @@ class BatchImportStore:
 
             updates: list[tuple[float, str, int, int, str, int]] = []
             for row in rows:
-                if not merchant_raw_is_digit_only_noise(str(row["merchant_raw"])):
+                if not merchant_raw_is_parse_noise(str(row["merchant_raw"])):
                     continue
                 amount = abs(float(row["amount"]))
                 updates.append(

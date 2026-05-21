@@ -29,6 +29,14 @@ def test_parse_ctbc_roc_line_rejects_digit_only_merchant() -> None:
         parse_ctbc_roc_statement_line("113/10/14 113/10/15 5 51.00 5411")
         is None
     )
+    assert (
+        parse_ctbc_roc_statement_line("114/09/16 114/09/17 -62 6,232.00 5411")
+        is None
+    )
+    assert (
+        parse_ctbc_roc_statement_line("114/09/16 114/09/17 CTBC 6,232.00 5411")
+        is None
+    )
 
 
 def test_parse_ctbc_roc_line_with_location_suffix_before_amount() -> None:

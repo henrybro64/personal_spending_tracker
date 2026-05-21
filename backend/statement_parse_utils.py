@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from backend.merchant_noise import merchant_raw_is_digit_only_noise
+from backend.merchant_noise import merchant_raw_is_parse_noise
 
 US_STATEMENT_PERIOD_PATTERN = re.compile(
     r"Opening/Closing Date\s+"
@@ -227,7 +227,7 @@ def parse_ctbc_roc_statement_line(line: str) -> CtbcRocLineParts | None:
     if not merchant:
         merchant = "(no description)"
 
-    if merchant_raw_is_digit_only_noise(merchant):
+    if merchant_raw_is_parse_noise(merchant):
         return None
 
     return CtbcRocLineParts(
