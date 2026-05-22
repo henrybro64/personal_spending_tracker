@@ -33,7 +33,7 @@ export function buildBulkImportLlmPrompt(options: {
   const source = options.source.trim() || "statement-import";
   const categories = CATEGORY_OPTIONS.map((item) => `  - ${item}`).join("\n");
 
-  if (options.locale === "zh-TW") {
+  if (options.locale === "zh-Hant") {
     return buildZhPrompt(bank, currency, source, categories);
   }
   return buildEnPrompt(bank, currency, source, categories);
