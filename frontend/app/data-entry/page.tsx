@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useRef, useState } from "react";
+import { ChangeEvent, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -25,6 +25,7 @@ import { apiFetch } from "../api";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
+import { buildBulkImportLlmPrompt } from "../bulk-import-llm-prompt";
 import { translate } from "../messages";
 
 type UploadResponse = {
@@ -40,6 +41,16 @@ const manualPaymentMethods = [
   "Bank transfer",
   "Other",
 ] as const;
+
+const BULK_IMPORT_EXAMPLE = `{
+  "source": "CTBC 2026-05",
+  "bank": "CTBC",
+  "currency": "TWD",
+  "transactions": [
+    { "date": "2026-05-13", "merchant": "IKEA 宜家家居", "amount": 813 },
+    { "date": "2026-05-04", "merchant": "全聯實業", "amount": 736 }
+  ]
+}`;
 
 const manualCategories = [
   "Auto",
@@ -189,6 +200,49 @@ const useStyles = makeStyles({
     ...shorthands.border("1px", "solid", tokens.colorNeutralStroke1),
     ...shorthands.borderRadius(tokens.borderRadiusMedium),
   },
+  pasteArea: {
+    width: "100%",
+    minHeight: "160px",
+    padding: "12px",
+    fontFamily: "monospace",
+    fontSize: tokens.fontSizeBase200,
+    lineHeight: "1.45",
+    resize: "vertical",
+    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+  },
+  exampleBlock: {
+    marginTop: "4px",
+    padding: "10px 12px",
+    fontFamily: "monospace",
+    fontSize: tokens.fontSizeBase200,
+    lineHeight: "1.45",
+    whiteSpace: "pre-wrap",
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    maxHeight: "200px",
+    overflowY: "auto",
+  },
+  promptBlock: {
+    width: "100%",
+    minHeight: "280px",
+    maxHeight: "420px",
+    padding: "12px",
+    fontFamily: "monospace",
+    fontSize: tokens.fontSizeBase200,
+    lineHeight: "1.45",
+    whiteSpace: "pre-wrap",
+    overflowY: "auto",
+    resize: "vertical",
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+  },
+  stepTitle: {
+    fontWeight: tokens.fontWeightSemibold,
+    fontSize: tokens.fontSizeBase400,
+  },
 });
 
 function getTodayIsoDate() {
@@ -201,6 +255,7 @@ export default function DataEntryPage() {
   const { refreshSession, status, user } = useAuth();
   const pathname = usePathname();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bulkFileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pdfPassword, setPdfPassword] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -215,6 +270,40 @@ export default function DataEntryPage() {
   const [manualSaving, setManualSaving] = useState(false);
   const [manualError, setManualError] = useState("");
   const [manualMessage, setManualMessage] = useState("");
+
+  const [bulkContent, setBulkContent] = useState("");
+  const [bulkSourceName, setBulkSourceName] = useState("ctbc-import");
+  const [bulkBank, setBulkBank] = useState("CTBC");
+  const [bulkCurrency, setBulkCurrency] = useState("TWD");
+  const [bulkFormat, setBulkFormat] = useState<"auto" | "json" | "text">("auto");
+  const [bulkDestination, setBulkDestination] = useState<"batch" | "dashboard">(
+    "batch"
+  );
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkError, setBulkError] = useState("");
+  const [bulkMessage, setBulkMessage] = useState("");
+  const [promptCopied, setPromptCopied] = useState(false);
+
+  const llmConversionPrompt = useMemo(
+    () =>
+      buildBulkImportLlmPrompt({
+        bank: bulkBank,
+        currency: bulkCurrency,
+        source: bulkSourceName,
+        locale,
+      }),
+    [bulkBank, bulkCurrency, bulkSourceName, locale]
+  );
+
+  async function onCopyLlmPrompt() {
+    try {
+      await navigator.clipboard.writeText(llmConversionPrompt);
+      setPromptCopied(true);
+      window.setTimeout(() => setPromptCopied(false), 2000);
+    } catch {
+      setBulkError(translate(locale, "errBulkImportFailed"));
+    }
+  }
 
   function onPickFile(event: ChangeEvent<HTMLInputElement>) {
     const nextFile = event.target.files?.[0] ?? null;
@@ -269,6 +358,80 @@ export default function DataEntryPage() {
       );
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function onPickBulkFile(event: ChangeEvent<HTMLInputElement>) {
+    const nextFile = event.target.files?.[0] ?? null;
+    if (!nextFile) {
+      return;
+    }
+    setBulkError("");
+    setBulkMessage("");
+    try {
+      const text = await nextFile.text();
+      setBulkContent(text);
+      const baseName = nextFile.name.replace(/\.[^.]+$/, "");
+      if (baseName) {
+        setBulkSourceName(baseName);
+      }
+      if (nextFile.name.endsWith(".json")) {
+        setBulkFormat("json");
+      } else if (nextFile.name.endsWith(".txt")) {
+        setBulkFormat("text");
+      }
+    } catch {
+      setBulkError(translate(locale, "errBulkImportFailed"));
+    }
+  }
+
+  async function onBulkImport() {
+    const content = bulkContent.trim();
+    if (!content) {
+      setBulkError(translate(locale, "errBulkImportEmpty"));
+      return;
+    }
+
+    setBulkImporting(true);
+    setBulkError("");
+    setBulkMessage("");
+    try {
+      const response = await apiFetch("/batch-imports/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content,
+          format: bulkFormat,
+          bank: bulkBank.trim() || "Manual",
+          currency: bulkCurrency.trim() || "TWD",
+          source_name: bulkSourceName.trim() || "import",
+          destination: bulkDestination,
+        }),
+      });
+      const payload = (await response.json()) as {
+        detail?: string;
+        imported_count?: number;
+        destination?: string;
+      };
+      if (!response.ok) {
+        if (response.status === 401) {
+          await refreshSession();
+          return;
+        }
+        throw new Error(payload.detail ?? translate(locale, "errBulkImportFailed"));
+      }
+      const count = payload.imported_count ?? 0;
+      setBulkMessage(
+        payload.destination === "dashboard"
+          ? translate(locale, "bulkImportSuccessDashboard", { count: String(count) })
+          : translate(locale, "bulkImportSuccessBatch", { count: String(count) })
+      );
+    } catch (error) {
+      setBulkError(
+        error instanceof Error ? error.message : translate(locale, "errBulkImportFailed")
+      );
+    } finally {
+      setBulkImporting(false);
     }
   }
 
@@ -462,6 +625,7 @@ export default function DataEntryPage() {
                 type="file"
                 accept="application/pdf,.pdf"
                 className={styles.hiddenInput}
+                aria-label={translate(locale, "fieldStatementPdfLabel")}
                 onChange={onPickFile}
               />
               <Button onClick={() => fileInputRef.current?.click()} appearance="secondary">
@@ -561,6 +725,129 @@ export default function DataEntryPage() {
               <MessageBarBody>{manualMessage}</MessageBarBody>
             </MessageBar>
           ) : null}
+            </Card>
+
+            <Card className={styles.card}>
+              <Title2>{translate(locale, "bulkImportTitle")}</Title2>
+              <Body1>{translate(locale, "bulkImportBody")}</Body1>
+              <div className={styles.formGrid}>
+                <Field label={translate(locale, "bulkImportSourceLabel")}>
+                  <Input
+                    value={bulkSourceName}
+                    onChange={(_, data) => setBulkSourceName(data.value)}
+                  />
+                </Field>
+                <Field label={translate(locale, "bulkImportBankLabel")}>
+                  <Input value={bulkBank} onChange={(_, data) => setBulkBank(data.value)} />
+                </Field>
+                <Field label={translate(locale, "bulkImportCurrencyLabel")}>
+                  <Input
+                    value={bulkCurrency}
+                    onChange={(_, data) => setBulkCurrency(data.value)}
+                  />
+                </Field>
+              </div>
+
+              <div className={styles.stepTitle}>
+                {translate(locale, "bulkImportLlmStepTitle")}
+              </div>
+              <Body1>{translate(locale, "bulkImportLlmStepBody")}</Body1>
+              <pre className={styles.promptBlock}>{llmConversionPrompt}</pre>
+              <div className={styles.actions}>
+                <Button appearance="secondary" onClick={() => void onCopyLlmPrompt()}>
+                  {promptCopied
+                    ? translate(locale, "bulkImportCopiedPrompt")
+                    : translate(locale, "bulkImportCopyPrompt")}
+                </Button>
+              </div>
+
+              <div className={styles.stepTitle}>
+                {translate(locale, "bulkImportPasteStepTitle")}
+              </div>
+              <Field label={translate(locale, "bulkImportPasteLabel")}>
+                <textarea
+                  className={styles.pasteArea}
+                  value={bulkContent}
+                  onChange={(event) => setBulkContent(event.target.value)}
+                  placeholder={translate(locale, "bulkImportPastePlaceholder")}
+                />
+              </Field>
+              <Field label={translate(locale, "bulkImportFileLabel")}>
+                <>
+                  <input
+                    ref={bulkFileInputRef}
+                    type="file"
+                    accept=".json,.txt,application/json,text/plain"
+                    className={styles.hiddenInput}
+                    aria-label={translate(locale, "bulkImportFileLabel")}
+                    onChange={(event) => void onPickBulkFile(event)}
+                  />
+                  <Button
+                    appearance="secondary"
+                    onClick={() => bulkFileInputRef.current?.click()}
+                  >
+                    {translate(locale, "bulkImportChooseFile")}
+                  </Button>
+                </>
+              </Field>
+              <div className={styles.formGrid}>
+                <Field label={translate(locale, "bulkImportFormatLabel")}>
+                  <select
+                    className={styles.selectControl}
+                    value={bulkFormat}
+                    onChange={(event) =>
+                      setBulkFormat(event.target.value as "auto" | "json" | "text")
+                    }
+                  >
+                    <option value="auto">{translate(locale, "bulkImportFormatAuto")}</option>
+                    <option value="json">{translate(locale, "bulkImportFormatJson")}</option>
+                    <option value="text">{translate(locale, "bulkImportFormatText")}</option>
+                  </select>
+                </Field>
+              </div>
+              <Field label={translate(locale, "bulkImportDestinationLabel")}>
+                <select
+                  className={styles.selectControl}
+                  value={bulkDestination}
+                  onChange={(event) =>
+                    setBulkDestination(event.target.value as "batch" | "dashboard")
+                  }
+                >
+                  <option value="batch">
+                    {translate(locale, "bulkImportDestinationBatch")}
+                  </option>
+                  <option value="dashboard">
+                    {translate(locale, "bulkImportDestinationDashboard")}
+                  </option>
+                </select>
+              </Field>
+              <Body1 className={styles.filterHint}>
+                {translate(locale, "bulkImportExampleTitle")}
+              </Body1>
+              <pre className={styles.exampleBlock}>{BULK_IMPORT_EXAMPLE}</pre>
+              <Body1 className={styles.filterHint}>
+                Text lines (tab-separated): 2026-05-13{"\t"}IKEA{"\t"}813.00
+              </Body1>
+              <Button appearance="primary" disabled={bulkImporting} onClick={() => void onBulkImport()}>
+                {bulkImporting
+                  ? translate(locale, "bulkImportImporting")
+                  : translate(locale, "bulkImportButton")}
+              </Button>
+              {bulkDestination === "batch" && bulkMessage ? (
+                <Link className={styles.sidebarNavLink} href="/batch-review">
+                  {translate(locale, "navBatchReview")}
+                </Link>
+              ) : null}
+              {bulkError ? (
+                <MessageBar intent="error">
+                  <MessageBarBody>{bulkError}</MessageBarBody>
+                </MessageBar>
+              ) : null}
+              {bulkMessage ? (
+                <MessageBar intent="success">
+                  <MessageBarBody>{bulkMessage}</MessageBarBody>
+                </MessageBar>
+              ) : null}
             </Card>
           </div>
         </section>

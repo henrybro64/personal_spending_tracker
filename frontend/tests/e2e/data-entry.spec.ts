@@ -106,7 +106,7 @@ test("statement upload validates file selection and shows a mocked success state
   await page.getByRole("button", { name: "Upload statement" }).click();
   await expect(page.getByText("Select a PDF file first.")).toBeVisible();
 
-  const fileInput = page.locator('input[type="file"]');
+  const fileInput = page.getByLabel("Statement PDF");
   const passwordInput = page.getByLabel("PDF password (if the file is protected)");
 
   await fileInput.setInputFiles(samplePdfPath);

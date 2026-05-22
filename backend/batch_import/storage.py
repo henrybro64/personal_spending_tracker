@@ -4,7 +4,7 @@ import csv
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from backend.merchant_noise import merchant_raw_is_parse_noise
 
@@ -315,6 +315,31 @@ class BatchImportStore:
 
         return str(resolved_path)
 
+    def get_run(self, run_id: int) -> BatchImportRunSummary | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    id,
+                    imported_at,
+                    statement_count,
+                    transaction_count,
+                    needs_review_count,
+                    csv_output_path,
+                    sqlite_output_path,
+                    pdf_source_dir,
+                    text_source_dir
+                FROM import_runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return self._row_to_run_summary(row)
+
     def get_latest_run(self) -> BatchImportRunSummary | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -338,6 +363,10 @@ class BatchImportStore:
         if row is None:
             return None
 
+        return self._row_to_run_summary(row)
+
+    @staticmethod
+    def _row_to_run_summary(row: Any) -> BatchImportRunSummary:
         return {
             "id": int(row["id"]),
             "imported_at": str(row["imported_at"]),
