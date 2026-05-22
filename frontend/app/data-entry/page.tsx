@@ -625,6 +625,7 @@ export default function DataEntryPage() {
                 type="file"
                 accept="application/pdf,.pdf"
                 className={styles.hiddenInput}
+                aria-label={translate(locale, "fieldStatementPdfLabel")}
                 onChange={onPickFile}
               />
               <Button onClick={() => fileInputRef.current?.click()} appearance="secondary">
@@ -778,6 +779,7 @@ export default function DataEntryPage() {
                     type="file"
                     accept=".json,.txt,application/json,text/plain"
                     className={styles.hiddenInput}
+                    aria-label={translate(locale, "bulkImportFileLabel")}
                     onChange={(event) => void onPickBulkFile(event)}
                   />
                   <Button
