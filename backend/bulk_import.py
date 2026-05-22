@@ -177,33 +177,60 @@ def _looks_like_header(line: str) -> bool:
 
 def _parse_text_line(line: str, line_number: int) -> dict[str, Any]:
     if "\t" in line:
-        parts = [part.strip() for part in line.split("\t")]
-    else:
-        parts = _split_text_fields(line)
-
-    if len(parts) >= 3:
-        date_text, merchant, amount_text = parts[0], parts[1], parts[-1]
-        category = parts[2] if len(parts) > 3 else None
-        row: dict[str, Any] = {
-            "date": date_text,
-            "merchant": merchant,
-            "amount": amount_text,
-        }
-        if category and category not in {amount_text, merchant}:
-            row["category"] = parts[2]
-        return row
+        return _parse_tab_separated_line(line, line_number)
 
     match = _TEXT_LINE_PATTERN.match(line)
-    if match is None:
+    if match is not None:
+        return {
+            "date": match.group("date"),
+            "merchant": match.group("merchant").strip(),
+            "amount": match.group("amount"),
+        }
+
+    if "," in line:
+        return _parse_comma_separated_line(line, line_number)
+
+    raise BulkImportParseError(
+        f"Line {line_number} must be tab-separated, comma-separated "
+        f"(date,merchant,amount), or 'YYYY-MM-DD merchant amount'."
+    )
+
+
+def _parse_tab_separated_line(line: str, line_number: int) -> dict[str, Any]:
+    parts = [part.strip() for part in line.split("\t")]
+    if len(parts) < 3:
         raise BulkImportParseError(
-            f"Line {line_number} must be tab-separated or "
-            f"'YYYY-MM-DD merchant amount'."
+            f"Line {line_number} needs at least date, merchant, and amount columns."
         )
-    return {
-        "date": match.group("date"),
-        "merchant": match.group("merchant").strip(),
-        "amount": match.group("amount"),
+
+    date_text = parts[0]
+    amount_text = parts[-1]
+    row: dict[str, Any] = {
+        "date": date_text,
+        "merchant": parts[1] if len(parts) == 3 else " ".join(parts[1:-2]),
+        "amount": amount_text,
     }
+    if len(parts) == 4:
+        row["merchant"] = parts[1]
+        row["category"] = parts[2]
+    return row
+
+
+def _parse_comma_separated_line(line: str, line_number: int) -> dict[str, Any]:
+    parts = [part.strip() for part in line.split(",")]
+    if len(parts) < 3:
+        raise BulkImportParseError(
+            f"Line {line_number} needs at least date, merchant, and amount columns."
+        )
+
+    row: dict[str, Any] = {
+        "date": parts[0],
+        "merchant": parts[1],
+        "amount": parts[-1],
+    }
+    if len(parts) == 4:
+        row["category"] = parts[2]
+    return row
 
 
 def _split_text_fields(line: str) -> list[str]:

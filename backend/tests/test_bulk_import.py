@@ -38,6 +38,18 @@ class BulkImportTests(unittest.TestCase):
         rows = parse_import_content(content, format="text")
         self.assertEqual(rows[0].merchant_raw, "IKEA")
 
+    def test_text_space_separated_multi_word_merchant(self) -> None:
+        content = "2026-05-13 IKEA Taipei 813.00\n"
+        rows = parse_import_content(content, format="text")
+        self.assertEqual(rows[0].merchant_raw, "IKEA Taipei")
+        self.assertEqual(rows[0].amount, 813.0)
+
+    def test_text_tab_separated_with_category(self) -> None:
+        content = "2026-05-13\tIKEA\tShopping / Online Retail\t813.00\n"
+        rows = parse_import_content(content, format="text")
+        self.assertEqual(rows[0].merchant_raw, "IKEA")
+        self.assertEqual(rows[0].category, "Shopping / Online Retail")
+
     def test_rejects_invalid_date(self) -> None:
         payload = [{"date": "05/13/2026", "merchant": "IKEA", "amount": 10}]
         with self.assertRaises(BulkImportParseError):

@@ -1055,25 +1055,28 @@ async def import_batch_content(
             "run": None,
         }
 
-    run_id, _imported_at, needs_review_count = store.record_import_run(
+    run_id, _imported_at, _needs_review_count = store.record_import_run(
         transactions,
         pdf_source_dir="",
         text_source_dir="",
         csv_output_path=str(_default_batch_csv_path_for_user(current_user["id"])),
         statement_count=1,
     )
-    auto_categorized = store.auto_apply_default_categories(
+    store.auto_apply_default_categories(
         run_id=run_id,
         category_engine=category_engine,
     )
-    if auto_categorized:
-        needs_review_count = store.count_needs_review(run_id=run_id)
     store.export_csv(run_id, _default_batch_csv_path_for_user(current_user["id"]))
-    latest = store.get_latest_run()
+    created_run = store.get_run(run_id)
+    if created_run is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Import run {run_id} was not found after creation.",
+        )
     return {
         "destination": "batch",
         "imported_count": len(transactions),
-        "run": latest,
+        "run": created_run,
     }
 
 
