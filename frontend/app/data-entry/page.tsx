@@ -103,9 +103,15 @@ const useStyles = makeStyles({
     gap: "16px",
   },
   cards: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+  },
+  cardsTop: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
     gap: "12px",
+    alignItems: "start",
   },
   card: {
     display: "flex",
@@ -616,6 +622,7 @@ export default function DataEntryPage() {
           <Body1>{translate(locale, "dataEntryBody")}</Body1>
 
           <div className={styles.cards}>
+            <div className={styles.cardsTop}>
             <Card className={styles.card}>
           <Title2>{translate(locale, "statementImportTitle")}</Title2>
           <Field label={translate(locale, "fieldStatementPdfLabel")}>
@@ -655,74 +662,6 @@ export default function DataEntryPage() {
                 <MessageBarTitle>{translate(locale, "uploadDoneTitle")}</MessageBarTitle>
                 {uploadMessage}
               </MessageBarBody>
-            </MessageBar>
-          ) : null}
-            </Card>
-
-            <Card className={mergeClasses(styles.card)}>
-              <Title2>{translate(locale, "dataEntryManualTitle")}</Title2>
-          <div className={styles.formGrid}>
-            <Field label={translate(locale, "manualDateLabel")}>
-              <Input type="date" value={manualDate} onChange={(_, data) => setManualDate(data.value)} />
-            </Field>
-            <Field label={translate(locale, "manualAmountLabel")}>
-              <Input
-                type="number"
-                step="0.01"
-                placeholder="0.00"
-                value={manualAmount}
-                onChange={(_, data) => setManualAmount(data.value)}
-              />
-            </Field>
-          </div>
-          <Field label={translate(locale, "manualMerchantLabel")}>
-            <Input
-              value={manualMerchant}
-              onChange={(_, data) => setManualMerchant(data.value)}
-              placeholder={translate(locale, "manualMerchantPlaceholder")}
-            />
-          </Field>
-          <div className={styles.formGrid}>
-            <Field label={translate(locale, "manualCategoryLabel")}>
-              <select
-                className={styles.selectControl}
-                value={manualCategory}
-                onChange={(event) => setManualCategory(event.target.value)}
-              >
-                {manualCategories.map((categoryOption) => (
-                  <option key={categoryOption} value={categoryOption}>
-                    {categoryOption === "Auto"
-                      ? translate(locale, "manualCategoryAuto")
-                      : categoryOption}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label={translate(locale, "manualPaymentMethodLabel")}>
-              <select
-                className={styles.selectControl}
-                value={manualPaymentMethod}
-                onChange={(event) => setManualPaymentMethod(event.target.value)}
-              >
-                {manualPaymentMethods.map((methodOption) => (
-                  <option key={methodOption} value={methodOption}>
-                    {methodOption}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-          <Button appearance="primary" onClick={onAddManualSpending} disabled={manualSaving}>
-            {manualSaving ? translate(locale, "saving") : translate(locale, "addSpending")}
-          </Button>
-          {manualError ? (
-            <MessageBar intent="error">
-              <MessageBarBody>{manualError}</MessageBarBody>
-            </MessageBar>
-          ) : null}
-          {manualMessage ? (
-            <MessageBar intent="success">
-              <MessageBarBody>{manualMessage}</MessageBarBody>
             </MessageBar>
           ) : null}
             </Card>
@@ -848,6 +787,75 @@ export default function DataEntryPage() {
                   <MessageBarBody>{bulkMessage}</MessageBarBody>
                 </MessageBar>
               ) : null}
+            </Card>
+            </div>
+
+            <Card className={mergeClasses(styles.card)}>
+              <Title2>{translate(locale, "dataEntryManualTitle")}</Title2>
+          <div className={styles.formGrid}>
+            <Field label={translate(locale, "manualDateLabel")}>
+              <Input type="date" value={manualDate} onChange={(_, data) => setManualDate(data.value)} />
+            </Field>
+            <Field label={translate(locale, "manualAmountLabel")}>
+              <Input
+                type="number"
+                step="0.01"
+                placeholder="0.00"
+                value={manualAmount}
+                onChange={(_, data) => setManualAmount(data.value)}
+              />
+            </Field>
+          </div>
+          <Field label={translate(locale, "manualMerchantLabel")}>
+            <Input
+              value={manualMerchant}
+              onChange={(_, data) => setManualMerchant(data.value)}
+              placeholder={translate(locale, "manualMerchantPlaceholder")}
+            />
+          </Field>
+          <div className={styles.formGrid}>
+            <Field label={translate(locale, "manualCategoryLabel")}>
+              <select
+                className={styles.selectControl}
+                value={manualCategory}
+                onChange={(event) => setManualCategory(event.target.value)}
+              >
+                {manualCategories.map((categoryOption) => (
+                  <option key={categoryOption} value={categoryOption}>
+                    {categoryOption === "Auto"
+                      ? translate(locale, "manualCategoryAuto")
+                      : categoryOption}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={translate(locale, "manualPaymentMethodLabel")}>
+              <select
+                className={styles.selectControl}
+                value={manualPaymentMethod}
+                onChange={(event) => setManualPaymentMethod(event.target.value)}
+              >
+                {manualPaymentMethods.map((methodOption) => (
+                  <option key={methodOption} value={methodOption}>
+                    {methodOption}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          <Button appearance="primary" onClick={onAddManualSpending} disabled={manualSaving}>
+            {manualSaving ? translate(locale, "saving") : translate(locale, "addSpending")}
+          </Button>
+          {manualError ? (
+            <MessageBar intent="error">
+              <MessageBarBody>{manualError}</MessageBarBody>
+            </MessageBar>
+          ) : null}
+          {manualMessage ? (
+            <MessageBar intent="success">
+              <MessageBarBody>{manualMessage}</MessageBarBody>
+            </MessageBar>
+          ) : null}
             </Card>
           </div>
         </section>
