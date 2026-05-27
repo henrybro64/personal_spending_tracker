@@ -68,8 +68,10 @@ from backend.database import (  # noqa: E402
     maybe_claim_legacy_data_for_first_user,
     record_audit_event,
     revoke_session,
+    delete_statement_upload_for_user,
     delete_transaction,
     delete_transaction_by_match,
+    get_statement_upload_for_user,
     update_transaction as update_stored_transaction,
     update_transaction_category,
     update_user_last_login,
@@ -77,6 +79,11 @@ from backend.database import (  # noqa: E402
 from backend.bulk_import import (  # noqa: E402
     BulkImportParseError,
     parse_import_content,
+)
+from backend.batch_import.paths import (  # noqa: E402
+    default_pdf_source_dir,
+    default_text_source_dir,
+    resolve_allowed_directory,
 )
 from backend.batch_import import (  # noqa: E402
     BatchImportRunSummary,
@@ -87,6 +94,12 @@ from backend.batch_import import (  # noqa: E402
     default_sqlite_output_path,
     merge_run_to_postgres,
     resolve_allowed_file,
+)
+from backend.currency import (  # noqa: E402
+    DisplayCurrency,
+    convert_amount,
+    exchange_rate_metadata,
+    normalize_currency_code,
 )
 from backend.parser import Transaction, parse_transactions  # noqa: E402
 from backend.pdf_utils import (  # noqa: E402
@@ -177,7 +190,6 @@ class BatchImportMergeResponse(TypedDict):
 
 AmountFilter = Literal["all", "spend", "refunds"]
 SortOption = Literal["amount_desc", "amount_asc", "merchant", "date"]
-DisplayCurrency = Literal["USD", "TWD"]
 
 
 class MerchantBreakdownItem(TypedDict):
@@ -217,8 +229,14 @@ class DashboardTransaction(StoredTransaction):
     is_converted: bool
 
 
+class ExchangeRateMetadata(TypedDict):
+    usd_twd_rate: float
+    rate_source: str
+
+
 class DashboardViewResponse(TypedDict):
     active_currency: DisplayCurrency
+    exchange_rate: ExchangeRateMetadata
     summary: SummaryResponse
     transactions: list[DashboardTransaction]
     sorted_transactions: list[DashboardTransaction]
@@ -324,7 +342,6 @@ VALID_SORT_OPTIONS: tuple[SortOption, ...] = (
     "date",
 )
 VALID_DISPLAY_CURRENCIES: tuple[DisplayCurrency, ...] = ("USD", "TWD")
-USD_TO_TWD_RATE = 32.0
 
 
 def _get_upload_dir(user_id: int) -> Path:
@@ -371,9 +388,9 @@ def _resolve_sort_option(sort_key: str) -> SortOption:
 
 
 def _resolve_display_currency(currency_code: str) -> DisplayCurrency:
-    normalized_code = currency_code.upper()
+    normalized_code = normalize_currency_code(currency_code)
     if normalized_code in VALID_DISPLAY_CURRENCIES:
-        return normalized_code  # type: ignore[return-value]
+        return normalized_code
     raise HTTPException(
         status_code=400,
         detail=(
@@ -383,17 +400,16 @@ def _resolve_display_currency(currency_code: str) -> DisplayCurrency:
     )
 
 
-def _convert_amount(
-    amount: float, source_currency: str, target_currency: DisplayCurrency
-) -> float:
-    normalized_source = source_currency.upper()
-    if normalized_source == target_currency:
-        return amount
-    if normalized_source == "USD" and target_currency == "TWD":
-        return amount * USD_TO_TWD_RATE
-    if normalized_source == "TWD" and target_currency == "USD":
-        return amount / USD_TO_TWD_RATE
-    return amount
+def _default_batch_pdf_source_dir_for_user(user_id: int) -> Path:
+    user_dir = default_pdf_source_dir() / f"user-{user_id}"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return user_dir
+
+
+def _default_batch_text_source_dir_for_user(user_id: int) -> Path:
+    user_dir = default_text_source_dir() / f"user-{user_id}"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return user_dir
 
 
 def _sort_transactions(
@@ -644,14 +660,16 @@ async def logout(
 @app.get("/summary")
 async def summary(
     range: str = Query(default="all"),
+    currency: str = Query(default="USD"),
     current_user: UserRecord = Depends(require_current_user),
 ) -> SummaryResponse:
     resolved_range = _resolve_time_range(range)
-    summary_data: TransactionsSummary = get_transactions_summary(
+    resolved_currency = _resolve_display_currency(currency)
+    return get_transactions_summary(
         user_id=current_user["id"],
         range_key=resolved_range,
+        display_currency=resolved_currency,
     )
-    return summary_data
 
 
 @app.get("/uploads/recent")
@@ -666,6 +684,46 @@ async def recent_uploads(
             limit=limited_value,
         )
     }
+
+
+@app.delete("/uploads/{upload_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_statement_upload(
+    upload_id: int,
+    request: Request,
+    current_user: UserRecord = Depends(require_current_user),
+) -> None:
+    existing_upload = get_statement_upload_for_user(
+        user_id=current_user["id"],
+        upload_id=upload_id,
+    )
+    if existing_upload is None:
+        raise HTTPException(status_code=404, detail="Statement upload not found.")
+
+    deleted_upload = delete_statement_upload_for_user(
+        user_id=current_user["id"],
+        upload_id=upload_id,
+    )
+    if deleted_upload is None:
+        raise HTTPException(status_code=404, detail="Statement upload not found.")
+
+    stored_path = _get_upload_dir(current_user["id"]) / deleted_upload["stored_file_name"]
+    stored_path.unlink(missing_ok=True)
+
+    audit_context = get_audit_request_context(request)
+    record_audit_event(
+        action="statement_upload_delete",
+        status="success",
+        user_id=current_user["id"],
+        target_type="statement_upload",
+        target_id=str(upload_id),
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={
+            "display_name": deleted_upload["display_name"],
+            "stored_file_name": deleted_upload["stored_file_name"],
+        },
+    )
 
 
 @app.get("/transactions")
@@ -715,7 +773,7 @@ async def dashboard_view(
     converted_transactions: list[DashboardTransaction] = []
     for transaction in all_transactions:
         original_currency = transaction.get("currency", "USD").upper()
-        converted_amount = _convert_amount(
+        converted_amount = convert_amount(
             transaction["amount"],
             original_currency,
             resolved_currency,
@@ -849,21 +907,12 @@ async def dashboard_view(
     summary_data: TransactionsSummary = get_transactions_summary(
         user_id=current_user["id"],
         range_key=resolved_range,
+        display_currency=resolved_currency,
     )
-    summary_converted: SummaryResponse = {
-        "total_spending": _convert_amount(
-            summary_data["total_spending"], "USD", resolved_currency
-        ),
-        "number_of_transactions": summary_data["number_of_transactions"],
-        "average_transaction_amount": _convert_amount(
-            summary_data["average_transaction_amount"], "USD", resolved_currency
-        ),
-        "number_of_statements": summary_data["number_of_statements"],
-    }
-
     return {
         "active_currency": resolved_currency,
-        "summary": summary_converted,
+        "exchange_rate": exchange_rate_metadata(),
+        "summary": summary_data,
         "transactions": converted_transactions,
         "sorted_transactions": sorted_transactions,
         "merchant_breakdown": merchant_breakdown,
@@ -932,6 +981,7 @@ async def create_manual_transaction(
 async def patch_transaction(
     transaction_id: int,
     payload: TransactionUpdateRequest,
+    request: Request,
     current_user: UserRecord = Depends(require_current_user),
 ) -> ManualTransactionResponse:
     category = payload.category.strip() if payload.category is not None else None
@@ -954,12 +1004,29 @@ async def patch_transaction(
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="Transaction not found.")
+
+    audit_context = get_audit_request_context(request)
+    record_audit_event(
+        action="transaction_update",
+        status="success",
+        user_id=current_user["id"],
+        target_type="transaction",
+        target_id=str(transaction_id),
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={
+            "merchant": updated["merchant"],
+            "category": updated["category"],
+        },
+    )
     return {"transaction": updated}
 
 
 @app.delete("/transactions/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_dashboard_transaction(
     transaction_id: int,
+    request: Request,
     current_user: UserRecord = Depends(require_current_user),
 ) -> None:
     deleted = delete_transaction(
@@ -969,9 +1036,22 @@ async def delete_dashboard_transaction(
     if not deleted:
         raise HTTPException(status_code=404, detail="Transaction not found.")
 
+    audit_context = get_audit_request_context(request)
+    record_audit_event(
+        action="transaction_delete",
+        status="success",
+        user_id=current_user["id"],
+        target_type="transaction",
+        target_id=str(transaction_id),
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+    )
+
 
 @app.post("/batch-imports/run", status_code=status.HTTP_201_CREATED)
 async def run_batch_import(
+    request: Request,
     payload: BatchImportRequest | None = None,
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportRunExecutionResponse:
@@ -984,10 +1064,18 @@ async def run_batch_import(
         current_user["id"],
         request_payload.sqlite_output_path,
     )
+    pdf_source_dir = resolve_allowed_directory(
+        request_payload.pdf_source_dir,
+        default=_default_batch_pdf_source_dir_for_user(current_user["id"]),
+    )
+    text_source_dir = resolve_allowed_directory(
+        request_payload.text_source_dir,
+        default=_default_batch_text_source_dir_for_user(current_user["id"]),
+    )
     try:
         importer = StatementImporter(
-            pdf_source_dir=request_payload.pdf_source_dir,
-            text_source_dir=request_payload.text_source_dir,
+            pdf_source_dir=str(pdf_source_dir),
+            text_source_dir=str(text_source_dir),
             csv_output_path=resolve_allowed_file(
                 request_payload.csv_output_path,
                 default=_default_batch_csv_path_for_user(current_user["id"]),
@@ -1011,6 +1099,21 @@ async def run_batch_import(
         result.statement_count,
         result.transaction_count,
         len(result.skipped_files),
+    )
+    audit_context = get_audit_request_context(request)
+    record_audit_event(
+        action="batch_import_run",
+        status="success",
+        user_id=current_user["id"],
+        target_type="batch_import_run",
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={
+            "statement_count": result.statement_count,
+            "transaction_count": result.transaction_count,
+            "skipped_files": len(result.skipped_files),
+        },
     )
     return {"run": result.to_payload()}
 
@@ -1100,6 +1203,7 @@ async def import_batch_content(
 
 @app.post("/batch-imports/merge", status_code=status.HTTP_200_OK)
 async def merge_batch_import(
+    request: Request,
     payload: BatchImportMergeRequest | None = None,
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportMergeResponse:
@@ -1121,6 +1225,22 @@ async def merge_batch_import(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    audit_context = get_audit_request_context(request)
+    record_audit_event(
+        action="batch_import_merge",
+        status="success",
+        user_id=current_user["id"],
+        target_type="batch_import_run",
+        target_id=str(result["run_id"]) if result["run_id"] is not None else None,
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={
+            "merged_count": int(result["merged_count"]),
+            "skipped_count": int(result["skipped_count"]),
+        },
+    )
 
     return {
         "run_id": result["run_id"],
@@ -1160,6 +1280,7 @@ async def batch_import_transactions(
 async def update_batch_import_transaction(
     transaction_id: int,
     payload: BatchReviewUpdateRequest,
+    request: Request,
     sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportReviewUpdateResponse:
@@ -1188,6 +1309,18 @@ async def update_batch_import_transaction(
             detail=f"Batch-import transaction {transaction_id} was not found.",
         ) from None
 
+    audit_context = get_audit_request_context(request)
+    record_audit_event(
+        action="batch_import_review_update",
+        status="success",
+        user_id=current_user["id"],
+        target_type="batch_import_transaction",
+        target_id=str(transaction_id),
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={"category": category},
+    )
     return {"transaction": updated_transaction}
 
 
@@ -1197,6 +1330,7 @@ async def update_batch_import_transaction(
 )
 async def delete_batch_import_transaction(
     transaction_id: int,
+    request: Request,
     sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> None:
@@ -1221,6 +1355,19 @@ async def delete_batch_import_transaction(
             status_code=404,
             detail=f"Batch-import transaction {transaction_id} was not found.",
         )
+
+    audit_context = get_audit_request_context(request)
+    record_audit_event(
+        action="batch_import_review_delete",
+        status="success",
+        user_id=current_user["id"],
+        target_type="batch_import_transaction",
+        target_id=str(transaction_id),
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={"run_id": run_id},
+    )
 
 
 @app.get("/batch-imports/needs-review-merchants")

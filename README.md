@@ -35,6 +35,11 @@ hardening work.
   and issue [#3](https://github.com/henrybro64/personal_spending_tracker/issues/3)
 - Later MVP hardening order:
   [docs/mvp-roadmap.md](docs/mvp-roadmap.md)
+- Database migrations: `python -m backend.migrate` or
+  [scripts/migrate-db.sh](scripts/migrate-db.sh)
+- Backup/restore: [docs/backup-restore.md](docs/backup-restore.md)
+- Retention/privacy: [docs/data-lifecycle.md](docs/data-lifecycle.md)
+- Currency behavior: [docs/currency.md](docs/currency.md)
 - GitHub umbrella tracker for the later hardening lane:
   issue [#13](https://github.com/henrybro64/personal_spending_tracker/issues/13)
 - GitHub issue titles now use `[MVP First]`, `[Later Hardening]`, and

@@ -42,3 +42,4 @@ htmlcov/
 
 storage/*
 !storage/.gitkeep
+backups/

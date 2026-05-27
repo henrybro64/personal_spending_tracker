@@ -48,6 +48,24 @@ These should follow the MVP-stabilization work above.
    Treat this as a later hardening step after schema and currency behavior are
    better defined.
 
+## Hardening Implementation Notes
+
+The hardening lane is implemented on branch `feature-mvp-hardening-13`:
+
+- [#11](https://github.com/henrybro64/personal_spending_tracker/issues/11):
+  versioned SQL migrations in `backend/migrations/` applied by
+  `python -m backend.migrate` / `scripts/migrate-db.sh`
+- [#4](https://github.com/henrybro64/personal_spending_tracker/issues/4) and
+  [#12](https://github.com/henrybro64/personal_spending_tracker/issues/12):
+  dashboard/transactions currency labels plus `docs/currency.md`
+- [#37](https://github.com/henrybro64/personal_spending_tracker/issues/37):
+  `scripts/backup-spending-tracker.sh`, `scripts/restore-spending-tracker.sh`,
+  `docs/backup-restore.md`
+- [#38](https://github.com/henrybro64/personal_spending_tracker/issues/38):
+  retention env vars, `scripts/purge-expired-data.sh`, `docs/data-lifecycle.md`
+- [#2](https://github.com/henrybro64/personal_spending_tracker/issues/2):
+  per-user batch source dirs, expanded audit events, `DELETE /uploads/{id}`
+
 ## Notes
 
 - Issue [#4](https://github.com/henrybro64/personal_spending_tracker/issues/4)
