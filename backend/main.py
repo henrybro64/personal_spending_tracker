@@ -209,11 +209,19 @@ class DashboardMetrics(TypedDict):
     model_total_in_active_currency: float
 
 
+class DashboardTransaction(StoredTransaction):
+    original_amount: float
+    original_currency: str
+    display_amount: float
+    display_currency: DisplayCurrency
+    is_converted: bool
+
+
 class DashboardViewResponse(TypedDict):
     active_currency: DisplayCurrency
     summary: SummaryResponse
-    transactions: list[StoredTransaction]
-    sorted_transactions: list[StoredTransaction]
+    transactions: list[DashboardTransaction]
+    sorted_transactions: list[DashboardTransaction]
     merchant_breakdown: list[MerchantBreakdownItem]
     category_breakdown: list[CategoryBreakdownItem]
     date_breakdown: list[DateBreakdownItem]
@@ -389,8 +397,8 @@ def _convert_amount(
 
 
 def _sort_transactions(
-    transactions: list[StoredTransaction], sort_option: SortOption
-) -> list[StoredTransaction]:
+    transactions: list[DashboardTransaction], sort_option: SortOption
+) -> list[DashboardTransaction]:
     sorted_transactions = list(transactions)
     if sort_option == "amount_asc":
         sorted_transactions.sort(key=lambda item: item["amount"])
@@ -704,16 +712,26 @@ async def dashboard_view(
             category=transaction.get("category"),
         )
     ]
-    converted_transactions: list[StoredTransaction] = [
-        {
-            **transaction,
-            "amount": _convert_amount(
-                transaction["amount"], transaction.get("currency", "USD"), resolved_currency
-            ),
-            "currency": resolved_currency,
-        }
-        for transaction in all_transactions
-    ]
+    converted_transactions: list[DashboardTransaction] = []
+    for transaction in all_transactions:
+        original_currency = transaction.get("currency", "USD").upper()
+        converted_amount = _convert_amount(
+            transaction["amount"],
+            original_currency,
+            resolved_currency,
+        )
+        converted_transactions.append(
+            {
+                **transaction,
+                "amount": converted_amount,
+                "currency": resolved_currency,
+                "original_amount": transaction["amount"],
+                "original_currency": original_currency,
+                "display_amount": converted_amount,
+                "display_currency": resolved_currency,
+                "is_converted": original_currency != resolved_currency,
+            }
+        )
 
     normalized_search = search.strip().lower()
     base_filtered = []

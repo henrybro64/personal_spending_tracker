@@ -42,6 +42,12 @@ import {
 import { apiFetch, apiFetchJson, ApiError } from "./api";
 import { AuthPage, AuthPanel, SessionCard } from "./auth-card";
 import { useAuth } from "./auth-provider";
+import {
+  describeCurrency,
+  formatCurrencyAmount,
+  formatCurrencyTotals,
+  type CurrencyTotal,
+} from "./currency";
 import { useLocale } from "./locale-provider";
 import { translate, type MessageKey } from "./messages";
 
@@ -52,6 +58,11 @@ type Transaction = {
   amount: number;
   category: string;
   currency?: "USD" | "TWD";
+  original_amount?: number;
+  original_currency?: "USD" | "TWD";
+  display_amount?: number;
+  display_currency?: "USD" | "TWD";
+  is_converted?: boolean;
 };
 
 type UploadResponse = {
@@ -68,12 +79,20 @@ type SummaryResponse = {
   number_of_statements: number;
 };
 
+type RecentUploadCurrencyTotal = {
+  currency: "USD" | "TWD";
+  total_amount: number;
+  transaction_count: number;
+};
+
 type RecentUpload = {
   file_name: string;
   display_name: string;
   transaction_count: number;
   total_amount: number;
+  currency_totals: RecentUploadCurrencyTotal[];
   uploaded_at: string;
+  parse_status: string;
 };
 
 type RecentUploadsResponse = {
@@ -236,25 +255,9 @@ const emptySummary: SummaryResponse = {
   number_of_statements: 0,
 };
 
-const categoryPalette = [
-  "#6b7dd6",
-  "#2f8f95",
-  "#9a85d1",
-  "#5f95d6",
-  "#5ca87a",
-  "#b38c5a",
-  "#a776b8",
-];
-
-function dashboardCurrencySymbol(currencyCode: string): string {
-  return currencyCode.toUpperCase() === "TWD" ? "NT$" : "US$";
-}
+const categoryPalette = ["#6b7dd6", "#2f8f95", "#9a85d1", "#5f95d6", "#5ca87a", "#b38c5a", "#a776b8"];
 
 function createFormatters(intlLocale: string) {
-  const amountFormatter = new Intl.NumberFormat(intlLocale, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
   const countFormatter = new Intl.NumberFormat(intlLocale);
   const percentFormatter = new Intl.NumberFormat(intlLocale, {
     style: "percent",
@@ -279,9 +282,7 @@ function createFormatters(intlLocale: string) {
 
   return {
     formatCurrency(amount: number, currencyCode: string = "USD") {
-      const symbol = dashboardCurrencySymbol(currencyCode);
-      const formattedAmount = amountFormatter.format(Math.abs(amount));
-      return amount < 0 ? `-${symbol}${formattedAmount}` : `${symbol}${formattedAmount}`;
+      return formatCurrencyAmount(amount, currencyCode, intlLocale);
     },
     formatCount(value: number) {
       return countFormatter.format(value);
@@ -491,6 +492,10 @@ const useStyles = makeStyles({
     maxWidth: "760px",
     color: tokens.colorNeutralForeground2,
   },
+  currencyContextNote: {
+    maxWidth: "760px",
+    color: tokens.colorNeutralForeground2,
+  },
   reportTimeRangeRow: {
     display: "flex",
     flexDirection: "column",
@@ -694,6 +699,20 @@ const useStyles = makeStyles({
     gap: "8px",
     flexWrap: "wrap",
   },
+  historyStat: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  },
+  historyStatLabel: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: tokens.fontSizeBase100,
+    textTransform: "uppercase",
+    letterSpacing: "0.07em",
+  },
+  historyStatValue: {
+    fontWeight: tokens.fontWeightSemibold,
+  },
   filterSummary: {
     display: "flex",
     alignItems: "center",
@@ -739,6 +758,10 @@ const useStyles = makeStyles({
   metricHint: {
     color: "#605e5c",
   },
+  metricContext: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: tokens.fontSizeBase200,
+  },
   primaryVisualsGrid: {
     display: "grid",
     gridTemplateColumns:
@@ -775,6 +798,10 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: "4px",
+  },
+  cardContext: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: tokens.fontSizeBase200,
   },
   pieLayout: {
     display: "grid",
@@ -1069,6 +1096,15 @@ const useStyles = makeStyles({
     color: "#d13438",
     fontWeight: tokens.fontWeightSemibold,
   },
+  amountCell: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  },
+  amountMeta: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: tokens.fontSizeBase100,
+  },
   emptyState: {
     color: "#605e5c",
   },
@@ -1079,6 +1115,19 @@ async function fetchJson<T>(
   requestFailedFallback: string
 ): Promise<T> {
   return apiFetchJson<T>(path, requestFailedFallback);
+}
+
+function isRecentUploadMixedCurrency(upload: RecentUpload): boolean {
+  return upload.currency_totals.length > 1;
+}
+
+function toCurrencyTotals(
+  totals: RecentUploadCurrencyTotal[]
+): CurrencyTotal[] {
+  return totals.map((item) => ({
+    currency: item.currency,
+    total: item.total_amount,
+  }));
 }
 
 export default function HomePage() {
@@ -1135,6 +1184,7 @@ export default function HomePage() {
   const categoryPieBackground = buildPieChartBackground(categoryBreakdown);
   const merchantBarMaximum = merchantBreakdown[0]?.abs_total ?? 0;
   const activeCurrency = dashboardView?.active_currency ?? displayCurrency;
+  const activeCurrencyLabel = describeCurrency(activeCurrency);
   const visibleRowsCount = sortedTransactions.length;
   const metrics = dashboardView?.metrics;
   const currentStatementLabel =
@@ -1142,6 +1192,20 @@ export default function HomePage() {
     selectedFile?.name ||
     translate(locale, "noStatementSelected");
   const latestUpload = recentUploads[0];
+  const hasSortedTransactions = sortedTransactions.length > 0;
+
+  function formatUploadTotals(upload: RecentUpload) {
+    return formatCurrencyTotals(toCurrencyTotals(upload.currency_totals), intlLocale);
+  }
+
+  function uploadTotalsLabel(upload: RecentUpload) {
+    return translate(
+      locale,
+      isRecentUploadMixedCurrency(upload)
+        ? "recentUploadOriginalTotals"
+        : "recentUploadOriginalTotal"
+    );
+  }
 
   const metricCards: MetricCard[] = useMemo(
     () => [
@@ -1642,6 +1706,56 @@ export default function HomePage() {
             </div>
           </Card>
 
+          <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
+            <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
+              {translate(locale, "historyEyebrow")}
+            </div>
+            <Title2>{translate(locale, "recentStatementsTitle")}</Title2>
+            {isDashboardLoading && recentUploads.length === 0 ? (
+              <Body1 className={styles.emptyState}>
+                {translate(locale, "loadingHistoryLabel")}
+              </Body1>
+            ) : recentUploads.length > 0 ? (
+              <div className={styles.historyList}>
+                {recentUploads.map((upload) => (
+                  <div className={styles.historyItem} key={upload.file_name}>
+                    <div className={styles.historyTop}>
+                      <div className={styles.historyName}>{upload.display_name}</div>
+                      <div className={styles.historyMeta}>
+                        {fm.formatUploadDate(upload.uploaded_at)}
+                      </div>
+                    </div>
+                    <div className={styles.historyStats}>
+                      <div className={styles.historyStat}>
+                        <div className={styles.historyStatLabel}>
+                          {translate(locale, "recentUploadRowsLabel")}
+                        </div>
+                        <div className={styles.historyStatValue}>
+                          {fm.formatCount(upload.transaction_count)}{" "}
+                          {translate(locale, "historyRowsWord")}
+                        </div>
+                      </div>
+                      {upload.currency_totals.length > 0 ? (
+                        <div className={styles.historyStat}>
+                          <div className={styles.historyStatLabel}>
+                            {uploadTotalsLabel(upload)}
+                          </div>
+                          <div className={styles.historyStatValue}>
+                            {formatUploadTotals(upload)}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Body1 className={styles.emptyState}>
+                {translate(locale, "noUploadsYet")}
+              </Body1>
+            )}
+          </Card>
+
         </aside>
 
         <section className={styles.reportArea}>
@@ -1701,6 +1815,11 @@ export default function HomePage() {
                 <Body1 className={styles.reportLead}>
                   {translate(locale, "reportLeadBody")}
                 </Body1>
+                <Body1 className={styles.currencyContextNote}>
+                  {translate(locale, "dashboardConvertedTotalsNoteTemplate", {
+                    currency: activeCurrencyLabel,
+                  })}
+                </Body1>
               </div>
 
               <div className={styles.headerHighlights}>
@@ -1753,6 +1872,11 @@ export default function HomePage() {
                 <div className={styles.metricAccent} />
                 <div className={styles.metricLabel}>{metricCard.label}</div>
                 <div className={styles.metricValue}>{metricCard.value}</div>
+                <div className={styles.metricContext}>
+                  {translate(locale, "metricDisplayCurrencyHintTemplate", {
+                    currency: activeCurrencyLabel,
+                  })}
+                </div>
                 <Body1 className={styles.metricHint}>{metricCard.hint}</Body1>
               </div>
             ))}
@@ -1763,6 +1887,11 @@ export default function HomePage() {
               <div className={styles.cardHeader}>
                 <div className={styles.cardHeaderTitle}>
                   <Title2>{translate(locale, "merchantContributionTitle")}</Title2>
+                  <Body1 className={styles.cardContext}>
+                    {translate(locale, "chartDisplayCurrencyHintTemplate", {
+                      currency: activeCurrencyLabel,
+                    })}
+                  </Body1>
                 </div>
               </div>
 
@@ -1821,6 +1950,11 @@ export default function HomePage() {
               <div className={styles.cardHeader}>
                 <div className={styles.cardHeaderTitle}>
                   <Title2>{translate(locale, "spendingByCategoryTitle")}</Title2>
+                  <Body1 className={styles.cardContext}>
+                    {translate(locale, "chartDisplayCurrencyHintTemplate", {
+                      currency: activeCurrencyLabel,
+                    })}
+                  </Body1>
                 </div>
                 <Badge appearance="outline" color="warning">
                   {translate(locale, "badgePositiveOnly")}
@@ -1879,6 +2013,110 @@ export default function HomePage() {
             </Card>
 
           </div>
+
+          <Card className={mergeClasses(styles.panel, styles.tableCard)}>
+            <div className={styles.tableHeader}>
+              <div className={styles.cardHeaderTitle}>
+                <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
+                  {translate(locale, "detailMatrixEyebrow")}
+                </div>
+                <Title2>{translate(locale, "transactionsTitle")}</Title2>
+                <Body1 className={styles.cardContext}>
+                  {translate(locale, "dashboardTableCurrencyNoteTemplate", {
+                    currency: activeCurrencyLabel,
+                  })}
+                </Body1>
+              </div>
+              <div className={styles.tableTools}>
+                <Badge appearance="outline" color="brand">
+                  {fm.formatCount(visibleRowsCount)} {translate(locale, "visibleSuffix")}
+                </Badge>
+              </div>
+            </div>
+
+            {hasSortedTransactions ? (
+              <div className={styles.tableWrap}>
+                <Table aria-label={translate(locale, "tableAriaLabel")} className={styles.dataTable}>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHeaderCell className={styles.tableHeaderCell}>
+                        {translate(locale, "colDate")}
+                      </TableHeaderCell>
+                      <TableHeaderCell className={styles.tableHeaderCell}>
+                        {translate(locale, "colMerchant")}
+                      </TableHeaderCell>
+                      <TableHeaderCell className={styles.tableHeaderCell}>
+                        {translate(locale, "colCategory")}
+                      </TableHeaderCell>
+                      <TableHeaderCell className={styles.tableHeaderCell}>
+                        {translate(locale, "colAmount")}
+                      </TableHeaderCell>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedTransactions.map((transaction, index) => (
+                      <TableRow
+                        className={index % 2 === 1 ? styles.rowAlt : undefined}
+                        key={`${transaction.date}-${transaction.merchant}-${index}`}
+                      >
+                        <TableCell className={styles.tableCell}>
+                          {fm.formatTransactionDate(transaction.date, true)}
+                        </TableCell>
+                        <TableCell className={mergeClasses(styles.tableCell, styles.merchantCell)}>
+                          {transaction.merchant}
+                        </TableCell>
+                        <TableCell className={styles.tableCell}>
+                          {transaction.category}
+                        </TableCell>
+                        <TableCell className={styles.tableCell}>
+                          <div className={styles.amountCell}>
+                            <div
+                              className={
+                                transaction.amount < 0
+                                  ? styles.amountNegative
+                                  : styles.amountPositive
+                              }
+                            >
+                              {fm.formatCurrency(
+                                transaction.amount,
+                                transaction.currency ?? activeCurrency
+                              )}
+                            </div>
+                            <div className={styles.amountMeta}>
+                              {transaction.is_converted &&
+                              transaction.original_amount !== undefined &&
+                              transaction.original_currency ? (
+                                translate(locale, "dashboardConvertedFromTemplate", {
+                                  amount: fm.formatCurrency(
+                                    transaction.original_amount,
+                                    transaction.original_currency
+                                  ),
+                                })
+                              ) : (
+                                translate(locale, "dashboardOriginalCurrencyTemplate", {
+                                  currency: describeCurrency(
+                                    transaction.original_currency ??
+                                      transaction.currency ??
+                                      activeCurrency
+                                  ),
+                                })
+                              )}
+                            </div>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : (
+              <Body1 className={styles.emptyState}>
+                {recentUploads.length > 0 || summary.number_of_statements > 0
+                  ? translate(locale, "emptySlicerNoRows")
+                  : translate(locale, "emptyNoUpload")}
+              </Body1>
+            )}
+          </Card>
 
         </section>
       </div>

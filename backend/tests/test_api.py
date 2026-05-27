@@ -145,6 +145,84 @@ def test_manual_transaction_rejects_zero_amount(client: TestClient) -> None:
     assert response.json() == {"detail": "Amount must be non-zero."}
 
 
+def test_dashboard_view_preserves_original_currency_and_recent_uploads_group_totals(
+    client: TestClient,
+    database_url: str,
+) -> None:
+    from backend.database import create_statement_upload, insert_transactions
+
+    user = _register_user(client)["user"]
+    upload = create_statement_upload(
+        user_id=user["id"],
+        original_file_name="Mixed Statement.pdf",
+        stored_file_name="mixed-statement.pdf",
+        file_fingerprint_sha256="mixed-sha256",
+        parse_status="parsed",
+        currency="USD",
+        database_url=database_url,
+    )
+    insert_transactions(
+        [
+            {
+                "date": "2025-04-21",
+                "merchant": "OPENAI API",
+                "amount": 20.0,
+                "category": "Digital Services",
+                "currency": "USD",
+            },
+            {
+                "date": "2025-04-20",
+                "merchant": "UBER TRIP",
+                "amount": 605.0,
+                "category": "Transport",
+                "currency": "TWD",
+            },
+        ],
+        user_id=user["id"],
+        file_name=upload["file_name"],
+        original_file_name=upload["display_name"],
+        statement_upload_id=upload["id"],
+        database_url=database_url,
+    )
+
+    dashboard = client.get("/dashboard/view?currency=TWD&limit=10")
+    assert dashboard.status_code == 200
+
+    dashboard_rows = dashboard.json()["sorted_transactions"]
+    openai_row = next(
+        row for row in dashboard_rows if row["merchant"] == "OPENAI API"
+    )
+    assert openai_row["currency"] == "TWD"
+    assert openai_row["display_currency"] == "TWD"
+    assert openai_row["amount"] == 640.0
+    assert openai_row["original_currency"] == "USD"
+    assert openai_row["original_amount"] == 20.0
+    assert openai_row["is_converted"] is True
+
+    uber_row = next(row for row in dashboard_rows if row["merchant"] == "UBER TRIP")
+    assert uber_row["currency"] == "TWD"
+    assert uber_row["display_currency"] == "TWD"
+    assert uber_row["amount"] == 605.0
+    assert uber_row["original_currency"] == "TWD"
+    assert uber_row["original_amount"] == 605.0
+    assert uber_row["is_converted"] is False
+
+    uploads = client.get("/uploads/recent?limit=5")
+    assert uploads.status_code == 200
+    upload_payload = uploads.json()["uploads"][0]
+    currency_totals = {
+        item["currency"]: {
+            "total_amount": item["total_amount"],
+            "transaction_count": item["transaction_count"],
+        }
+        for item in upload_payload["currency_totals"]
+    }
+    assert currency_totals == {
+        "USD": {"total_amount": 20.0, "transaction_count": 1},
+        "TWD": {"total_amount": 605.0, "transaction_count": 1},
+    }
+
+
 def test_first_registered_user_claims_legacy_single_user_rows(
     client: TestClient,
     database_url: str,

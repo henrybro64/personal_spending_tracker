@@ -16,11 +16,18 @@ class TransactionsSummary(TypedDict):
     number_of_statements: int
 
 
+class RecentUploadCurrencyTotal(TypedDict):
+    currency: str
+    total_amount: float
+    transaction_count: int
+
+
 class RecentUpload(TypedDict):
     file_name: str
     display_name: str
     transaction_count: int
     total_amount: float
+    currency_totals: list[RecentUploadCurrencyTotal]
     uploaded_at: str
     parse_status: str
 
@@ -1128,6 +1135,7 @@ def get_recent_uploads(
             cursor.execute(
                 """
                 SELECT
+                    statement_uploads.id,
                     statement_uploads.stored_file_name,
                     statement_uploads.original_file_name,
                     COUNT(transactions.id) AS transaction_count,
@@ -1146,16 +1154,51 @@ def get_recent_uploads(
             )
             rows = cursor.fetchall()
 
+            upload_ids = [int(row[0]) for row in rows]
+            currency_totals_by_upload: dict[int, list[RecentUploadCurrencyTotal]] = {
+                upload_id: [] for upload_id in upload_ids
+            }
+            if upload_ids:
+                cursor.execute(
+                    """
+                    SELECT
+                        statement_upload_id,
+                        COALESCE(currency, 'USD') AS currency,
+                        COALESCE(SUM(amount), 0) AS total_amount,
+                        COUNT(*) AS transaction_count
+                    FROM transactions
+                    WHERE statement_upload_id = ANY(%s)
+                    GROUP BY statement_upload_id, COALESCE(currency, 'USD')
+                    ORDER BY statement_upload_id ASC, currency ASC
+                    """,
+                    (upload_ids,),
+                )
+                for (
+                    statement_upload_id,
+                    currency,
+                    total_amount,
+                    transaction_count,
+                ) in cursor.fetchall():
+                    currency_totals_by_upload[int(statement_upload_id)].append(
+                        {
+                            "currency": str(currency),
+                            "total_amount": float(total_amount),
+                            "transaction_count": int(transaction_count),
+                        }
+                    )
+
     return [
         {
             "file_name": str(file_name),
             "display_name": str(display_name),
             "transaction_count": int(transaction_count),
             "total_amount": float(total_amount),
+            "currency_totals": currency_totals_by_upload.get(int(upload_id), []),
             "uploaded_at": _iso_datetime(uploaded_at),
             "parse_status": str(parse_status),
         }
         for (
+            upload_id,
             file_name,
             display_name,
             transaction_count,

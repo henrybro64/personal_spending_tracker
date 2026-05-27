@@ -126,6 +126,9 @@ const en = {
   loadingHistoryLabel: "Loading history",
   historyRowsWord: "rows",
   noUploadsYet: "No uploaded statements yet.",
+  recentUploadRowsLabel: "Rows",
+  recentUploadOriginalTotal: "Original total",
+  recentUploadOriginalTotals: "Original totals",
 
   appTitle: "Personal Spending Tracker",
   badgeCurrentFilePrefix: "Current file:",
@@ -133,6 +136,8 @@ const en = {
   spendingOverviewTitle: "Spending Overview",
   reportLeadBody:
     "This canvas is now structured more like a BI report: slicers on the side, KPI tiles across the top, focused visuals in the body, and a denser detail matrix underneath.",
+  dashboardConvertedTotalsNoteTemplate:
+    "Dashboard cards and charts use {{currency}} as the display currency. Mixed USD/TWD source data is converted here for comparison.",
   storedModelLabel: "Stored model",
   lastRefreshLabel: "Last refresh",
   waiting: "Waiting",
@@ -153,10 +158,12 @@ const en = {
   metricRowsHintTemplate: "{{pct}} of this upload visible",
   metricModelTotal: "Model total",
   metricModelTotalHintTemplate: "{{n}} statements stored",
+  metricDisplayCurrencyHintTemplate: "Display currency: {{currency}}",
 
   merchantContributionTitle: "Merchant contribution",
   badgeCrossFilter: "Click a merchant to cross-filter",
   emptyMerchantVisual: "Upload a statement to populate the merchant visual.",
+  chartDisplayCurrencyHintTemplate: "Converted totals in {{currency}}",
 
   spendingByCategoryTitle: "Spending by category",
   badgePositiveOnly: "Positive amounts only",
@@ -190,6 +197,21 @@ const en = {
 
   detailMatrixEyebrow: "Detail Matrix",
   transactionsTitle: "Transactions",
+  dashboardTableCurrencyNoteTemplate:
+    "Rows are shown in {{currency}} for dashboard comparison. Converted rows keep the original statement amount underneath.",
+  dashboardConvertedFromTemplate: "Original: {{amount}}",
+  dashboardOriginalCurrencyTemplate: "Original statement currency: {{currency}}",
+  transactionsCurrencyNote:
+    "Row amounts use the original statement currency. Mixed-currency totals stay grouped by original currency on this page.",
+  transactionsRecordsSuffix: "records",
+  transactionsNetTotal: "Net total",
+  transactionsNetTotalByCurrency: "Net total by original currency",
+  transactionsSubtotal: "Subtotal",
+  transactionsSubtotalByCurrency: "Subtotal by original currency",
+  transactionsOriginalAmount: "Original amount",
+  transactionsOriginalCurrencyTagTemplate: "Original statement currency: {{currency}}",
+  transactionsYear: "Year",
+  transactionsMonth: "Month",
   visibleSuffix: "visible",
   storedFilePrefix: "Stored file:",
   tableAriaLabel: "Parsed transactions",
@@ -351,6 +373,9 @@ const zhHant: Record<keyof typeof en, string> = {
   loadingHistoryLabel: "載入紀錄中",
   historyRowsWord: "筆",
   noUploadsYet: "尚無已上傳的對帳單。",
+  recentUploadRowsLabel: "筆數",
+  recentUploadOriginalTotal: "原始總額",
+  recentUploadOriginalTotals: "原始總額（依幣別）",
 
   appTitle: "個人支出追蹤",
   badgeCurrentFilePrefix: "目前檔案：",
@@ -358,6 +383,8 @@ const zhHant: Record<keyof typeof en, string> = {
   spendingOverviewTitle: "支出總覽",
   reportLeadBody:
     "此畫布結構更接近 BI 報表：側邊為篩選、上方為 KPI 磚、主視覺集中於內文，下方為較細的交易明細表。",
+  dashboardConvertedTotalsNoteTemplate:
+    "儀表板卡片與圖表會以 {{currency}} 作為顯示幣別。若來源資料混合 USD 與 TWD，這裡會先轉為顯示幣別再比較。",
   storedModelLabel: "已儲存模型",
   lastRefreshLabel: "上次重新整理",
   waiting: "等待中",
@@ -378,10 +405,12 @@ const zhHant: Record<keyof typeof en, string> = {
   metricRowsHintTemplate: "佔此上傳的 {{pct}}",
   metricModelTotal: "模型總計",
   metricModelTotalHintTemplate: "已儲存 {{n}} 份對帳單",
+  metricDisplayCurrencyHintTemplate: "顯示幣別：{{currency}}",
 
   merchantContributionTitle: "商家貢獻度",
   badgeCrossFilter: "點選商家以交叉篩選",
   emptyMerchantVisual: "請上傳對帳單以填入商家視覺效果。",
+  chartDisplayCurrencyHintTemplate: "已轉換為 {{currency}} 顯示",
 
   spendingByCategoryTitle: "依類別支出",
   badgePositiveOnly: "僅正金額",
@@ -414,6 +443,21 @@ const zhHant: Record<keyof typeof en, string> = {
 
   detailMatrixEyebrow: "明細表",
   transactionsTitle: "交易",
+  dashboardTableCurrencyNoteTemplate:
+    "此表會以 {{currency}} 顯示，方便在儀表板比較。若該列有轉換，下方會保留原始帳單金額。",
+  dashboardConvertedFromTemplate: "原始：{{amount}}",
+  dashboardOriginalCurrencyTemplate: "原始帳單幣別：{{currency}}",
+  transactionsCurrencyNote:
+    "下方每筆金額都使用原始帳單幣別。若目前檢視混合多種幣別，本頁總額會依原始幣別分組，不會在此頁轉換。",
+  transactionsRecordsSuffix: "筆",
+  transactionsNetTotal: "淨額",
+  transactionsNetTotalByCurrency: "依原始幣別分組的淨額",
+  transactionsSubtotal: "小計",
+  transactionsSubtotalByCurrency: "依原始幣別分組的小計",
+  transactionsOriginalAmount: "原始金額",
+  transactionsOriginalCurrencyTagTemplate: "原始帳單幣別：{{currency}}",
+  transactionsYear: "年份",
+  transactionsMonth: "月份",
   visibleSuffix: "筆可見",
   storedFilePrefix: "已儲存檔案：",
   tableAriaLabel: "已解析交易",
