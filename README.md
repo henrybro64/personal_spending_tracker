@@ -22,6 +22,25 @@ storage/             Uploaded PDF files
 k8s/                 Single-node k3s manifests and deployment guide
 ```
 
+## Roadmap
+
+Core MVP stabilization work is tracked separately from later correctness and
+hardening work.
+
+- Current MVP-first sequence: issue
+  [#6](https://github.com/henrybro64/personal_spending_tracker/issues/6),
+  issue [#7](https://github.com/henrybro64/personal_spending_tracker/issues/7),
+  issue [#10](https://github.com/henrybro64/personal_spending_tracker/issues/10),
+  issue [#5](https://github.com/henrybro64/personal_spending_tracker/issues/5),
+  and issue [#3](https://github.com/henrybro64/personal_spending_tracker/issues/3)
+- Later MVP hardening order:
+  [docs/mvp-roadmap.md](docs/mvp-roadmap.md)
+- GitHub umbrella tracker for the later hardening lane:
+  issue [#13](https://github.com/henrybro64/personal_spending_tracker/issues/13)
+- GitHub issue titles now use `[MVP First]`, `[Later Hardening]`, and
+  `[Roadmap]` prefixes so the backlog lanes are visible without relying on
+  labels or milestones
+
 ## Prerequisites on macOS
 
 Install Homebrew if you do not already have it:
