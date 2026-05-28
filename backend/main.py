@@ -401,13 +401,21 @@ def _resolve_display_currency(currency_code: str) -> DisplayCurrency:
 
 
 def _default_batch_pdf_source_dir_for_user(user_id: int) -> Path:
-    user_dir = default_pdf_source_dir() / f"user-{user_id}"
+    base_dir = default_pdf_source_dir()
+    if os.getenv("BATCH_PDF_SOURCE_DIR"):
+        base_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir
+    user_dir = base_dir / f"user-{user_id}"
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
 
 def _default_batch_text_source_dir_for_user(user_id: int) -> Path:
-    user_dir = default_text_source_dir() / f"user-{user_id}"
+    base_dir = default_text_source_dir()
+    if os.getenv("BATCH_TEXT_SOURCE_DIR"):
+        base_dir.mkdir(parents=True, exist_ok=True)
+        return base_dir
+    user_dir = base_dir / f"user-{user_id}"
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
@@ -1060,19 +1068,19 @@ async def run_batch_import(
         "batch-imports/run started user_id=%s",
         current_user["id"],
     )
-    store = _get_batch_import_store(
-        current_user["id"],
-        request_payload.sqlite_output_path,
-    )
-    pdf_source_dir = resolve_allowed_directory(
-        request_payload.pdf_source_dir,
-        default=_default_batch_pdf_source_dir_for_user(current_user["id"]),
-    )
-    text_source_dir = resolve_allowed_directory(
-        request_payload.text_source_dir,
-        default=_default_batch_text_source_dir_for_user(current_user["id"]),
-    )
     try:
+        store = _get_batch_import_store(
+            current_user["id"],
+            request_payload.sqlite_output_path,
+        )
+        pdf_source_dir = resolve_allowed_directory(
+            request_payload.pdf_source_dir,
+            default=_default_batch_pdf_source_dir_for_user(current_user["id"]),
+        )
+        text_source_dir = resolve_allowed_directory(
+            request_payload.text_source_dir,
+            default=_default_batch_text_source_dir_for_user(current_user["id"]),
+        )
         importer = StatementImporter(
             pdf_source_dir=str(pdf_source_dir),
             text_source_dir=str(text_source_dir),

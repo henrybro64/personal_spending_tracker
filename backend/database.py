@@ -164,6 +164,80 @@ def maybe_claim_legacy_data_for_first_user(
             )
             claimed_transaction_count = cursor.rowcount
 
+            # Backfill missing statement_upload rows for legacy single-user data that
+            # predates statement_upload_id, so claimed upload counts stay accurate.
+            cursor.execute(
+                """
+                WITH legacy_groups AS (
+                    SELECT
+                        file_name,
+                        COALESCE(MAX(original_file_name), file_name) AS display_name,
+                        COALESCE(
+                            MAX(
+                                CASE
+                                    WHEN LENGTH(COALESCE(file_fingerprint, '')) = 64
+                                        THEN file_fingerprint
+                                    ELSE NULL
+                                END
+                            ),
+                            ''
+                        ) AS fingerprint_sha256,
+                        COALESCE(MAX(currency), 'USD') AS currency,
+                        MAX(uploaded_at) AS uploaded_at
+                    FROM transactions
+                    WHERE user_id = %s
+                      AND statement_upload_id IS NULL
+                      AND file_name <> 'manual-entry'
+                    GROUP BY file_name
+                )
+                INSERT INTO statement_uploads (
+                    user_id,
+                    original_file_name,
+                    stored_file_name,
+                    file_fingerprint_sha256,
+                    currency,
+                    parse_status,
+                    uploaded_at
+                )
+                SELECT
+                    %s,
+                    legacy_groups.display_name,
+                    legacy_groups.file_name,
+                    CASE
+                        WHEN legacy_groups.fingerprint_sha256 <> ''
+                            THEN legacy_groups.fingerprint_sha256
+                        ELSE md5(
+                            'legacy:' || %s::text || ':' || legacy_groups.file_name
+                        ) || md5(
+                            'legacy-fallback:' || %s::text || ':' || legacy_groups.file_name
+                        )
+                    END,
+                    legacy_groups.currency,
+                    'parsed',
+                    legacy_groups.uploaded_at
+                FROM legacy_groups
+                LEFT JOIN statement_uploads
+                    ON statement_uploads.user_id = %s
+                   AND statement_uploads.stored_file_name = legacy_groups.file_name
+                WHERE statement_uploads.id IS NULL
+                RETURNING id, stored_file_name
+                """,
+                (user_id, user_id, user_id, user_id, user_id),
+            )
+            created_statement_upload_rows = cursor.fetchall()
+            for upload_id, file_name in created_statement_upload_rows:
+                cursor.execute(
+                    """
+                    UPDATE transactions
+                    SET statement_upload_id = %s
+                    WHERE user_id = %s
+                      AND statement_upload_id IS NULL
+                      AND file_name = %s
+                    """,
+                    (int(upload_id), user_id, str(file_name)),
+                )
+            created_statement_count = len(created_statement_upload_rows)
+
             cursor.execute(
                 """
                 UPDATE statement_uploads
@@ -173,7 +247,7 @@ def maybe_claim_legacy_data_for_first_user(
                 """,
                 (user_id,),
             )
-            claimed_statement_count = cursor.rowcount
+            claimed_statement_count = created_statement_count + cursor.rowcount
         connection.commit()
 
     return {
