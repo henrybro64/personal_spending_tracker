@@ -77,7 +77,7 @@ run_k3s_backup() {
   uploads_archive="$backup_dir/uploads.tar.gz"
 
   "${kubectl_cmd[@]}" -n "$NS" exec "$pod" -c backend -- \
-    pg_dump "$DATABASE_URL" --format=plain --no-owner --no-privileges \
+    sh -c 'pg_dump "$DATABASE_URL" --format=plain --no-owner --no-privileges' \
     >"$postgres_file"
   "${kubectl_cmd[@]}" -n "$NS" exec "$pod" -c backend -- \
     sh -c 'cd "${UPLOAD_DIR:-/app/uploads}" && tar -czf - .' >"$uploads_archive"

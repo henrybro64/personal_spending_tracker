@@ -85,3 +85,17 @@ def test_migrations_apply_on_empty_database(database_url: str) -> None:
         "002_backfill_statement_uploads",
         "003_harden_user_foreign_keys",
     ]
+
+
+def test_summary_rejects_invalid_display_currency(client: TestClient) -> None:
+    _register_user(client)
+    response = client.get("/summary?currency=TDW")
+    assert response.status_code == 400
+    assert "Invalid display currency" in response.json()["detail"]
+
+
+def test_dashboard_rejects_invalid_display_currency(client: TestClient) -> None:
+    _register_user(client)
+    response = client.get("/dashboard/view?currency=NTD")
+    assert response.status_code == 400
+    assert "Invalid display currency" in response.json()["detail"]

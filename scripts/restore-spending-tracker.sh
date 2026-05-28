@@ -86,11 +86,11 @@ restore_k3s() {
   pod="$("${kubectl_cmd[@]}" -n "$NS" get pods -l app.kubernetes.io/name=backend \
     -o jsonpath='{.items[0].metadata.name}')"
   "${kubectl_cmd[@]}" -n "$NS" exec -i "$pod" -c backend -- \
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <"$postgres_dump"
+    sh -c 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1' <"$postgres_dump"
   "${kubectl_cmd[@]}" -n "$NS" exec -i "$pod" -c backend -- \
     sh -c 'rm -rf "${UPLOAD_DIR:-/app/uploads}"/* && mkdir -p "${UPLOAD_DIR:-/app/uploads}"'
   "${kubectl_cmd[@]}" -n "$NS" exec -i "$pod" -c backend -- \
-    tar -xzf - -C "${UPLOAD_DIR:-/app/uploads}" <"$uploads_archive"
+    sh -c 'tar -xzf - -C "${UPLOAD_DIR:-/app/uploads}"' <"$uploads_archive"
 }
 
 confirm

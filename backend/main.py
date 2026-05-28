@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from shutil import copyfileobj
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 from uuid import uuid4
 
 # Repo root on sys.path so `from backend.*` works when running
@@ -99,7 +99,6 @@ from backend.currency import (  # noqa: E402
     DisplayCurrency,
     convert_amount,
     exchange_rate_metadata,
-    normalize_currency_code,
 )
 from backend.parser import Transaction, parse_transactions  # noqa: E402
 from backend.pdf_utils import (  # noqa: E402
@@ -388,9 +387,9 @@ def _resolve_sort_option(sort_key: str) -> SortOption:
 
 
 def _resolve_display_currency(currency_code: str) -> DisplayCurrency:
-    normalized_code = normalize_currency_code(currency_code)
-    if normalized_code in VALID_DISPLAY_CURRENCIES:
-        return normalized_code
+    requested_code = currency_code.strip().upper()
+    if requested_code in VALID_DISPLAY_CURRENCIES:
+        return cast(DisplayCurrency, requested_code)
     raise HTTPException(
         status_code=400,
         detail=(
