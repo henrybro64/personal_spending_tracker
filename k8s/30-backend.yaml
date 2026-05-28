@@ -51,6 +51,38 @@ spec:
                 configMapKeyRef:
                   name: spending-tracker-config
                   key: DATABASE_PORT
+        - name: migrate-database
+          image: ${BACKEND_IMAGE}
+          imagePullPolicy: ${APP_IMAGE_PULL_POLICY}
+          command: ["python", "-m", "backend.migrate"]
+          env:
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: DATABASE_HOST
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: DATABASE_NAME
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: DATABASE_PORT
+            - name: DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: DATABASE_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spending-tracker-secrets
+                  key: DATABASE_PASSWORD
+            - name: DATABASE_URL
+              value: postgresql://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)
       containers:
         - name: backend
           image: ${BACKEND_IMAGE}
@@ -111,6 +143,21 @@ spec:
                 configMapKeyRef:
                   name: spending-tracker-config
                   key: BATCH_TEXT_SOURCE_DIR
+            - name: USD_TWD_EXCHANGE_RATE
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: USD_TWD_EXCHANGE_RATE
+            - name: AUDIT_LOG_RETENTION_DAYS
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: AUDIT_LOG_RETENTION_DAYS
+            - name: STATEMENT_RETENTION_DAYS
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: STATEMENT_RETENTION_DAYS
           volumeMounts:
             - name: uploads-data
               mountPath: ${UPLOAD_DIR}

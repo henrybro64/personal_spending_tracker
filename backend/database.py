@@ -1,6 +1,5 @@
 import os
 from datetime import date, datetime, timedelta
-from hashlib import sha256
 from typing import Any, Literal, TypedDict
 
 import psycopg
@@ -16,11 +15,18 @@ class TransactionsSummary(TypedDict):
     number_of_statements: int
 
 
+class RecentUploadCurrencyTotal(TypedDict):
+    currency: str
+    total_amount: float
+    transaction_count: int
+
+
 class RecentUpload(TypedDict):
     file_name: str
     display_name: str
     transaction_count: int
     total_amount: float
+    currency_totals: list[RecentUploadCurrencyTotal]
     uploaded_at: str
     parse_status: str
 
@@ -87,294 +93,16 @@ def get_database_url() -> str:
     return database_url
 
 
+def _resolve_database_url(database_url: str | None = None) -> str:
+    return database_url or get_database_url()
+
+
 def init_db(database_url: str | None = None) -> str:
-    resolved_database_url = database_url or get_database_url()
+    from backend.migrate import migrate_database
 
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            _apply_schema(cursor)
-        connection.commit()
-
+    resolved_database_url = _resolve_database_url(database_url)
+    migrate_database(resolved_database_url)
     return resolved_database_url
-
-
-def _apply_schema(cursor: psycopg.Cursor[Any]) -> None:
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id BIGSERIAL PRIMARY KEY,
-            email TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            display_name TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            last_login_at TIMESTAMPTZ
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_sessions (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            token_hash TEXT NOT NULL UNIQUE,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            expires_at TIMESTAMPTZ NOT NULL,
-            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            revoked_at TIMESTAMPTZ
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS statement_uploads (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
-            original_file_name TEXT NOT NULL,
-            stored_file_name TEXT NOT NULL,
-            file_fingerprint_sha256 TEXT NOT NULL,
-            bank_name TEXT,
-            statement_period_start TEXT,
-            statement_period_end TEXT,
-            currency TEXT,
-            parse_status TEXT NOT NULL,
-            parse_reason TEXT,
-            parse_error TEXT,
-            uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS audit_logs (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
-            action TEXT NOT NULL,
-            target_type TEXT,
-            target_id TEXT,
-            status TEXT NOT NULL,
-            request_id TEXT,
-            ip_address TEXT,
-            user_agent TEXT,
-            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-            occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS transactions (
-            id BIGSERIAL PRIMARY KEY,
-            date TEXT NOT NULL,
-            merchant TEXT NOT NULL,
-            amount NUMERIC(12, 2) NOT NULL,
-            file_name TEXT NOT NULL,
-            original_file_name TEXT
-        )
-        """
-    )
-    cursor.execute(
-        """
-        ALTER TABLE transactions
-        ALTER COLUMN date TYPE TEXT
-        """
-    )
-    cursor.execute(
-        """
-        ALTER TABLE transactions
-        ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ
-        NOT NULL DEFAULT NOW()
-        """
-    )
-    cursor.execute(
-        """
-        ALTER TABLE transactions
-        ADD COLUMN IF NOT EXISTS original_file_name TEXT
-        """
-    )
-    cursor.execute(
-        """
-        ALTER TABLE transactions
-        ADD COLUMN IF NOT EXISTS category TEXT
-        """
-    )
-    cursor.execute(
-        """
-        ALTER TABLE transactions
-        ADD COLUMN IF NOT EXISTS file_fingerprint TEXT
-        """
-    )
-    cursor.execute(
-        """
-        ALTER TABLE transactions
-        ADD COLUMN IF NOT EXISTS payment_method TEXT
-        """
-    )
-    cursor.execute(
-        """
-        ALTER TABLE transactions
-        ADD COLUMN IF NOT EXISTS currency TEXT
-        NOT NULL DEFAULT 'USD'
-        """
-    )
-    cursor.execute(
-        """
-        ALTER TABLE transactions
-        ADD COLUMN IF NOT EXISTS user_id BIGINT
-        """
-    )
-    cursor.execute(
-        """
-        ALTER TABLE transactions
-        ADD COLUMN IF NOT EXISTS statement_upload_id BIGINT
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_transactions_file_fingerprint
-        ON transactions (file_fingerprint)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_transactions_user_uploaded_at
-        ON transactions (user_id, uploaded_at DESC, id DESC)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_transactions_user_date
-        ON transactions (user_id, date)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_transactions_statement_upload
-        ON transactions (statement_upload_id)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_statement_uploads_user_uploaded_at
-        ON statement_uploads (user_id, uploaded_at DESC, id DESC)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_statement_uploads_user_fingerprint
-        ON statement_uploads (user_id, file_fingerprint_sha256)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash
-        ON user_sessions (token_hash)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_audit_logs_user_occurred_at
-        ON audit_logs (user_id, occurred_at DESC, id DESC)
-        """
-    )
-    _backfill_statement_uploads(cursor)
-
-
-def _backfill_statement_uploads(cursor: psycopg.Cursor[Any]) -> None:
-    cursor.execute(
-        """
-        SELECT
-            user_id,
-            file_name,
-            COALESCE(MAX(original_file_name), file_name) AS display_name,
-            COALESCE(
-                MAX(
-                    CASE
-                        WHEN LENGTH(COALESCE(file_fingerprint, '')) = 64
-                            THEN file_fingerprint
-                        ELSE NULL
-                    END
-                ),
-                ''
-            ) AS fingerprint_sha256,
-            COALESCE(MAX(currency), 'USD') AS currency,
-            MAX(uploaded_at) AS uploaded_at
-        FROM transactions
-        WHERE statement_upload_id IS NULL
-          AND file_name <> 'manual-entry'
-        GROUP BY user_id, file_name
-        ORDER BY MAX(uploaded_at) ASC, file_name ASC
-        """
-    )
-    legacy_groups = cursor.fetchall()
-
-    for (
-        user_id,
-        file_name,
-        display_name,
-        fingerprint_sha256,
-        currency,
-        uploaded_at,
-    ) in legacy_groups:
-        cursor.execute(
-            """
-            SELECT id
-            FROM statement_uploads
-            WHERE stored_file_name = %s
-              AND user_id IS NOT DISTINCT FROM %s
-            ORDER BY id ASC
-            LIMIT 1
-            """,
-            (file_name, user_id),
-        )
-        existing_row = cursor.fetchone()
-
-        if existing_row:
-            upload_id = int(existing_row[0])
-        else:
-            resolved_fingerprint = (
-                str(fingerprint_sha256)
-                if fingerprint_sha256
-                else sha256(
-                    f"legacy:{user_id or 'unassigned'}:{file_name}".encode("utf-8")
-                ).hexdigest()
-            )
-            cursor.execute(
-                """
-                INSERT INTO statement_uploads (
-                    user_id,
-                    original_file_name,
-                    stored_file_name,
-                    file_fingerprint_sha256,
-                    currency,
-                    parse_status,
-                    uploaded_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    user_id,
-                    display_name,
-                    file_name,
-                    resolved_fingerprint,
-                    currency,
-                    "parsed",
-                    uploaded_at,
-                ),
-            )
-            upload_id = int(cursor.fetchone()[0])
-
-        cursor.execute(
-            """
-            UPDATE transactions
-            SET statement_upload_id = %s
-            WHERE statement_upload_id IS NULL
-              AND file_name = %s
-              AND user_id IS NOT DISTINCT FROM %s
-            """,
-            (upload_id, file_name, user_id),
-        )
 
 
 def create_user(
@@ -383,7 +111,7 @@ def create_user(
     display_name: str,
     database_url: str | None = None,
 ) -> UserRecord:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
     normalized_email = email.strip().lower()
     normalized_display_name = display_name.strip()
 
@@ -412,7 +140,7 @@ def maybe_claim_legacy_data_for_first_user(
     user_id: int,
     database_url: str | None = None,
 ) -> dict[str, int]:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -436,6 +164,80 @@ def maybe_claim_legacy_data_for_first_user(
             )
             claimed_transaction_count = cursor.rowcount
 
+            # Backfill missing statement_upload rows for legacy single-user data that
+            # predates statement_upload_id, so claimed upload counts stay accurate.
+            cursor.execute(
+                """
+                WITH legacy_groups AS (
+                    SELECT
+                        file_name,
+                        COALESCE(MAX(original_file_name), file_name) AS display_name,
+                        COALESCE(
+                            MAX(
+                                CASE
+                                    WHEN LENGTH(COALESCE(file_fingerprint, '')) = 64
+                                        THEN file_fingerprint
+                                    ELSE NULL
+                                END
+                            ),
+                            ''
+                        ) AS fingerprint_sha256,
+                        COALESCE(MAX(currency), 'USD') AS currency,
+                        MAX(uploaded_at) AS uploaded_at
+                    FROM transactions
+                    WHERE user_id = %s
+                      AND statement_upload_id IS NULL
+                      AND file_name <> 'manual-entry'
+                    GROUP BY file_name
+                )
+                INSERT INTO statement_uploads (
+                    user_id,
+                    original_file_name,
+                    stored_file_name,
+                    file_fingerprint_sha256,
+                    currency,
+                    parse_status,
+                    uploaded_at
+                )
+                SELECT
+                    %s,
+                    legacy_groups.display_name,
+                    legacy_groups.file_name,
+                    CASE
+                        WHEN legacy_groups.fingerprint_sha256 <> ''
+                            THEN legacy_groups.fingerprint_sha256
+                        ELSE md5(
+                            'legacy:' || %s::text || ':' || legacy_groups.file_name
+                        ) || md5(
+                            'legacy-fallback:' || %s::text || ':' || legacy_groups.file_name
+                        )
+                    END,
+                    legacy_groups.currency,
+                    'parsed',
+                    legacy_groups.uploaded_at
+                FROM legacy_groups
+                LEFT JOIN statement_uploads
+                    ON statement_uploads.user_id = %s
+                   AND statement_uploads.stored_file_name = legacy_groups.file_name
+                WHERE statement_uploads.id IS NULL
+                RETURNING id, stored_file_name
+                """,
+                (user_id, user_id, user_id, user_id, user_id),
+            )
+            created_statement_upload_rows = cursor.fetchall()
+            for upload_id, file_name in created_statement_upload_rows:
+                cursor.execute(
+                    """
+                    UPDATE transactions
+                    SET statement_upload_id = %s
+                    WHERE user_id = %s
+                      AND statement_upload_id IS NULL
+                      AND file_name = %s
+                    """,
+                    (int(upload_id), user_id, str(file_name)),
+                )
+            created_statement_count = len(created_statement_upload_rows)
+
             cursor.execute(
                 """
                 UPDATE statement_uploads
@@ -445,7 +247,7 @@ def maybe_claim_legacy_data_for_first_user(
                 """,
                 (user_id,),
             )
-            claimed_statement_count = cursor.rowcount
+            claimed_statement_count = created_statement_count + cursor.rowcount
         connection.commit()
 
     return {
@@ -458,7 +260,7 @@ def get_user_auth_by_email(
     email: str,
     database_url: str | None = None,
 ) -> UserAuthRecord | None:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
     normalized_email = email.strip().lower()
 
     with psycopg.connect(resolved_database_url) as connection:
@@ -491,7 +293,7 @@ def get_user_by_id(
     user_id: int,
     database_url: str | None = None,
 ) -> UserRecord | None:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -522,7 +324,7 @@ def update_user_last_login(
     user_id: int,
     database_url: str | None = None,
 ) -> None:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -543,7 +345,7 @@ def create_session(
     expires_at: datetime,
     database_url: str | None = None,
 ) -> None:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -561,7 +363,7 @@ def get_user_for_session(
     token_hash: str,
     database_url: str | None = None,
 ) -> UserRecord | None:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -616,7 +418,7 @@ def revoke_session(
     token_hash: str,
     database_url: str | None = None,
 ) -> None:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -645,7 +447,7 @@ def record_audit_event(
     metadata: dict[str, Any] | None = None,
     database_url: str | None = None,
 ) -> None:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -691,7 +493,7 @@ def create_statement_upload(
     currency: str | None = None,
     database_url: str | None = None,
 ) -> StatementUploadRecord:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -748,7 +550,7 @@ def insert_transactions(
     if not transactions:
         return 0
 
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
     display_name = original_file_name or file_name
 
     with psycopg.connect(resolved_database_url) as connection:
@@ -804,7 +606,7 @@ def insert_manual_transaction(
     payment_method: str | None = None,
     database_url: str | None = None,
 ) -> StoredTransaction:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
     normalized_merchant = " ".join(merchant.split())
     inferred_category = (
         category.strip()
@@ -907,7 +709,7 @@ def update_transaction(
     merchant: str | None = None,
     database_url: str | None = None,
 ) -> StoredTransaction | None:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
     normalized_category = category.strip() if category is not None else None
     if normalized_category == "":
         return None
@@ -1004,7 +806,7 @@ def delete_transaction(
     transaction_id: int,
     database_url: str | None = None,
 ) -> bool:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1030,7 +832,7 @@ def delete_transaction_by_match(
     database_url: str | None = None,
 ) -> bool:
     """Remove a dashboard row that came from batch merge (best-effort match)."""
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1083,16 +885,24 @@ def get_transactions_summary(
     *,
     user_id: int,
     range_key: TimeRange = "all",
+    display_currency: str | None = None,
     database_url: str | None = None,
 ) -> TransactionsSummary:
-    resolved_database_url = init_db(database_url)
+    from backend.currency import DisplayCurrency, convert_amount, normalize_currency_code
+
+    resolved_database_url = _resolve_database_url(database_url)
     date_filter_clause, query_params = _build_user_date_filter_clause(user_id, range_key)
     summary_query = f"""
         SELECT
+            COALESCE(currency, 'USD') AS currency,
             COALESCE(SUM(amount), 0),
-            COUNT(*),
-            COALESCE(AVG(amount), 0),
-            COUNT(DISTINCT statement_upload_id)
+            COUNT(*)
+        FROM transactions
+        {date_filter_clause}
+        GROUP BY COALESCE(currency, 'USD')
+        """
+    statement_count_query = f"""
+        SELECT COUNT(DISTINCT statement_upload_id)
         FROM transactions
         {date_filter_clause}
         """
@@ -1100,12 +910,23 @@ def get_transactions_summary(
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(summary_query, query_params)
-            (
-                total_spending,
-                transaction_count,
-                average_amount,
-                statement_count,
-            ) = cursor.fetchone()
+            currency_rows = cursor.fetchall()
+            cursor.execute(statement_count_query, query_params)
+            statement_count = int(cursor.fetchone()[0])
+
+    transaction_count = sum(int(row[2]) for row in currency_rows)
+    if display_currency:
+        target_currency: DisplayCurrency = normalize_currency_code(display_currency)
+        total_spending = sum(
+            convert_amount(float(row[1]), str(row[0]), target_currency)
+            for row in currency_rows
+        )
+    else:
+        total_spending = sum(float(row[1]) for row in currency_rows)
+
+    average_amount = (
+        total_spending / transaction_count if transaction_count > 0 else 0.0
+    )
 
     return {
         "total_spending": float(total_spending),
@@ -1121,13 +942,14 @@ def get_recent_uploads(
     limit: int = 5,
     database_url: str | None = None,
 ) -> list[RecentUpload]:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
                 SELECT
+                    statement_uploads.id,
                     statement_uploads.stored_file_name,
                     statement_uploads.original_file_name,
                     COUNT(transactions.id) AS transaction_count,
@@ -1146,16 +968,51 @@ def get_recent_uploads(
             )
             rows = cursor.fetchall()
 
+            upload_ids = [int(row[0]) for row in rows]
+            currency_totals_by_upload: dict[int, list[RecentUploadCurrencyTotal]] = {
+                upload_id: [] for upload_id in upload_ids
+            }
+            if upload_ids:
+                cursor.execute(
+                    """
+                    SELECT
+                        statement_upload_id,
+                        COALESCE(currency, 'USD') AS currency,
+                        COALESCE(SUM(amount), 0) AS total_amount,
+                        COUNT(*) AS transaction_count
+                    FROM transactions
+                    WHERE statement_upload_id = ANY(%s)
+                    GROUP BY statement_upload_id, COALESCE(currency, 'USD')
+                    ORDER BY statement_upload_id ASC, currency ASC
+                    """,
+                    (upload_ids,),
+                )
+                for (
+                    statement_upload_id,
+                    currency,
+                    total_amount,
+                    transaction_count,
+                ) in cursor.fetchall():
+                    currency_totals_by_upload[int(statement_upload_id)].append(
+                        {
+                            "currency": str(currency),
+                            "total_amount": float(total_amount),
+                            "transaction_count": int(transaction_count),
+                        }
+                    )
+
     return [
         {
             "file_name": str(file_name),
             "display_name": str(display_name),
             "transaction_count": int(transaction_count),
             "total_amount": float(total_amount),
+            "currency_totals": currency_totals_by_upload.get(int(upload_id), []),
             "uploaded_at": _iso_datetime(uploaded_at),
             "parse_status": str(parse_status),
         }
         for (
+            upload_id,
             file_name,
             display_name,
             transaction_count,
@@ -1173,7 +1030,7 @@ def get_transactions(
     limit: int = 5000,
     database_url: str | None = None,
 ) -> list[StoredTransaction]:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
     date_filter_clause, range_params = _build_user_date_filter_clause(user_id, range_key)
     transaction_query = f"""
         SELECT
@@ -1226,7 +1083,7 @@ def get_existing_upload_by_fingerprint(
     file_fingerprint_sha256: str,
     database_url: str | None = None,
 ) -> ExistingUpload | None:
-    resolved_database_url = init_db(database_url)
+    resolved_database_url = _resolve_database_url(database_url)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -1259,3 +1116,192 @@ def get_existing_upload_by_fingerprint(
         "uploaded_at": _iso_datetime(uploaded_at),
         "parse_status": str(parse_status),
     }
+
+
+class StatementUploadDetail(ExistingUpload):
+    stored_file_name: str
+
+
+def get_statement_upload_for_user(
+    *,
+    user_id: int,
+    upload_id: int,
+    database_url: str | None = None,
+) -> StatementUploadDetail | None:
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    stored_file_name,
+                    original_file_name,
+                    uploaded_at,
+                    parse_status
+                FROM statement_uploads
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (upload_id, user_id),
+            )
+            row = cursor.fetchone()
+
+    if not row:
+        return None
+
+    upload_id_value, stored_file_name, display_name, uploaded_at, parse_status = row
+    return {
+        "id": int(upload_id_value),
+        "file_name": str(stored_file_name),
+        "stored_file_name": str(stored_file_name),
+        "display_name": str(display_name),
+        "uploaded_at": _iso_datetime(uploaded_at),
+        "parse_status": str(parse_status),
+    }
+
+
+def delete_statement_upload_for_user(
+    *,
+    user_id: int,
+    upload_id: int,
+    database_url: str | None = None,
+) -> StatementUploadDetail | None:
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    stored_file_name,
+                    original_file_name,
+                    uploaded_at,
+                    parse_status
+                FROM statement_uploads
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (upload_id, user_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            cursor.execute(
+                """
+                DELETE FROM transactions
+                WHERE user_id = %s
+                  AND statement_upload_id = %s
+                """,
+                (user_id, upload_id),
+            )
+            cursor.execute(
+                """
+                DELETE FROM statement_uploads
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (upload_id, user_id),
+            )
+        connection.commit()
+
+    upload_id_value, stored_file_name, display_name, uploaded_at, parse_status = row
+    return {
+        "id": int(upload_id_value),
+        "file_name": str(stored_file_name),
+        "stored_file_name": str(stored_file_name),
+        "display_name": str(display_name),
+        "uploaded_at": _iso_datetime(uploaded_at),
+        "parse_status": str(parse_status),
+    }
+
+
+def purge_expired_audit_logs(
+    *,
+    retention_days: int,
+    database_url: str | None = None,
+) -> int:
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM audit_logs
+                WHERE occurred_at < NOW() - make_interval(days => %s)
+                """,
+                (retention_days,),
+            )
+            deleted_count = int(cursor.rowcount)
+        connection.commit()
+
+    return deleted_count
+
+
+def purge_expired_statement_uploads(
+    *,
+    retention_days: int,
+    database_url: str | None = None,
+) -> list[StatementUploadDetail]:
+    resolved_database_url = _resolve_database_url(database_url)
+    cutoff_days = max(retention_days, 1)
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    user_id,
+                    stored_file_name,
+                    original_file_name,
+                    uploaded_at,
+                    parse_status
+                FROM statement_uploads
+                WHERE uploaded_at < NOW() - make_interval(days => %s)
+                ORDER BY uploaded_at ASC, id ASC
+                """,
+                (cutoff_days,),
+            )
+            expired_rows = cursor.fetchall()
+
+            deleted_uploads: list[StatementUploadDetail] = []
+            for (
+                upload_id,
+                user_id,
+                stored_file_name,
+                display_name,
+                uploaded_at,
+                parse_status,
+            ) in expired_rows:
+                cursor.execute(
+                    """
+                    DELETE FROM transactions
+                    WHERE statement_upload_id = %s
+                      AND user_id IS NOT DISTINCT FROM %s
+                    """,
+                    (upload_id, user_id),
+                )
+                cursor.execute(
+                    """
+                    DELETE FROM statement_uploads
+                    WHERE id = %s
+                    """,
+                    (upload_id,),
+                )
+                deleted_uploads.append(
+                    {
+                        "id": int(upload_id),
+                        "file_name": str(stored_file_name),
+                        "stored_file_name": str(stored_file_name),
+                        "display_name": str(display_name),
+                        "uploaded_at": _iso_datetime(uploaded_at),
+                        "parse_status": str(parse_status),
+                    }
+                )
+        connection.commit()
+
+    return deleted_uploads

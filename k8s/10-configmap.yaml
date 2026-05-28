@@ -13,4 +13,7 @@ data:
   BATCH_DATA_DIR: /app/batch/data
   BATCH_PDF_SOURCE_DIR: /app/batch/pdf
   BATCH_TEXT_SOURCE_DIR: /app/batch/text
+  USD_TWD_EXCHANGE_RATE: "32"
+  AUDIT_LOG_RETENTION_DAYS: "365"
+  STATEMENT_RETENTION_DAYS: "0"
 

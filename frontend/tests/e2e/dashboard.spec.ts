@@ -25,6 +25,10 @@ async function mockAuthenticatedSession(page: Page) {
 
 function buildDashboardView(currency: DisplayCurrency) {
   const isTwd = currency === "TWD";
+  const openaiAmount = isTwd ? 640 : 20;
+  const uberAmount = isTwd ? 605 : 18.9;
+  const starbucksAmount = isTwd ? 184 : 5.75;
+  const paymentAmount = isTwd ? -3200 : -100;
 
   return {
     active_currency: currency,
@@ -38,60 +42,100 @@ function buildDashboardView(currency: DisplayCurrency) {
       {
         date: "2025-04-19",
         merchant: "STARBUCKS STORE 1234",
-        amount: isTwd ? 184 : 5.75,
+        amount: starbucksAmount,
         category: "Dining",
         currency,
+        original_amount: 5.75,
+        original_currency: "USD",
+        display_amount: starbucksAmount,
+        display_currency: currency,
+        is_converted: isTwd,
       },
       {
         date: "2025-04-20",
         merchant: "UBER TRIP",
-        amount: isTwd ? 605 : 18.9,
+        amount: uberAmount,
         category: "Transport",
         currency,
+        original_amount: 605,
+        original_currency: "TWD",
+        display_amount: uberAmount,
+        display_currency: currency,
+        is_converted: !isTwd,
       },
       {
         date: "2025-04-21",
         merchant: "OPENAI API",
-        amount: isTwd ? 640 : 20,
+        amount: openaiAmount,
         category: "Digital Services",
         currency,
+        original_amount: 20,
+        original_currency: "USD",
+        display_amount: openaiAmount,
+        display_currency: currency,
+        is_converted: isTwd,
       },
       {
         date: "2025-04-22",
         merchant: "PAYMENT RECEIVED",
-        amount: isTwd ? -3200 : -100,
+        amount: paymentAmount,
         category: "Refunds & Credits",
         currency,
+        original_amount: -100,
+        original_currency: "USD",
+        display_amount: paymentAmount,
+        display_currency: currency,
+        is_converted: isTwd,
       },
     ],
     sorted_transactions: [
       {
         date: "2025-04-21",
         merchant: "OPENAI API",
-        amount: isTwd ? 640 : 20,
+        amount: openaiAmount,
         category: "Digital Services",
         currency,
+        original_amount: 20,
+        original_currency: "USD",
+        display_amount: openaiAmount,
+        display_currency: currency,
+        is_converted: isTwd,
       },
       {
         date: "2025-04-20",
         merchant: "UBER TRIP",
-        amount: isTwd ? 605 : 18.9,
+        amount: uberAmount,
         category: "Transport",
         currency,
+        original_amount: 605,
+        original_currency: "TWD",
+        display_amount: uberAmount,
+        display_currency: currency,
+        is_converted: !isTwd,
       },
       {
         date: "2025-04-19",
         merchant: "STARBUCKS STORE 1234",
-        amount: isTwd ? 184 : 5.75,
+        amount: starbucksAmount,
         category: "Dining",
         currency,
+        original_amount: 5.75,
+        original_currency: "USD",
+        display_amount: starbucksAmount,
+        display_currency: currency,
+        is_converted: isTwd,
       },
       {
         date: "2025-04-22",
         merchant: "PAYMENT RECEIVED",
-        amount: isTwd ? -3200 : -100,
+        amount: paymentAmount,
         category: "Refunds & Credits",
         currency,
+        original_amount: -100,
+        original_currency: "USD",
+        display_amount: paymentAmount,
+        display_currency: currency,
+        is_converted: isTwd,
       },
     ],
     merchant_breakdown: [
@@ -181,7 +225,20 @@ test("dashboard renders with mocked API data and survives a currency toggle", as
             display_name: "Sample Statement.pdf",
             transaction_count: 4,
             total_amount: 44.65,
+            currency_totals: [
+              {
+                currency: "USD",
+                total_amount: -74.25,
+                transaction_count: 3,
+              },
+              {
+                currency: "TWD",
+                total_amount: 605,
+                transaction_count: 1,
+              },
+            ],
             uploaded_at: "2026-05-16T09:30:00+00:00",
+            parse_status: "parsed",
           },
         ],
       }),
@@ -210,9 +267,26 @@ test("dashboard renders with mocked API data and survives a currency toggle", as
   await expect(page.getByText("Rows in view")).toBeVisible();
   await expect(page.getByText("Merchant contribution")).toBeVisible();
   await expect(page.getByText("Spending by category")).toBeVisible();
+  await expect(page.getByText("Recent statements")).toBeVisible();
+  await expect(page.getByText("Original totals")).toBeVisible();
+  await expect(
+    page.getByText("USD: -US$74.25 · TWD: NT$605.00")
+  ).toBeVisible();
   await expect(page.getByLabel("Search")).toBeVisible();
   await expect(page.getByRole("combobox").first()).toBeVisible();
   await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  await expect(
+    page.getByText(
+      "Dashboard cards and charts use US$ (USD) as the display currency. Mixed USD/TWD source data is converted here for comparison."
+    )
+  ).toBeVisible();
+  await expect(page.getByText("Display currency: US$ (USD)").first()).toBeVisible();
+  await expect(
+    page.getByText(
+      "Rows are shown in US$ (USD) for dashboard comparison. Converted rows keep the original statement amount underneath."
+    )
+  ).toBeVisible();
+  await expect(page.getByText("Original: NT$605.00")).toBeVisible();
 
   const currencySwitch = page.getByRole("switch", {
     name: "Display currency",
@@ -222,6 +296,13 @@ test("dashboard renders with mocked API data and survives a currency toggle", as
   await expect(currencySwitch).toBeChecked();
   await expect(page.getByText("NT$138,274.88").first()).toBeVisible();
   await expect(page.getByText("Personal Spending Tracker")).toBeVisible();
+  await expect(
+    page.getByText(
+      "Dashboard cards and charts use NT$ (TWD) as the display currency. Mixed USD/TWD source data is converted here for comparison."
+    )
+  ).toBeVisible();
+  await expect(page.getByText("Display currency: NT$ (TWD)").first()).toBeVisible();
+  await expect(page.getByText("Original: US$20.00")).toBeVisible();
 
   expect(dashboardRequests.some((url) => url.includes("currency=USD"))).toBe(true);
   expect(dashboardRequests.some((url) => url.includes("currency=TWD"))).toBe(true);

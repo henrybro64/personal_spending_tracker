@@ -108,7 +108,9 @@ kubectl -n spending-tracker logs deployment/backend
 bash scripts/triage-k3s-pods.sh   # pods Error / ContainerCreating
 ```
 
-**Backend `Error` while postgres is `ContainerCreating`:** the API runs `init_db()` on startup and exits if Postgres is not up yet. Wait until postgres is `Running`, then `kubectl -n spending-tracker rollout restart deployment/backend`. Redeploy with `scripts/deploy-k3s.sh` applies a `wait-for-postgres` init container so this race does not recur.
+**Backend `Error` while postgres is `ContainerCreating`:** migrations run in a `migrate-database` init container after `wait-for-postgres`. If Postgres was not ready, wait until it is `Running`, then `kubectl -n spending-tracker rollout restart deployment/backend`.
+
+**Backups:** see [docs/backup-restore.md](../docs/backup-restore.md). Use `KUBECTL='sudo k3s kubectl' ./scripts/backup-spending-tracker.sh --k3s` before major upgrades.
 
 **Password auth failed after changing `DB_PASSWORD`:** Postgres PVC keeps the old password. Delete the namespace and redeploy, or `ALTER USER` inside the Postgres pod.
 

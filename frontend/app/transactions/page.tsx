@@ -27,6 +27,13 @@ import {
 import { apiFetch, apiFetchJson, ApiError } from "../api";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
+import {
+  describeCurrency,
+  formatCurrencyAmount,
+  normalizeCurrencyCode,
+  summarizeCurrencyTotals,
+  type CurrencyTotal,
+} from "../currency";
 import { useLocale } from "../locale-provider";
 import { translate } from "../messages";
 
@@ -133,6 +140,9 @@ const useStyles = makeStyles({
     gap: "6px",
     marginBottom: "12px",
   },
+  headerNote: {
+    color: tokens.colorNeutralForeground2,
+  },
   card: {
     backgroundColor: tokens.colorNeutralBackground1,
     boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05), 0 10px 28px rgba(0, 0, 0, 0.06)",
@@ -211,6 +221,15 @@ const useStyles = makeStyles({
   amountPositive: {
     color: tokens.colorNeutralForeground1,
     fontWeight: tokens.fontWeightSemibold,
+  },
+  amountCell: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  },
+  amountMeta: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: tokens.fontSizeBase100,
   },
   rowAlt: {
     backgroundColor: tokens.colorNeutralBackground2,
@@ -303,12 +322,24 @@ const useStyles = makeStyles({
   },
 });
 
-function formatCurrency(amount: number, currencyCode: string = "USD") {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: currencyCode,
-    maximumFractionDigits: 2,
-  }).format(amount);
+function formatCurrencySummary(
+  totals: CurrencyTotal[],
+  intlLocale: string
+): string {
+  if (totals.length === 0) {
+    return formatCurrencyAmount(0, "USD", intlLocale);
+  }
+
+  if (totals.length === 1) {
+    return formatCurrencyAmount(totals[0].total, totals[0].currency, intlLocale);
+  }
+
+  return totals
+    .map(
+      ({ currency, total }) =>
+        `${currency}: ${formatCurrencyAmount(total, currency, intlLocale)}`
+    )
+    .join(" · ");
 }
 
 function parseIsoDate(dateValue: string) {
@@ -391,7 +422,7 @@ function buildGroupedTransactions(
 
 export default function TransactionsPage() {
   const styles = useStyles();
-  const { locale } = useLocale();
+  const { locale, intlLocale } = useLocale();
   const { refreshSession, status, user } = useAuth();
   const pathname = usePathname();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -484,9 +515,13 @@ export default function TransactionsPage() {
     return sorted;
   }, [transactions, timeRange, searchQuery, amountFilter, selectedMerchant, sortOption]);
 
-  const totalAmount = useMemo(
-    () => filteredTransactions.reduce((sum, transaction) => sum + transaction.amount, 0),
+  const totalsByCurrency = useMemo(
+    () => summarizeCurrencyTotals(filteredTransactions),
     [filteredTransactions]
+  );
+  const totalAmountSummary = useMemo(
+    () => formatCurrencySummary(totalsByCurrency, intlLocale),
+    [totalsByCurrency, intlLocale]
   );
   const groupedTransactions = useMemo(
     () => buildGroupedTransactions(filteredTransactions, locale === "zh-Hant" ? "zh-TW" : "en-US"),
@@ -502,6 +537,25 @@ export default function TransactionsPage() {
       null,
     [activeYearGroup, selectedMonthKey]
   );
+  const activeMonthTotalsByCurrency = useMemo(
+    () =>
+      activeMonthGroup
+        ? summarizeCurrencyTotals(activeMonthGroup.transactions)
+        : [],
+    [activeMonthGroup]
+  );
+  const activeMonthSubtotalSummary = useMemo(
+    () => formatCurrencySummary(activeMonthTotalsByCurrency, intlLocale),
+    [activeMonthTotalsByCurrency, intlLocale]
+  );
+  const netTotalLabel =
+    totalsByCurrency.length > 1
+      ? translate(locale, "transactionsNetTotalByCurrency")
+      : translate(locale, "transactionsNetTotal");
+  const monthSubtotalLabel =
+    activeMonthTotalsByCurrency.length > 1
+      ? translate(locale, "transactionsSubtotalByCurrency")
+      : translate(locale, "transactionsSubtotal");
 
   useEffect(() => {
     if (!groupedTransactions.length) {
@@ -540,7 +594,11 @@ export default function TransactionsPage() {
 
   async function deleteTransaction(transaction: Transaction) {
     const confirmed = window.confirm(
-      `Delete this transaction?\n\n${transaction.date} · ${transaction.merchant} · ${formatCurrency(transaction.amount, transaction.currency ?? "USD")}`
+      `Delete this transaction?\n\n${transaction.date} · ${transaction.merchant} · ${formatCurrencyAmount(
+        transaction.amount,
+        transaction.currency ?? "USD",
+        intlLocale
+      )}`
     );
     if (!confirmed) {
       return;
@@ -818,7 +876,11 @@ export default function TransactionsPage() {
           <div className={styles.header}>
             <Title1>{translate(locale, "transactionsTitle")}</Title1>
             <Body1>
-              {filteredTransactions.length} records | Net total: {formatCurrency(totalAmount)}
+              {filteredTransactions.length} {translate(locale, "transactionsRecordsSuffix")} |{" "}
+              {netTotalLabel}: {totalAmountSummary}
+            </Body1>
+            <Body1 className={styles.headerNote}>
+              {translate(locale, "transactionsCurrencyNote")}
             </Body1>
             {message ? <Body1>{message}</Body1> : null}
           </div>
@@ -831,7 +893,9 @@ export default function TransactionsPage() {
             ) : (
               <div className={styles.tableWrap}>
                 <div className={styles.drilldownPanel}>
-                  <div className={styles.drilldownLabel}>Year</div>
+                  <div className={styles.drilldownLabel}>
+                    {translate(locale, "transactionsYear")}
+                  </div>
                   <div className={styles.pillGrid}>
                     {groupedTransactions.map((yearGroup) => (
                       <Button
@@ -851,7 +915,9 @@ export default function TransactionsPage() {
 
                 {activeYearGroup ? (
                   <div className={styles.drilldownPanel}>
-                    <div className={styles.drilldownLabel}>Month</div>
+                    <div className={styles.drilldownLabel}>
+                      {translate(locale, "transactionsMonth")}
+                    </div>
                     <div className={styles.pillGrid}>
                       {activeYearGroup.months.map((monthGroup) => (
                         <Button
@@ -876,7 +942,7 @@ export default function TransactionsPage() {
                         {activeYearGroup?.year} / {activeMonthGroup.monthLabel}
                       </div>
                       <div className={styles.monthSubtotal}>
-                        Subtotal: {formatCurrency(activeMonthGroup.subtotal)}
+                        {monthSubtotalLabel}: {activeMonthSubtotalSummary}
                       </div>
                     </div>
                     <div className={styles.monthTableWrap}>
@@ -886,7 +952,9 @@ export default function TransactionsPage() {
                             <TableHeaderCell className={styles.tableHeaderCell}>Date</TableHeaderCell>
                             <TableHeaderCell className={styles.tableHeaderCell}>Merchant</TableHeaderCell>
                             <TableHeaderCell className={styles.tableHeaderCell}>Category</TableHeaderCell>
-                            <TableHeaderCell className={styles.tableHeaderCell}>Amount</TableHeaderCell>
+                            <TableHeaderCell className={styles.tableHeaderCell}>
+                              {translate(locale, "transactionsOriginalAmount")}
+                            </TableHeaderCell>
                             <TableHeaderCell className={styles.tableHeaderCell}>Action</TableHeaderCell>
                           </TableRow>
                         </TableHeader>
@@ -941,13 +1009,33 @@ export default function TransactionsPage() {
                                   ) : null}
                                 </select>
                               </TableCell>
-                              <TableCell
-                                className={mergeClasses(
-                                  styles.tableCell,
-                                  transaction.amount < 0 ? styles.amountNegative : styles.amountPositive
-                                )}
-                              >
-                                {formatCurrency(transaction.amount, transaction.currency ?? "USD")}
+                              <TableCell className={styles.tableCell}>
+                                <div className={styles.amountCell}>
+                                  <div
+                                    className={mergeClasses(
+                                      transaction.amount < 0
+                                        ? styles.amountNegative
+                                        : styles.amountPositive
+                                    )}
+                                  >
+                                    {formatCurrencyAmount(
+                                      transaction.amount,
+                                      transaction.currency ?? "USD",
+                                      intlLocale
+                                    )}
+                                  </div>
+                                  <div className={styles.amountMeta}>
+                                    {translate(
+                                      locale,
+                                      "transactionsOriginalCurrencyTagTemplate",
+                                      {
+                                        currency: describeCurrency(
+                                          normalizeCurrencyCode(transaction.currency)
+                                        ),
+                                      }
+                                    )}
+                                  </div>
+                                </div>
                               </TableCell>
                               <TableCell className={styles.tableCell}>
                                 <div className={styles.actions}>
