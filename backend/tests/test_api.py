@@ -1,4 +1,5 @@
 from io import BytesIO
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,191 @@ def test_summary_requires_authentication(client: TestClient) -> None:
 
     assert response.status_code == 401
     assert response.json() == {"detail": "Authentication is required."}
+
+
+def test_ai_settings_round_trip_and_selection_switch(client: TestClient) -> None:
+    _register_user(client)
+
+    initial = client.get("/ai/settings")
+    assert initial.status_code == 200
+    initial_providers = {
+        item["provider"]: item for item in initial.json()["providers"]
+    }
+    assert initial_providers["openai"]["configured"] is False
+    assert initial_providers["perplexity"]["configured"] is False
+
+    first_save = client.put(
+        "/ai/settings/openai",
+        json={
+            "api_key": "sk-openai-test-1234",
+            "model": "gpt-4.1",
+            "selected": True,
+        },
+    )
+    assert first_save.status_code == 200
+    first_payload = first_save.json()
+    assert first_payload["selected_provider"] == "openai"
+    openai_settings = next(
+        item for item in first_payload["providers"] if item["provider"] == "openai"
+    )
+    assert openai_settings["configured"] is True
+    assert openai_settings["selected"] is True
+    assert openai_settings["masked_api_key"] == "••••1234"
+
+    second_save = client.put(
+        "/ai/settings/perplexity",
+        json={
+            "api_key": "pplx-test-9876",
+            "model": "sonar-pro",
+            "selected": True,
+        },
+    )
+    assert second_save.status_code == 200
+    second_payload = second_save.json()
+    assert second_payload["selected_provider"] == "perplexity"
+
+    switch_back = client.put(
+        "/ai/settings/openai",
+        json={"api_key": "", "model": "gpt-4.1", "selected": True},
+    )
+    assert switch_back.status_code == 200
+    switch_payload = switch_back.json()
+    openai_settings = next(
+        item for item in switch_payload["providers"] if item["provider"] == "openai"
+    )
+    perplexity_settings = next(
+        item for item in switch_payload["providers"] if item["provider"] == "perplexity"
+    )
+    assert openai_settings["selected"] is True
+    assert perplexity_settings["selected"] is False
+    assert openai_settings["masked_api_key"] == "••••1234"
+    assert perplexity_settings["masked_api_key"] == "••••9876"
+
+    deleted = client.delete("/ai/settings/openai")
+    assert deleted.status_code == 204
+
+    after_delete = client.get("/ai/settings")
+    assert after_delete.status_code == 200
+    delete_payload = after_delete.json()
+    assert delete_payload["selected_provider"] == "perplexity"
+    openai_settings = next(
+        item for item in delete_payload["providers"] if item["provider"] == "openai"
+    )
+    assert openai_settings["configured"] is False
+    assert openai_settings["masked_api_key"] is None
+
+
+def test_ai_insights_returns_generated_text_and_snapshot(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.main as api_main
+
+    _register_user(client)
+    save_settings = client.put(
+        "/ai/settings/openai",
+        json={
+            "api_key": "sk-openai-test-1234",
+            "model": "gpt-4.1",
+            "selected": True,
+        },
+    )
+    assert save_settings.status_code == 200
+
+    today = date.today()
+    for offset, merchant, amount in (
+        (2, "Coffee Project", 18.5),
+        (20, "OPENAI API", 25.0),
+    ):
+        created = client.post(
+            "/transactions/manual",
+            json={
+                "date": (today - timedelta(days=offset)).isoformat(),
+                "merchant": merchant,
+                "amount": amount,
+                "category": "Digital Services" if merchant == "OPENAI API" else "Dining",
+                "payment_method": None,
+            },
+        )
+        assert created.status_code == 201
+
+    async def fake_generate_spending_insights(
+        *,
+        provider: str,
+        api_key: str,
+        model: str | None,
+        snapshot: dict[str, object],
+    ) -> dict[str, object]:
+        assert provider == "openai"
+        assert api_key == "sk-openai-test-1234"
+        assert model == "gpt-4.1"
+        assert snapshot["transaction_count"] == 2
+        return {
+            "provider": "openai",
+            "model": "gpt-4.1",
+            "generated_at": "2026-06-15T00:00:00+00:00",
+            "insight_text": "Observations\n- Test insight",
+            "citations": [],
+        }
+
+    monkeypatch.setattr(api_main, "generate_spending_insights", fake_generate_spending_insights)
+
+    response = client.post(
+        "/ai/insights",
+        json={"range": "year", "language": "en"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "openai"
+    assert payload["model"] == "gpt-4.1"
+    assert payload["insight_text"] == "Observations\n- Test insight"
+    assert payload["snapshot"]["transaction_count"] == 2
+    assert payload["snapshot"]["display_currency"] == "USD"
+
+
+def test_ai_settings_requires_authentication(client: TestClient) -> None:
+    response = client.get("/ai/settings")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Authentication is required."}
+
+
+def test_ai_settings_rejects_new_provider_without_api_key(client: TestClient) -> None:
+    _register_user(client)
+
+    response = client.put(
+        "/ai/settings/openai",
+        json={"api_key": "", "model": "gpt-4.1", "selected": True},
+    )
+
+    assert response.status_code == 400
+    assert "API key is required" in response.json()["detail"]
+
+
+def test_ai_insights_requires_configured_provider(client: TestClient) -> None:
+    _register_user(client)
+
+    response = client.post("/ai/insights", json={"range": "month", "language": "en"})
+
+    assert response.status_code == 400
+    assert "Configure an AI provider" in response.json()["detail"]
+
+
+def test_ai_insights_rejects_empty_period(client: TestClient) -> None:
+    _register_user(client)
+    save_settings = client.put(
+        "/ai/settings/openai",
+        json={
+            "api_key": "sk-openai-test-1234",
+            "model": "gpt-4.1",
+            "selected": True,
+        },
+    )
+    assert save_settings.status_code == 200
+
+    response = client.post("/ai/insights", json={"range": "year", "language": "en"})
+
+    assert response.status_code == 400
+    assert "No spending transactions are available" in response.json()["detail"]
 
 
 def _request_for_upload() -> Request:

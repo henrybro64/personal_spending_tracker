@@ -47,8 +47,18 @@ from backend.auth import (  # noqa: E402
     validate_password,
     verify_password,
 )
+from backend.ai_insights import (  # noqa: E402
+    AiProvider,
+    InsightLanguage,
+    SUPPORTED_AI_PROVIDERS,
+    SUPPORTED_INSIGHT_RANGES,
+    build_spending_insight_snapshot,
+    default_model_for_provider,
+    generate_spending_insights,
+)
 from backend.transaction_exclusions import should_exclude_from_spending
 from backend.database import (  # noqa: E402
+    UserAiProviderSettingRecord,
     RecentUpload,
     StoredTransaction,
     TimeRange,
@@ -57,17 +67,21 @@ from backend.database import (  # noqa: E402
     create_session,
     create_statement_upload,
     create_user,
+    delete_user_ai_provider_setting,
     get_existing_upload_by_fingerprint,
     get_recent_uploads,
     get_transactions,
     get_transactions_summary,
+    get_user_ai_provider_secret,
     get_user_auth_by_email,
     init_db,
     insert_manual_transaction,
     insert_transactions,
+    list_user_ai_provider_settings,
     maybe_claim_legacy_data_for_first_user,
     record_audit_event,
     revoke_session,
+    upsert_user_ai_provider_setting,
     delete_statement_upload_for_user,
     delete_transaction,
     delete_transaction_by_match,
@@ -324,6 +338,46 @@ class SessionResponse(TypedDict):
     claimed_legacy_uploads: int
 
 
+class AiProviderSettingsView(TypedDict):
+    provider: AiProvider
+    display_name: str
+    configured: bool
+    selected: bool
+    masked_api_key: str | None
+    model: str
+    created_at: str | None
+    updated_at: str | None
+
+
+class AiSettingsResponse(TypedDict):
+    providers: list[AiProviderSettingsView]
+    selected_provider: AiProvider | None
+    privacy_notice: str
+
+
+class AiInsightResponse(TypedDict):
+    provider: AiProvider
+    model: str
+    time_range: TimeRange
+    generated_at: str
+    insight_text: str
+    citations: list[str]
+    data_shared: list[str]
+    snapshot: dict[str, object]
+
+
+class AiProviderSettingsRequest(BaseModel):
+    api_key: str | None = None
+    model: str | None = None
+    selected: bool = True
+
+
+class AiInsightsRequest(BaseModel):
+    provider: AiProvider | None = None
+    range: Literal["month", "quarter", "6months", "year"] = "quarter"
+    language: Literal["en", "zh-Hant"] = "en"
+
+
 VALID_TIME_RANGES: tuple[TimeRange, ...] = (
     "week",
     "month",
@@ -341,6 +395,16 @@ VALID_SORT_OPTIONS: tuple[SortOption, ...] = (
     "date",
 )
 VALID_DISPLAY_CURRENCIES: tuple[DisplayCurrency, ...] = ("USD", "TWD")
+AI_PROVIDER_DISPLAY_NAMES: dict[AiProvider, str] = {
+    "openai": "OpenAI",
+    "perplexity": "Perplexity",
+}
+AI_PRIVACY_NOTICE = (
+    "When AI insights run, the app sends an aggregated snapshot of the selected "
+    "transactions to the configured external provider. Raw API keys are never "
+    "returned by this API, and file names, payment methods, and session details "
+    "are excluded from the model payload."
+)
 
 
 def _get_upload_dir(user_id: int) -> Path:
@@ -397,6 +461,72 @@ def _resolve_display_currency(currency_code: str) -> DisplayCurrency:
             + ", ".join(VALID_DISPLAY_CURRENCIES)
         ),
     )
+
+
+def _resolve_ai_provider(provider_name: str) -> AiProvider:
+    normalized_provider = provider_name.strip().lower()
+    if normalized_provider in SUPPORTED_AI_PROVIDERS:
+        return cast(AiProvider, normalized_provider)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Invalid AI provider. Use one of: "
+            + ", ".join(SUPPORTED_AI_PROVIDERS)
+        ),
+    )
+
+
+def _resolve_ai_insight_range(range_key: str) -> TimeRange:
+    if range_key in SUPPORTED_INSIGHT_RANGES:
+        return cast(TimeRange, range_key)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Invalid AI insight range. Use one of: "
+            + ", ".join(SUPPORTED_INSIGHT_RANGES)
+        ),
+    )
+
+
+def _build_ai_settings_response(
+    stored_settings: list[UserAiProviderSettingRecord],
+) -> AiSettingsResponse:
+    settings_by_provider = {
+        setting["provider"]: setting for setting in stored_settings
+    }
+    providers: list[AiProviderSettingsView] = []
+    selected_provider: AiProvider | None = None
+
+    for provider in SUPPORTED_AI_PROVIDERS:
+        existing = settings_by_provider.get(provider)
+        if existing and existing["is_selected"]:
+            selected_provider = provider
+        providers.append(
+            {
+                "provider": provider,
+                "display_name": AI_PROVIDER_DISPLAY_NAMES[provider],
+                "configured": existing is not None,
+                "selected": bool(existing["is_selected"]) if existing else False,
+                "masked_api_key": (
+                    f"••••{existing['api_key_last4']}"
+                    if existing
+                    else None
+                ),
+                "model": (
+                    existing["model"]
+                    if existing and existing["model"]
+                    else default_model_for_provider(provider)
+                ),
+                "created_at": existing["created_at"] if existing else None,
+                "updated_at": existing["updated_at"] if existing else None,
+            }
+        )
+
+    return {
+        "providers": providers,
+        "selected_provider": selected_provider,
+        "privacy_notice": AI_PRIVACY_NOTICE,
+    }
 
 
 def _default_batch_pdf_source_dir_for_user(user_id: int) -> Path:
@@ -661,6 +791,201 @@ async def logout(
         "user": None,
         "claimed_legacy_transactions": 0,
         "claimed_legacy_uploads": 0,
+    }
+
+
+@app.get("/ai/settings")
+async def ai_settings(
+    current_user: UserRecord = Depends(require_current_user),
+) -> AiSettingsResponse:
+    stored_settings = list_user_ai_provider_settings(user_id=current_user["id"])
+    return _build_ai_settings_response(stored_settings)
+
+
+@app.put("/ai/settings/{provider_name}")
+async def save_ai_settings(
+    provider_name: str,
+    payload: AiProviderSettingsRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_current_user),
+) -> AiSettingsResponse:
+    resolved_provider = _resolve_ai_provider(provider_name)
+    audit_context = get_audit_request_context(request)
+
+    try:
+        upsert_user_ai_provider_setting(
+            user_id=current_user["id"],
+            provider=resolved_provider,
+            api_key=payload.api_key,
+            model=payload.model,
+            is_selected=payload.selected,
+        )
+    except ValueError as exc:
+        record_audit_event(
+            action="ai_settings_update",
+            status="rejected",
+            user_id=current_user["id"],
+            target_type="ai_provider",
+            target_id=resolved_provider,
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"reason": str(exc)},
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    record_audit_event(
+        action="ai_settings_update",
+        status="success",
+        user_id=current_user["id"],
+        target_type="ai_provider",
+        target_id=resolved_provider,
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={
+            "provider": resolved_provider,
+            "selected": payload.selected,
+            "api_key_supplied": bool(payload.api_key and payload.api_key.strip()),
+        },
+    )
+    stored_settings = list_user_ai_provider_settings(user_id=current_user["id"])
+    return _build_ai_settings_response(stored_settings)
+
+
+@app.delete("/ai/settings/{provider_name}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_ai_settings(
+    provider_name: str,
+    request: Request,
+    current_user: UserRecord = Depends(require_current_user),
+) -> None:
+    resolved_provider = _resolve_ai_provider(provider_name)
+    deleted = delete_user_ai_provider_setting(
+        user_id=current_user["id"],
+        provider=resolved_provider,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Provider settings not found.")
+
+    audit_context = get_audit_request_context(request)
+    record_audit_event(
+        action="ai_settings_delete",
+        status="success",
+        user_id=current_user["id"],
+        target_type="ai_provider",
+        target_id=resolved_provider,
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={"provider": resolved_provider},
+    )
+
+
+@app.post("/ai/insights")
+async def ai_insights(
+    payload: AiInsightsRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_current_user),
+) -> AiInsightResponse:
+    resolved_range = _resolve_ai_insight_range(payload.range)
+    audit_context = get_audit_request_context(request)
+
+    try:
+        configured_provider = get_user_ai_provider_secret(
+            user_id=current_user["id"],
+            provider=payload.provider,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if configured_provider is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Configure an AI provider in Settings before requesting insights.",
+        )
+
+    transactions = [
+        transaction
+        for transaction in get_transactions(
+            user_id=current_user["id"],
+            range_key=resolved_range,
+            limit=None,
+        )
+        if not should_exclude_from_spending(
+            transaction["merchant"],
+            category=transaction.get("category"),
+        )
+    ]
+    if not transactions:
+        raise HTTPException(
+            status_code=400,
+            detail="No spending transactions are available for the selected period.",
+        )
+
+    snapshot = build_spending_insight_snapshot(
+        transactions,
+        range_key=resolved_range,
+        language=cast(InsightLanguage, payload.language),
+    )
+
+    try:
+        insight_result = await generate_spending_insights(
+            provider=configured_provider["provider"],
+            api_key=configured_provider["api_key"],
+            model=configured_provider["model"],
+            snapshot=snapshot,
+        )
+    except RuntimeError as exc:
+        record_audit_event(
+            action="ai_insights_generate",
+            status="rejected",
+            user_id=current_user["id"],
+            target_type="ai_provider",
+            target_id=configured_provider["provider"],
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={
+                "provider": configured_provider["provider"],
+                "range": resolved_range,
+                "reason": str(exc)[:400],
+            },
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    record_audit_event(
+        action="ai_insights_generate",
+        status="success",
+        user_id=current_user["id"],
+        target_type="ai_provider",
+        target_id=insight_result["provider"],
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={
+            "provider": insight_result["provider"],
+            "model": insight_result["model"],
+            "range": resolved_range,
+            "transaction_count": len(transactions),
+            "display_currency": snapshot["display_currency"],
+        },
+    )
+    return {
+        "provider": insight_result["provider"],
+        "model": insight_result["model"],
+        "time_range": resolved_range,
+        "generated_at": insight_result["generated_at"],
+        "insight_text": insight_result["insight_text"],
+        "citations": insight_result["citations"],
+        "data_shared": [
+            "merchant names",
+            "transaction dates",
+            "amounts and currencies",
+            "derived category, monthly, and concentration summaries",
+        ],
+        "snapshot": cast(dict[str, object], snapshot),
     }
 
 

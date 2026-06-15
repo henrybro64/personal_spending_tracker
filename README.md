@@ -93,6 +93,12 @@ Set the database connection string:
 export DATABASE_URL="postgresql://$(whoami)@localhost:5432/personal_spending_tracker"
 ```
 
+Set the encryption secret used for stored AI provider keys:
+
+```bash
+export LLM_SETTINGS_ENCRYPTION_KEY="change-me-before-production"
+```
+
 Optional: override the upload directory if you do not want local files written into `storage/`:
 
 ```bash
@@ -124,6 +130,10 @@ Useful endpoints:
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/logout`
+- `GET /ai/settings`
+- `PUT /ai/settings/{provider}`
+- `DELETE /ai/settings/{provider}`
+- `POST /ai/insights`
 - `GET /summary`
 - `GET /uploads/recent`
 - `POST /upload`
@@ -200,6 +210,11 @@ The backend CORS policy allows only `http://localhost:3000` (local Next.js dev).
    - insert those transactions into PostgreSQL
    - refresh the dashboard cards, merchant insights, and recent statement history
    - display the parsed transactions in the frontend
+
+The frontend now also includes:
+
+- `/settings` for storing your OpenAI or Perplexity API key and selecting the active provider
+- `/ai-insights` for requesting LLM-generated observations over the past month, 3 months, 6 months, or year
 
 All transaction, dashboard, upload, and batch-review endpoints now require authenticated session context. You can still check the health endpoint directly:
 

@@ -62,12 +62,28 @@ class UserAuthRecord(UserRecord):
     password_hash: str
 
 
+AiProvider = Literal["openai", "perplexity"]
+
+
 class StatementUploadRecord(TypedDict):
     id: int
     file_name: str
     display_name: str
     uploaded_at: str
     parse_status: str
+
+
+class UserAiProviderSettingRecord(TypedDict):
+    provider: AiProvider
+    api_key_last4: str
+    model: str | None
+    is_selected: bool
+    created_at: str
+    updated_at: str
+
+
+class UserAiProviderSecretRecord(UserAiProviderSettingRecord):
+    api_key: str
 
 
 TimeRange = Literal["week", "month", "quarter", "6months", "year", "5years", "all"]
@@ -95,6 +111,15 @@ def get_database_url() -> str:
 
 def _resolve_database_url(database_url: str | None = None) -> str:
     return database_url or get_database_url()
+
+
+def get_llm_settings_encryption_key() -> str:
+    configured = os.getenv("LLM_SETTINGS_ENCRYPTION_KEY", "").strip()
+    if not configured:
+        raise RuntimeError(
+            "LLM_SETTINGS_ENCRYPTION_KEY environment variable is required for AI settings"
+        )
+    return configured
 
 
 def init_db(database_url: str | None = None) -> str:
@@ -479,6 +504,267 @@ def record_audit_event(
                 ),
             )
         connection.commit()
+
+
+def list_user_ai_provider_settings(
+    user_id: int,
+    database_url: str | None = None,
+) -> list[UserAiProviderSettingRecord]:
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    provider,
+                    api_key_last4,
+                    model,
+                    is_selected,
+                    created_at,
+                    updated_at
+                FROM user_ai_provider_settings
+                WHERE user_id = %s
+                ORDER BY provider ASC
+                """,
+                (user_id,),
+            )
+            rows = cursor.fetchall()
+        connection.commit()
+
+    return [
+        {
+            "provider": str(row[0]),
+            "api_key_last4": str(row[1]),
+            "model": str(row[2]) if row[2] is not None else None,
+            "is_selected": bool(row[3]),
+            "created_at": _iso_datetime(row[4]),
+            "updated_at": _iso_datetime(row[5]),
+        }
+        for row in rows
+    ]
+
+
+def upsert_user_ai_provider_setting(
+    *,
+    user_id: int,
+    provider: AiProvider,
+    api_key: str | None,
+    model: str | None,
+    is_selected: bool,
+    database_url: str | None = None,
+) -> UserAiProviderSettingRecord:
+    resolved_database_url = _resolve_database_url(database_url)
+    normalized_api_key = api_key.strip() if api_key and api_key.strip() else None
+    normalized_model = model.strip() if model and model.strip() else None
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM user_ai_provider_settings
+                WHERE user_id = %s
+                  AND provider = %s
+                """,
+                (user_id, provider),
+            )
+            existing_row = cursor.fetchone()
+            if existing_row is None and normalized_api_key is None:
+                raise ValueError(
+                    "API key is required before this provider can be selected."
+                )
+
+            if is_selected:
+                cursor.execute(
+                    """
+                    UPDATE user_ai_provider_settings
+                    SET is_selected = FALSE, updated_at = NOW()
+                    WHERE user_id = %s
+                    """,
+                    (user_id,),
+                )
+
+            if normalized_api_key is not None:
+                cursor.execute(
+                    """
+                    INSERT INTO user_ai_provider_settings (
+                        user_id,
+                        provider,
+                        encrypted_api_key,
+                        api_key_last4,
+                        model,
+                        is_selected
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        pgp_sym_encrypt(%s, %s),
+                        %s,
+                        %s,
+                        %s
+                    )
+                    ON CONFLICT (user_id, provider)
+                    DO UPDATE SET
+                        encrypted_api_key = EXCLUDED.encrypted_api_key,
+                        api_key_last4 = EXCLUDED.api_key_last4,
+                        model = EXCLUDED.model,
+                        is_selected = EXCLUDED.is_selected,
+                        updated_at = NOW()
+                    RETURNING
+                        provider,
+                        api_key_last4,
+                        model,
+                        is_selected,
+                        created_at,
+                        updated_at
+                    """,
+                    (
+                        user_id,
+                        provider,
+                        normalized_api_key,
+                        get_llm_settings_encryption_key(),
+                        normalized_api_key[-4:],
+                        normalized_model,
+                        is_selected,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE user_ai_provider_settings
+                    SET
+                        model = %s,
+                        is_selected = %s,
+                        updated_at = NOW()
+                    WHERE user_id = %s
+                      AND provider = %s
+                    RETURNING
+                        provider,
+                        api_key_last4,
+                        model,
+                        is_selected,
+                        created_at,
+                        updated_at
+                    """,
+                    (
+                        normalized_model,
+                        is_selected,
+                        user_id,
+                        provider,
+                    ),
+                )
+
+            row = cursor.fetchone()
+        connection.commit()
+
+    if row is None:
+        raise RuntimeError("Failed to save provider settings.")
+
+    return {
+        "provider": str(row[0]),
+        "api_key_last4": str(row[1]),
+        "model": str(row[2]) if row[2] is not None else None,
+        "is_selected": bool(row[3]),
+        "created_at": _iso_datetime(row[4]),
+        "updated_at": _iso_datetime(row[5]),
+    }
+
+
+def delete_user_ai_provider_setting(
+    *,
+    user_id: int,
+    provider: AiProvider,
+    database_url: str | None = None,
+) -> bool:
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM user_ai_provider_settings
+                WHERE user_id = %s
+                  AND provider = %s
+                RETURNING is_selected
+                """,
+                (user_id, provider),
+            )
+            deleted_row = cursor.fetchone()
+            if deleted_row and bool(deleted_row[0]):
+                cursor.execute(
+                    """
+                    WITH next_provider AS (
+                        SELECT id
+                        FROM user_ai_provider_settings
+                        WHERE user_id = %s
+                        ORDER BY updated_at DESC, id DESC
+                        LIMIT 1
+                    )
+                    UPDATE user_ai_provider_settings
+                    SET is_selected = TRUE, updated_at = NOW()
+                    WHERE id IN (SELECT id FROM next_provider)
+                    """,
+                    (user_id,),
+                )
+        connection.commit()
+
+    return deleted_row is not None
+
+
+def get_user_ai_provider_secret(
+    *,
+    user_id: int,
+    provider: AiProvider | None = None,
+    database_url: str | None = None,
+) -> UserAiProviderSecretRecord | None:
+    resolved_database_url = _resolve_database_url(database_url)
+    encryption_key = get_llm_settings_encryption_key()
+
+    query = """
+        SELECT
+            provider,
+            pgp_sym_decrypt(encrypted_api_key, %s)::text AS api_key,
+            api_key_last4,
+            model,
+            is_selected,
+            created_at,
+            updated_at
+        FROM user_ai_provider_settings
+        WHERE user_id = %s
+    """
+    params: tuple[object, ...]
+    if provider is None:
+        query += """
+        ORDER BY is_selected DESC, updated_at DESC, id DESC
+        LIMIT 1
+        """
+        params = (encryption_key, user_id)
+    else:
+        query += """
+          AND provider = %s
+        LIMIT 1
+        """
+        params = (encryption_key, user_id, provider)
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+        connection.commit()
+
+    if row is None:
+        return None
+
+    return {
+        "provider": str(row[0]),
+        "api_key": str(row[1]),
+        "api_key_last4": str(row[2]),
+        "model": str(row[3]) if row[3] is not None else None,
+        "is_selected": bool(row[4]),
+        "created_at": _iso_datetime(row[5]),
+        "updated_at": _iso_datetime(row[6]),
+    }
 
 
 def create_statement_upload(
@@ -1027,7 +1313,7 @@ def get_transactions(
     *,
     user_id: int,
     range_key: TimeRange = "all",
-    limit: int = 5000,
+    limit: int | None = 5000,
     database_url: str | None = None,
 ) -> list[StoredTransaction]:
     resolved_database_url = _resolve_database_url(database_url)
@@ -1052,9 +1338,11 @@ def get_transactions(
                 ELSE NULL
             END DESC,
             id DESC
-        LIMIT %s
         """
-    query_params: tuple[object, ...] = (*range_params, limit)
+    query_params: tuple[object, ...] = range_params
+    if limit is not None:
+        transaction_query += "\n        LIMIT %s"
+        query_params = (*range_params, limit)
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
