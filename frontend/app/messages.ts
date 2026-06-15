@@ -2,11 +2,66 @@ import type { AppLocale } from "./locale-provider";
 
 const en = {
   navTitle: "Navigation",
-  navHint: "Switch between dashboard, data entry, and transactions.",
+  navHint:
+    "Switch between dashboard, imports, transactions, batch review, AI insights, and settings.",
   navDashboard: "Dashboard",
   navDataEntry: "Data Entry",
   navTransactions: "Transactions",
   navBatchReview: "Batch Review",
+  navAiInsights: "AI Insights",
+  navSettings: "Settings",
+
+  settingsTitle: "AI Settings",
+  settingsBody:
+    "Configure the provider and model used for spending insights. Leave the API key field blank to keep the saved key.",
+  settingsStatusConfigured: "Configured",
+  settingsStatusNotConfigured: "Not configured",
+  settingsStatusActive: "Active provider",
+  settingsProviderCardHint:
+    "Save a provider with your own API key, then make it the active source for AI insights.",
+  settingsApiKeyLabel: "API key",
+  settingsApiKeyHint:
+    "Keys are encrypted before storage. Leave this blank to keep the saved key.",
+  settingsSavedKeyTemplate: "Saved key: {{key}}",
+  settingsModelLabel: "Model",
+  settingsModelHint:
+    "Use the default model unless you need a provider-specific override.",
+  settingsSaveUse: "Save and use",
+  settingsUseSaved: "Use saved key",
+  settingsRemove: "Remove key",
+  settingsSaving: "Saving...",
+  settingsRemoving: "Removing...",
+  settingsSavedMessage: "AI provider settings saved.",
+  settingsRemovedMessage: "Saved provider key removed.",
+  settingsPrivacyTitle: "Privacy",
+  settingsPrivacyBody:
+    "Insights send a summarized view of the selected transactions to the active external provider. File names, payment methods, and session data stay out of the model payload.",
+
+  aiInsightsTitle: "AI Insights",
+  aiInsightsBody:
+    "Generate practical observations and recommendations from your spending history using the active provider.",
+  aiInsightsProviderLabel: "Provider",
+  aiInsightsRangeLabel: "Insight range",
+  aiInsightsGenerate: "Generate insights",
+  aiInsightsGenerating: "Generating...",
+  aiInsightsPrivacyTitle: "Data sent to provider",
+  aiInsightsPrivacyBody:
+    "The request includes merchant names, dates, amounts, currencies, and derived summaries for the selected range.",
+  aiInsightsNeedConfig:
+    "Configure a provider in Settings before generating insights.",
+  aiInsightsResultTitle: "Generated analysis",
+  aiInsightsSourcesTitle: "Provider sources",
+  aiInsightsSnapshotTitle: "Snapshot sent",
+  aiInsightsNoResult: "No AI insights yet.",
+
+  snapshotTransactions: "Transactions",
+  snapshotDisplayCurrency: "Display currency",
+  snapshotDateWindow: "Date window",
+  snapshotTopCategories: "Top categories",
+  snapshotTopMerchants: "Top merchants",
+  snapshotRecurringMerchants: "Recurring merchants",
+  snapshotNoRecurring: "No recurring merchants found for this range.",
+  snapshotByOriginalCurrency: "Original currency totals",
 
   dataEntryTitle: "Data Entry",
   dataEntryBody: "Use this page to import statements and add manual spending records.",
@@ -235,6 +290,10 @@ const en = {
   errRequestFailed: "Request failed.",
   errUnexpectedUpload: "Unexpected upload error.",
   errDashboardUnavailable: "Dashboard data is unavailable.",
+  errAiSettingsLoad: "Failed to load AI settings.",
+  errAiSettingsSave: "Failed to save AI settings.",
+  errAiSettingsDelete: "Failed to remove the saved key.",
+  errAiInsightsFailed: "Failed to generate AI insights.",
   errManualMerchantRequired: "Merchant/description is required.",
   errManualDateRequired: "Date is required.",
   errManualAmountInvalid: "Amount must be a non-zero number.",
@@ -250,11 +309,63 @@ const en = {
 
 const zhHant: Record<keyof typeof en, string> = {
   navTitle: "導覽",
-  navHint: "在儀表板、資料輸入與交易頁面間切換。",
+  navHint: "在儀表板、匯入、交易、批次審查、AI 洞察與設定頁面間切換。",
   navDashboard: "儀表板",
   navDataEntry: "資料輸入",
   navTransactions: "交易",
   navBatchReview: "批次審查",
+  navAiInsights: "AI 洞察",
+  navSettings: "設定",
+
+  settingsTitle: "AI 設定",
+  settingsBody:
+    "設定支出洞察要使用的供應商與模型。若 API key 欄位留白，系統會保留已儲存的金鑰。",
+  settingsStatusConfigured: "已設定",
+  settingsStatusNotConfigured: "尚未設定",
+  settingsStatusActive: "目前使用中",
+  settingsProviderCardHint:
+    "使用你自己的 API key 儲存供應商，並將它設為 AI 洞察的使用來源。",
+  settingsApiKeyLabel: "API key",
+  settingsApiKeyHint:
+    "金鑰會先加密再儲存。若想保留目前金鑰，這個欄位留白即可。",
+  settingsSavedKeyTemplate: "已儲存金鑰：{{key}}",
+  settingsModelLabel: "模型",
+  settingsModelHint: "除非需要特定模型覆寫，否則建議保留預設值。",
+  settingsSaveUse: "儲存並使用",
+  settingsUseSaved: "使用已儲存金鑰",
+  settingsRemove: "移除金鑰",
+  settingsSaving: "儲存中...",
+  settingsRemoving: "移除中...",
+  settingsSavedMessage: "AI 供應商設定已儲存。",
+  settingsRemovedMessage: "已移除儲存的供應商金鑰。",
+  settingsPrivacyTitle: "隱私",
+  settingsPrivacyBody:
+    "產生洞察時，系統會將所選交易的摘要資料送到目前啟用的外部供應商。檔名、付款方式與工作階段資料不會送出。",
+
+  aiInsightsTitle: "AI 洞察",
+  aiInsightsBody:
+    "使用目前啟用的供應商，從你的支出歷史產生實用的觀察與建議。",
+  aiInsightsProviderLabel: "供應商",
+  aiInsightsRangeLabel: "分析期間",
+  aiInsightsGenerate: "產生洞察",
+  aiInsightsGenerating: "產生中...",
+  aiInsightsPrivacyTitle: "送出的資料",
+  aiInsightsPrivacyBody:
+    "請求會包含所選期間的商家名稱、日期、金額、幣別與衍生摘要。",
+  aiInsightsNeedConfig: "請先在設定頁面完成供應商設定，再產生 AI 洞察。",
+  aiInsightsResultTitle: "產生的分析",
+  aiInsightsSourcesTitle: "供應商來源",
+  aiInsightsSnapshotTitle: "送出的摘要",
+  aiInsightsNoResult: "尚未產生 AI 洞察。",
+
+  snapshotTransactions: "交易筆數",
+  snapshotDisplayCurrency: "顯示幣別",
+  snapshotDateWindow: "日期區間",
+  snapshotTopCategories: "主要類別",
+  snapshotTopMerchants: "主要商家",
+  snapshotRecurringMerchants: "重複出現商家",
+  snapshotNoRecurring: "此期間尚未找出重複出現的商家。",
+  snapshotByOriginalCurrency: "原始幣別總額",
 
   dataEntryTitle: "資料輸入",
   dataEntryBody: "此頁可用於匯入對帳單與手動新增支出紀錄。",
@@ -480,6 +591,10 @@ const zhHant: Record<keyof typeof en, string> = {
   errRequestFailed: "請求失敗。",
   errUnexpectedUpload: "發生未預期的上傳錯誤。",
   errDashboardUnavailable: "無法取得儀表板資料。",
+  errAiSettingsLoad: "無法載入 AI 設定。",
+  errAiSettingsSave: "無法儲存 AI 設定。",
+  errAiSettingsDelete: "無法移除儲存的金鑰。",
+  errAiInsightsFailed: "無法產生 AI 洞察。",
   errManualMerchantRequired: "請填寫商家或說明。",
   errManualDateRequired: "請選擇日期。",
   errManualAmountInvalid: "金額必須是非 0 的數字。",

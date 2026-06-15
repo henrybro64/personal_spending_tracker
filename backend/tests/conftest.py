@@ -285,6 +285,7 @@ def api_main(
     monkeypatch.setenv("BATCH_DATA_DIR", str(tmp_path / "batch-data"))
     monkeypatch.setenv("BATCH_PDF_SOURCE_DIR", str(tmp_path / "batch-pdf"))
     monkeypatch.setenv("BATCH_TEXT_SOURCE_DIR", str(tmp_path / "batch-text"))
+    monkeypatch.setenv("LLM_SETTINGS_ENCRYPTION_KEY", "test-ai-settings-key")
 
     if "backend.main" in sys.modules:
         api_main = importlib.reload(sys.modules["backend.main"])

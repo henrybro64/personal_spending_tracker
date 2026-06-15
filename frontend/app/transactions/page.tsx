@@ -784,6 +784,24 @@ export default function TransactionsPage() {
               >
                 {translate(locale, "navBatchReview")}
               </Link>
+              <Link
+                className={mergeClasses(
+                  styles.sidebarNavLink,
+                  pathname === "/ai-insights" && styles.sidebarNavLinkActive
+                )}
+                href="/ai-insights"
+              >
+                {translate(locale, "navAiInsights")}
+              </Link>
+              <Link
+                className={mergeClasses(
+                  styles.sidebarNavLink,
+                  pathname === "/settings" && styles.sidebarNavLinkActive
+                )}
+                href="/settings"
+              >
+                {translate(locale, "navSettings")}
+              </Link>
             </div>
           </Card>
 

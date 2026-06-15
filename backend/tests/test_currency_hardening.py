@@ -84,6 +84,7 @@ def test_migrations_apply_on_empty_database(database_url: str) -> None:
         "001_initial_schema",
         "002_backfill_statement_uploads",
         "003_harden_user_foreign_keys",
+        "004_ai_provider_settings",
     ]
 
 

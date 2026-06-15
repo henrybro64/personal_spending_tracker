@@ -158,6 +158,11 @@ spec:
                 configMapKeyRef:
                   name: spending-tracker-config
                   key: STATEMENT_RETENTION_DAYS
+            - name: LLM_SETTINGS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: spending-tracker-secrets
+                  key: LLM_SETTINGS_ENCRYPTION_KEY
           volumeMounts:
             - name: uploads-data
               mountPath: ${UPLOAD_DIR}
