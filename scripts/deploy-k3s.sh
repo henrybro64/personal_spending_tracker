@@ -39,6 +39,7 @@ FRONTEND_NODE_PORT="${FRONTEND_NODE_PORT:-30081}"
 INGRESS_ENABLED="${INGRESS_ENABLED:-0}"
 ENABLE_K3S_ON_BOOT="${ENABLE_K3S_ON_BOOT:-1}"
 DEFAULT_DB_PASSWORD="${DEFAULT_DB_PASSWORD:-spending-tracker-dev}"
+DEFAULT_LLM_SETTINGS_ENCRYPTION_KEY="${DEFAULT_LLM_SETTINGS_ENCRYPTION_KEY:-spending-tracker-llm-dev}"
 KUBECTL_CMD=()
 CTR_CMD=()
 
@@ -53,6 +54,8 @@ Required environment variables:
 Optional environment variables:
   DB_PASSWORD=spending-tracker-dev   Override for production or existing PVCs
   DEFAULT_DB_PASSWORD=spending-tracker-dev
+  LLM_SETTINGS_ENCRYPTION_KEY=...  Override AI provider key encryption secret
+  DEFAULT_LLM_SETTINGS_ENCRYPTION_KEY=spending-tracker-llm-dev
   KUBECTL=kubectl
   NAMESPACE=spending-tracker
   APP_HOST=spending.local
@@ -127,6 +130,35 @@ init_kubectl_cmd() {
   fi
 
   require_cmd "${KUBECTL_CMD[0]}"
+}
+
+decode_base64() {
+  if base64 --help 2>&1 | grep -q -- '--decode'; then
+    base64 --decode
+  else
+    base64 -D
+  fi
+}
+
+resolve_llm_settings_encryption_key() {
+  if [[ -n "${LLM_SETTINGS_ENCRYPTION_KEY:-}" ]]; then
+    return
+  fi
+
+  local existing_encoded=""
+  if "${KUBECTL_CMD[@]}" -n "$NAMESPACE" get secret spending-tracker-secrets >/dev/null 2>&1; then
+    existing_encoded="$("${KUBECTL_CMD[@]}" -n "$NAMESPACE" get secret spending-tracker-secrets \
+      -o jsonpath='{.data.LLM_SETTINGS_ENCRYPTION_KEY}' 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$existing_encoded" ]]; then
+    LLM_SETTINGS_ENCRYPTION_KEY="$(printf '%s' "$existing_encoded" | decode_base64)"
+    echo "Reusing LLM_SETTINGS_ENCRYPTION_KEY from existing spending-tracker-secrets."
+    return
+  fi
+
+  LLM_SETTINGS_ENCRYPTION_KEY="$DEFAULT_LLM_SETTINGS_ENCRYPTION_KEY"
+  _using_default_llm_settings_encryption_key=1
 }
 
 init_ctr_cmd() {
@@ -291,6 +323,8 @@ if [[ "$_using_default_db_password" == "1" ]]; then
   echo "Using default DB_PASSWORD ($DB_PASSWORD). Set DB_PASSWORD to override."
 fi
 
+_using_default_llm_settings_encryption_key=0
+
 if [[ "$LOCAL_DEPLOY" == "1" ]]; then
   build_and_import_local_images
 elif [[ "$BUILD_IMAGES" == "1" ]]; then
@@ -321,6 +355,11 @@ export BACKEND_IMAGE FRONTEND_IMAGE APP_IMAGE_PULL_POLICY FRONTEND_NODE_PORT
 echo "Applying namespace: $NAMESPACE"
 apply_k8s_manifest "$ROOT_DIR/k8s/00-namespace.yaml"
 
+resolve_llm_settings_encryption_key
+if [[ "$_using_default_llm_settings_encryption_key" == "1" ]]; then
+  echo "Using default LLM_SETTINGS_ENCRYPTION_KEY. Set LLM_SETTINGS_ENCRYPTION_KEY to override."
+fi
+
 echo "Applying config map"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" create configmap spending-tracker-config \
   --from-literal=APP_ENV="$APP_ENV" \
@@ -340,6 +379,7 @@ echo "Applying config map"
 echo "Applying secrets"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" create secret generic spending-tracker-secrets \
   --from-literal=DATABASE_PASSWORD="$DB_PASSWORD" \
+  --from-literal=LLM_SETTINGS_ENCRYPTION_KEY="$LLM_SETTINGS_ENCRYPTION_KEY" \
   --dry-run=client -o yaml | "${KUBECTL_CMD[@]}" apply -f -
 
 echo "Applying uploads PVC"
