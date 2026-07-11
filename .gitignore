@@ -3,12 +3,27 @@ __pycache__/
 *.py[cod]
 *.so
 .Python
+
+# Local/dev virtualenvs
 .venv/
+.venv-ci-test/
 venv/
 env/
+
+# Secrets and local env files
 .env
 .env.local
 .env.*.local
+.env.*
+!.env.example
+
+# Local batch-import statement sources (real bank data — never commit)
+Credit_Card_PDF/
+credit_card_text/
+Credit_Card_PDF_decrypted/
+
+# Real k8s secrets (templates like *.example.yaml stay tracked)
+k8s/11-secret.yaml
 
 node_modules/
 frontend/node_modules/
@@ -30,9 +45,7 @@ build/
 *.tsbuildinfo
 coverage/
 playwright-report/
-frontend/playwright-report/
 test-results/
-frontend/test-results/
 
 .pytest_cache/
 .mypy_cache/
@@ -40,6 +53,7 @@ frontend/test-results/
 .coverage
 htmlcov/
 
+# Runtime uploads, batch SQLite/CSV exports, and local DB artifacts
 storage/*
 !storage/.gitkeep
 backups/
