@@ -367,7 +367,7 @@ function buildPieChartBackground(categories: CategoryBreakdown[]) {
 
 const useStyles = makeStyles({
   page: {
-    minHeight: "100vh",
+    minHeight: "100dvh",
     backgroundColor: "var(--page-surface)",
     color: tokens.colorNeutralForeground1,
   },
@@ -375,30 +375,42 @@ const useStyles = makeStyles({
     maxWidth: "1480px",
     marginLeft: "auto",
     marginRight: "auto",
-    paddingTop: "24px",
-    paddingBottom: "32px",
-    paddingLeft: "24px",
-    paddingRight: "24px",
+    paddingTop: "max(20px, calc(env(safe-area-inset-top) + 16px))",
+    paddingBottom: "max(28px, calc(env(safe-area-inset-bottom) + 20px))",
+    paddingLeft: "max(20px, calc(env(safe-area-inset-left) + 16px))",
+    paddingRight: "max(20px, calc(env(safe-area-inset-right) + 16px))",
     display: "grid",
-    gridTemplateColumns: "320px minmax(0, 1fr)",
+    gridTemplateColumns: "280px minmax(0, 1fr)",
     gap: "16px",
-    "@media (max-width: 1120px)": {
+    alignItems: "start",
+    "@media (min-width: 1280px)": {
+      gridTemplateColumns: "320px minmax(0, 1fr)",
+      gap: "20px",
+    },
+    "@media (max-width: 959px)": {
       gridTemplateColumns: "1fr",
     },
-    "@media (max-width: 640px)": {
-      paddingLeft: "16px",
-      paddingRight: "16px",
+    "@media (max-width: 639px)": {
+      paddingLeft: "max(16px, calc(env(safe-area-inset-left) + 12px))",
+      paddingRight: "max(16px, calc(env(safe-area-inset-right) + 12px))",
     },
   },
   sidebar: {
     display: "flex",
     flexDirection: "column",
     gap: "16px",
+    position: "sticky",
+    top: "max(16px, calc(env(safe-area-inset-top) + 8px))",
+    alignSelf: "start",
+    "@media (max-width: 959px)": {
+      position: "static",
+    },
   },
   reportArea: {
     display: "flex",
     flexDirection: "column",
     gap: "16px",
+    minWidth: 0,
   },
   panel: {
     backgroundColor: tokens.colorNeutralBackground1,
@@ -419,8 +431,8 @@ const useStyles = makeStyles({
   },
   sidebarNavLink: {
     display: "block",
-    paddingTop: "10px",
-    paddingBottom: "10px",
+    paddingTop: "12px",
+    paddingBottom: "12px",
     paddingLeft: "12px",
     paddingRight: "12px",
     fontWeight: tokens.fontWeightSemibold,
@@ -630,7 +642,7 @@ const useStyles = makeStyles({
     display: "grid",
     gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     gap: "8px",
-    "@media (max-width: 520px)": {
+    "@media (max-width: 900px)": {
       gridTemplateColumns: "1fr",
     },
   },
@@ -777,19 +789,19 @@ const useStyles = makeStyles({
     display: "grid",
     gridTemplateColumns:
       "minmax(0, 1.15fr) minmax(300px, 0.9fr) minmax(300px, 0.95fr)",
-    gap: "8px",
-    "@media (max-width: 1400px)": {
+    gap: "12px",
+    "@media (max-width: 1366px)": {
       gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     },
-    "@media (max-width: 840px)": {
+    "@media (max-width: 959px)": {
       gridTemplateColumns: "1fr",
     },
   },
   visualsGrid: {
     display: "grid",
     gridTemplateColumns: "minmax(0, 1.15fr) minmax(320px, 0.85fr)",
-    gap: "8px",
-    "@media (max-width: 1200px)": {
+    gap: "12px",
+    "@media (max-width: 959px)": {
       gridTemplateColumns: "1fr",
     },
   },
@@ -822,9 +834,12 @@ const useStyles = makeStyles({
   },
   pieChartWrap: {
     width: "100%",
-    maxWidth: "260px",
+    maxWidth: "320px",
     aspectRatio: "1 / 1",
     justifySelf: "center",
+    "@media (max-width: 639px)": {
+      maxWidth: "260px",
+    },
   },
   pieChart: {
     width: "100%",
@@ -957,8 +972,14 @@ const useStyles = makeStyles({
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(48px, 1fr))",
     gap: "8px",
-    minHeight: "230px",
+    minHeight: "300px",
     alignItems: "end",
+    "@media (min-width: 1280px)": {
+      minHeight: "340px",
+    },
+    "@media (max-width: 959px)": {
+      minHeight: "280px",
+    },
   },
   columnItem: {
     display: "flex",
@@ -969,13 +990,19 @@ const useStyles = makeStyles({
   },
   columnTrack: {
     width: "100%",
-    height: "164px",
+    height: "220px",
     display: "flex",
     alignItems: "flex-end",
     backgroundColor: tokens.colorNeutralBackground3,
     paddingLeft: "4px",
     paddingRight: "4px",
     ...shorthands.borderRadius("6px"),
+    "@media (min-width: 1280px)": {
+      height: "250px",
+    },
+    "@media (max-width: 959px)": {
+      height: "200px",
+    },
   },
   columnBar: {
     width: "100%",
@@ -1071,6 +1098,7 @@ const useStyles = makeStyles({
     overflowX: "auto",
     overflowY: "auto",
     maxHeight: "600px",
+    WebkitOverflowScrolling: "touch",
     backgroundColor: tokens.colorNeutralBackground1,
     ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2),
     ...shorthands.borderRadius(tokens.borderRadiusLarge),
@@ -1089,7 +1117,7 @@ const useStyles = makeStyles({
     paddingBottom: "8px",
   },
   tableCell: {
-    fontSize: tokens.fontSizeBase200,
+    fontSize: tokens.fontSizeBase300,
     paddingTop: "8px",
     paddingBottom: "8px",
   },
@@ -1584,7 +1612,7 @@ export default function HomePage() {
 
   return (
     <main className={styles.page}>
-      <div className={styles.shell}>
+      <div className={styles.shell} data-testid="dashboard-shell">
         <aside className={styles.sidebar}>
           <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
             <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>

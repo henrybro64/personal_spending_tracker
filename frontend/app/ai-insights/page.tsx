@@ -37,37 +37,49 @@ type InsightRange = "month" | "quarter" | "6months" | "year";
 
 const useStyles = makeStyles({
   page: {
-    minHeight: "100vh",
+    minHeight: "100dvh",
     backgroundColor: "var(--page-surface)",
   },
   shell: {
     maxWidth: "1480px",
     marginLeft: "auto",
     marginRight: "auto",
-    paddingTop: "24px",
-    paddingBottom: "32px",
-    paddingLeft: "24px",
-    paddingRight: "24px",
+    paddingTop: "max(20px, calc(env(safe-area-inset-top) + 16px))",
+    paddingBottom: "max(28px, calc(env(safe-area-inset-bottom) + 20px))",
+    paddingLeft: "max(20px, calc(env(safe-area-inset-left) + 16px))",
+    paddingRight: "max(20px, calc(env(safe-area-inset-right) + 16px))",
     display: "grid",
-    gridTemplateColumns: "320px minmax(0, 1fr)",
+    gridTemplateColumns: "280px minmax(0, 1fr)",
     gap: "16px",
-    "@media (max-width: 1120px)": {
+    alignItems: "start",
+    "@media (min-width: 1280px)": {
+      gridTemplateColumns: "320px minmax(0, 1fr)",
+      gap: "20px",
+    },
+    "@media (max-width: 959px)": {
       gridTemplateColumns: "1fr",
     },
-    "@media (max-width: 640px)": {
-      paddingLeft: "16px",
-      paddingRight: "16px",
+    "@media (max-width: 639px)": {
+      paddingLeft: "max(16px, calc(env(safe-area-inset-left) + 12px))",
+      paddingRight: "max(16px, calc(env(safe-area-inset-right) + 12px))",
     },
   },
   sidebar: {
     display: "flex",
     flexDirection: "column",
     gap: "16px",
+    position: "sticky",
+    top: "max(16px, calc(env(safe-area-inset-top) + 8px))",
+    alignSelf: "start",
+    "@media (max-width: 959px)": {
+      position: "static",
+    },
   },
   main: {
     display: "flex",
     flexDirection: "column",
     gap: "16px",
+    minWidth: 0,
   },
   card: {
     display: "flex",
@@ -97,8 +109,8 @@ const useStyles = makeStyles({
   },
   sidebarNavLink: {
     display: "block",
-    paddingTop: "10px",
-    paddingBottom: "10px",
+    paddingTop: "12px",
+    paddingBottom: "12px",
     paddingLeft: "12px",
     paddingRight: "12px",
     fontWeight: tokens.fontWeightSemibold,

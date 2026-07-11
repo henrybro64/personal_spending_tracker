@@ -17,9 +17,11 @@ body {
 }
 
 body {
+  min-height: 100dvh;
   font-family: var(--font-sans);
   color: var(--page-ink);
   background: var(--page-surface);
+  -webkit-text-size-adjust: 100%;
 }
 
 a {
