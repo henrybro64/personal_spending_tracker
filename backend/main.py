@@ -486,10 +486,9 @@ def _resolve_supported_currency(
             default=cast(SupportedCurrency, default) if default is not None else None,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid {field_name}. Use one of: "
-            + ", ".join(SUPPORTED_CURRENCY_CODES),
+        raise ValueError(
+            f"Invalid {field_name}. Use one of: "
+            + ", ".join(SUPPORTED_CURRENCY_CODES)
         ) from exc
 
 
@@ -501,11 +500,8 @@ def _validate_optional_iso_date(value: str | None, *, field_name: str) -> str | 
         return None
     try:
         date.fromisoformat(normalized_value)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} must be YYYY-MM-DD.",
-        ) from None
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be YYYY-MM-DD.") from exc
     return normalized_value
 
 
@@ -642,6 +638,213 @@ def _dashboard_transaction_for_currency(
         "display_amount": display_amount,
         "display_currency": display_currency,
         "is_converted": original_currency != display_currency,
+    }
+
+
+def _transaction_matches_dashboard_filters(
+    transaction: DashboardTransaction,
+    *,
+    normalized_search: str,
+    amount_filter: AmountFilter,
+) -> bool:
+    matches_search = (
+        not normalized_search
+        or normalized_search in transaction["merchant"].lower()
+        or normalized_search in transaction["category"].lower()
+        or normalized_search in transaction["date"].lower()
+        or normalized_search in f"{transaction['amount']:.2f}"
+    )
+    if amount_filter == "all":
+        matches_amount_filter = True
+    elif amount_filter == "spend":
+        matches_amount_filter = transaction["amount"] >= 0
+    else:
+        matches_amount_filter = transaction["amount"] < 0
+    return matches_search and matches_amount_filter
+
+
+def _filter_dashboard_transactions(
+    transactions: list[DashboardTransaction],
+    *,
+    search: str,
+    amount_filter: AmountFilter,
+    selected_merchant: str,
+) -> tuple[list[DashboardTransaction], list[DashboardTransaction]]:
+    normalized_search = search.strip().lower()
+    base_filtered = [
+        transaction
+        for transaction in transactions
+        if _transaction_matches_dashboard_filters(
+            transaction,
+            normalized_search=normalized_search,
+            amount_filter=amount_filter,
+        )
+    ]
+    normalized_selected_merchant = selected_merchant.strip()
+    if not normalized_selected_merchant:
+        return base_filtered, base_filtered
+    filtered_transactions = [
+        transaction
+        for transaction in base_filtered
+        if transaction["merchant"] == normalized_selected_merchant
+    ]
+    return base_filtered, filtered_transactions
+
+
+def _build_dashboard_breakdowns(
+    base_filtered: list[DashboardTransaction],
+    filtered_transactions: list[DashboardTransaction],
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    merchant_totals: dict[str, float] = {}
+    for transaction in base_filtered:
+        merchant = transaction["merchant"]
+        merchant_totals[merchant] = merchant_totals.get(merchant, 0.0) + transaction["amount"]
+    merchant_breakdown = sorted(
+        [
+            {
+                "merchant": merchant,
+                "total": total,
+                "abs_total": abs(total),
+            }
+            for merchant, total in merchant_totals.items()
+        ],
+        key=lambda item: item["abs_total"],
+        reverse=True,
+    )[:7]
+
+    category_totals: dict[str, float] = {}
+    for transaction in filtered_transactions:
+        if transaction["amount"] <= 0:
+            continue
+        category = transaction["category"]
+        category_totals[category] = category_totals.get(category, 0.0) + transaction["amount"]
+    category_total_spend = sum(category_totals.values())
+    category_breakdown = [
+        {
+            "category": category,
+            "total": total,
+            "share": (total / category_total_spend) if category_total_spend > 0 else 0.0,
+        }
+        for category, total in sorted(
+            category_totals.items(), key=lambda item: item[1], reverse=True
+        )
+    ]
+
+    date_totals: dict[str, float] = {}
+    for transaction in filtered_transactions:
+        date_key = transaction["date"]
+        date_totals[date_key] = date_totals.get(date_key, 0.0) + transaction["amount"]
+    date_breakdown = [
+        {
+            "date": date_key,
+            "total": total,
+            "abs_total": abs(total),
+        }
+        for date_key, total in sorted(date_totals.items(), key=lambda item: item[0])[-10:]
+    ]
+    return merchant_breakdown, category_breakdown, date_breakdown
+
+
+def _build_dashboard_metrics(
+    filtered_transactions: list[DashboardTransaction],
+    converted_transactions: list[DashboardTransaction],
+) -> dict[str, float]:
+    selection_net = sum(transaction["amount"] for transaction in filtered_transactions)
+    selection_spend = sum(
+        transaction["amount"]
+        for transaction in filtered_transactions
+        if transaction["amount"] > 0
+    )
+    selection_refunds = sum(
+        abs(transaction["amount"])
+        for transaction in filtered_transactions
+        if transaction["amount"] < 0
+    )
+    selection_average = (
+        selection_net / len(filtered_transactions) if filtered_transactions else 0.0
+    )
+    upload_net = sum(transaction["amount"] for transaction in converted_transactions)
+    largest_transaction_amount = (
+        max(abs(transaction["amount"]) for transaction in filtered_transactions)
+        if filtered_transactions
+        else 0.0
+    )
+    selection_coverage = (
+        (len(filtered_transactions) / len(converted_transactions))
+        if converted_transactions
+        else 0.0
+    )
+    model_total_in_active_currency = sum(
+        transaction["amount"] for transaction in converted_transactions
+    )
+    return {
+        "selection_net": selection_net,
+        "selection_spend": selection_spend,
+        "selection_refunds": selection_refunds,
+        "selection_average": selection_average,
+        "upload_net": upload_net,
+        "largest_transaction_amount": largest_transaction_amount,
+        "selection_coverage": selection_coverage,
+        "model_total_in_active_currency": model_total_in_active_currency,
+    }
+
+
+def _parse_manual_transaction_fields(
+    payload: ManualTransactionRequest,
+) -> dict[str, object]:
+    transaction_date = payload.date.strip()
+    merchant = payload.merchant.strip()
+    original_amount = (
+        payload.original_amount
+        if payload.original_amount is not None
+        else payload.amount
+    )
+    if not merchant:
+        raise ValueError("Merchant is required.")
+    if original_amount is None or original_amount <= 0:
+        raise ValueError("Amount must be positive.")
+    try:
+        date.fromisoformat(transaction_date)
+    except ValueError as exc:
+        raise ValueError("Date must be YYYY-MM-DD.") from exc
+
+    original_currency = _resolve_supported_currency(
+        payload.original_currency or payload.currency,
+        field_name="original currency",
+        default=DEFAULT_BASE_CURRENCY,
+    )
+    base_currency = _resolve_supported_currency(
+        payload.base_currency,
+        field_name="base currency",
+        default=DEFAULT_BASE_CURRENCY,
+    )
+    exchange_rate_date = _validate_optional_iso_date(
+        payload.exchange_rate_date,
+        field_name="Exchange rate date",
+    )
+
+    if payload.exchange_rate is not None and payload.exchange_rate <= 0:
+        raise ValueError("Exchange rate must be greater than zero when provided.")
+    if original_currency == base_currency or payload.exchange_rate is not None:
+        exchange_rate_date = exchange_rate_date or transaction_date
+
+    derive_base_money_fields(
+        original_amount=original_amount,
+        original_currency=original_currency,
+        base_currency=base_currency,
+        exchange_rate=payload.exchange_rate,
+    )
+
+    return {
+        "transaction_date": transaction_date,
+        "merchant": merchant,
+        "original_amount": original_amount,
+        "original_currency": original_currency,
+        "base_currency": base_currency,
+        "exchange_rate": payload.exchange_rate,
+        "exchange_rate_date": exchange_rate_date,
+        "category": payload.category,
+        "payment_method": payload.payment_method,
     }
 
 
@@ -1183,128 +1386,29 @@ async def dashboard_view(
             category=transaction.get("category"),
         )
     ]
-    converted_transactions: list[DashboardTransaction] = []
-    for transaction in all_transactions:
-        dashboard_transaction = _dashboard_transaction_for_currency(
-            transaction,
-            resolved_currency,
-        )
-        if dashboard_transaction is not None:
-            converted_transactions.append(dashboard_transaction)
-
-    normalized_search = search.strip().lower()
-    base_filtered = []
-    for transaction in converted_transactions:
-        matches_search = (
-            not normalized_search
-            or normalized_search in transaction["merchant"].lower()
-            or normalized_search in transaction["category"].lower()
-            or normalized_search in transaction["date"].lower()
-            or normalized_search in f"{transaction['amount']:.2f}"
-        )
-        matches_amount_filter = (
-            resolved_amount_filter == "all"
-            or (
-                resolved_amount_filter == "spend"
-                and transaction["amount"] >= 0
-            )
-            or (
-                resolved_amount_filter == "refunds"
-                and transaction["amount"] < 0
+    converted_transactions = [
+        dashboard_transaction
+        for transaction in all_transactions
+        if (
+            dashboard_transaction := _dashboard_transaction_for_currency(
+                transaction,
+                resolved_currency,
             )
         )
-        if matches_search and matches_amount_filter:
-            base_filtered.append(transaction)
-
-    normalized_selected_merchant = selected_merchant.strip()
-    filtered_transactions = (
-        [
-            transaction
-            for transaction in base_filtered
-            if transaction["merchant"] == normalized_selected_merchant
-        ]
-        if normalized_selected_merchant
-        else base_filtered
+        is not None
+    ]
+    base_filtered, filtered_transactions = _filter_dashboard_transactions(
+        converted_transactions,
+        search=search,
+        amount_filter=resolved_amount_filter,
+        selected_merchant=selected_merchant,
     )
     sorted_transactions = _sort_transactions(filtered_transactions, resolved_sort_option)
-
-    merchant_totals: dict[str, float] = {}
-    for transaction in base_filtered:
-        merchant = transaction["merchant"]
-        merchant_totals[merchant] = merchant_totals.get(merchant, 0.0) + transaction["amount"]
-    merchant_breakdown = sorted(
-        [
-            {
-                "merchant": merchant,
-                "total": total,
-                "abs_total": abs(total),
-            }
-            for merchant, total in merchant_totals.items()
-        ],
-        key=lambda item: item["abs_total"],
-        reverse=True,
-    )[:7]
-
-    category_totals: dict[str, float] = {}
-    for transaction in filtered_transactions:
-        if transaction["amount"] <= 0:
-            continue
-        category = transaction["category"]
-        category_totals[category] = category_totals.get(category, 0.0) + transaction["amount"]
-    category_total_spend = sum(category_totals.values())
-    category_breakdown = [
-        {
-            "category": category,
-            "total": total,
-            "share": (total / category_total_spend) if category_total_spend > 0 else 0.0,
-        }
-        for category, total in sorted(
-            category_totals.items(), key=lambda item: item[1], reverse=True
-        )
-    ]
-
-    date_totals: dict[str, float] = {}
-    for transaction in filtered_transactions:
-        date_key = transaction["date"]
-        date_totals[date_key] = date_totals.get(date_key, 0.0) + transaction["amount"]
-    date_breakdown = [
-        {
-            "date": date_key,
-            "total": total,
-            "abs_total": abs(total),
-        }
-        for date_key, total in sorted(date_totals.items(), key=lambda item: item[0])[-10:]
-    ]
-
-    selection_net = sum(transaction["amount"] for transaction in filtered_transactions)
-    selection_spend = sum(
-        transaction["amount"]
-        for transaction in filtered_transactions
-        if transaction["amount"] > 0
+    merchant_breakdown, category_breakdown, date_breakdown = _build_dashboard_breakdowns(
+        base_filtered,
+        filtered_transactions,
     )
-    selection_refunds = sum(
-        abs(transaction["amount"])
-        for transaction in filtered_transactions
-        if transaction["amount"] < 0
-    )
-    selection_average = (
-        selection_net / len(filtered_transactions) if filtered_transactions else 0.0
-    )
-    upload_net = sum(transaction["amount"] for transaction in converted_transactions)
-    largest_transaction_amount = (
-        max(abs(transaction["amount"]) for transaction in filtered_transactions)
-        if filtered_transactions
-        else 0.0
-    )
-    selection_coverage = (
-        (len(filtered_transactions) / len(converted_transactions))
-        if converted_transactions
-        else 0.0
-    )
-    model_total_in_active_currency = sum(
-        transaction["amount"] for transaction in converted_transactions
-    )
-
+    metrics = _build_dashboard_metrics(filtered_transactions, converted_transactions)
     summary_data: TransactionsSummary = get_transactions_summary(
         user_id=current_user["id"],
         range_key=resolved_range,
@@ -1319,86 +1423,44 @@ async def dashboard_view(
         "merchant_breakdown": merchant_breakdown,
         "category_breakdown": category_breakdown,
         "date_breakdown": date_breakdown,
-        "metrics": {
-            "selection_net": selection_net,
-            "selection_spend": selection_spend,
-            "selection_refunds": selection_refunds,
-            "selection_average": selection_average,
-            "upload_net": upload_net,
-            "largest_transaction_amount": largest_transaction_amount,
-            "selection_coverage": selection_coverage,
-            "model_total_in_active_currency": model_total_in_active_currency,
-        },
+        "metrics": metrics,
     }
 
 
-@app.post("/transactions/manual", status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/transactions/manual",
+    status_code=status.HTTP_201_CREATED,
+    responses={400: {"description": "Invalid manual transaction request"}},
+)
 async def create_manual_transaction(
     payload: ManualTransactionRequest,
     request: Request,
     current_user: UserRecord = Depends(require_current_user),
 ) -> ManualTransactionResponse:
-    transaction_date = payload.date.strip()
-    merchant = payload.merchant.strip()
-    original_amount = (
-        payload.original_amount
-        if payload.original_amount is not None
-        else payload.amount
-    )
-    if not merchant:
-        raise HTTPException(status_code=400, detail="Merchant is required.")
-
-    if original_amount is None or original_amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be positive.")
-
     try:
-        date.fromisoformat(transaction_date)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Date must be YYYY-MM-DD.") from None
-
-    original_currency = _resolve_supported_currency(
-        payload.original_currency or payload.currency,
-        field_name="original currency",
-        default=DEFAULT_BASE_CURRENCY,
-    )
-    base_currency = _resolve_supported_currency(
-        payload.base_currency,
-        field_name="base currency",
-        default=DEFAULT_BASE_CURRENCY,
-    )
-    if payload.exchange_rate is not None and payload.exchange_rate <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Exchange rate must be greater than zero when provided.",
-        )
-    exchange_rate_date = _validate_optional_iso_date(
-        payload.exchange_rate_date,
-        field_name="Exchange rate date",
-    )
-    if original_currency == base_currency or payload.exchange_rate is not None:
-        exchange_rate_date = exchange_rate_date or transaction_date
-
-    try:
-        derive_base_money_fields(
-            original_amount=original_amount,
-            original_currency=original_currency,
-            base_currency=base_currency,
-            exchange_rate=payload.exchange_rate,
-        )
+        fields = _parse_manual_transaction_fields(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     created = insert_manual_transaction(
         user_id=current_user["id"],
-        transaction_date=transaction_date,
-        merchant=merchant,
-        original_amount=original_amount,
-        original_currency=original_currency,
-        base_currency=base_currency,
-        exchange_rate=payload.exchange_rate,
-        exchange_rate_date=exchange_rate_date,
-        category=payload.category,
-        payment_method=payload.payment_method,
+        transaction_date=str(fields["transaction_date"]),
+        merchant=str(fields["merchant"]),
+        original_amount=float(fields["original_amount"]),
+        original_currency=str(fields["original_currency"]),
+        base_currency=str(fields["base_currency"]),
+        exchange_rate=(
+            float(fields["exchange_rate"])
+            if fields["exchange_rate"] is not None
+            else None
+        ),
+        exchange_rate_date=(
+            str(fields["exchange_rate_date"])
+            if fields["exchange_rate_date"] is not None
+            else None
+        ),
+        category=cast(str | None, fields["category"]),
+        payment_method=cast(str | None, fields["payment_method"]),
     )
     audit_context = get_audit_request_context(request)
     record_audit_event(

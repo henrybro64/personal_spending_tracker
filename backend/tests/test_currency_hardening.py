@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from backend.database import create_statement_upload, insert_transactions
 
@@ -110,7 +111,7 @@ def test_dashboard_excludes_unconverted_cross_currency_from_base_totals(
     dashboard = client.get("/dashboard/view?currency=TWD&limit=10")
     assert dashboard.status_code == 200
     payload = dashboard.json()
-    assert payload["summary"]["total_spending"] == 605.0
+    assert payload["summary"]["total_spending"] == pytest.approx(605.0)
     assert [row["merchant"] for row in payload["sorted_transactions"]] == [
         "TWD LUNCH"
     ]
@@ -157,9 +158,9 @@ def test_summary_excludes_unconverted_cross_currency_from_display_totals(
     summary = client.get("/summary?currency=TWD")
     assert summary.status_code == 200
     payload = summary.json()
-    assert payload["total_spending"] == 605.0
+    assert payload["total_spending"] == pytest.approx(605.0)
     assert payload["number_of_transactions"] == 2
-    assert payload["average_transaction_amount"] == 605.0
+    assert payload["average_transaction_amount"] == pytest.approx(605.0)
 
 
 def test_migrations_apply_on_empty_database(database_url: str) -> None:

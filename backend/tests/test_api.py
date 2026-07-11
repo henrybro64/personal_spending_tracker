@@ -368,13 +368,13 @@ def test_manual_twd_transaction_sets_base_fields(client: TestClient) -> None:
 
     assert response.status_code == 201
     transaction = response.json()["transaction"]
-    assert transaction["amount"] == 350.0
+    assert transaction["amount"] == pytest.approx(350.0)
     assert transaction["currency"] == "TWD"
-    assert transaction["original_amount"] == 350.0
+    assert transaction["original_amount"] == pytest.approx(350.0)
     assert transaction["original_currency"] == "TWD"
-    assert transaction["base_amount"] == 350.0
+    assert transaction["base_amount"] == pytest.approx(350.0)
     assert transaction["base_currency"] == "TWD"
-    assert transaction["exchange_rate"] == 1.0
+    assert transaction["exchange_rate"] == pytest.approx(1.0)
     assert transaction["exchange_rate_date"] == "2024-04-20"
 
 
@@ -400,11 +400,11 @@ def test_manual_usd_transaction_with_exchange_rate_calculates_base(
 
     assert response.status_code == 201
     transaction = response.json()["transaction"]
-    assert transaction["amount"] == 25.99
+    assert transaction["amount"] == pytest.approx(25.99)
     assert transaction["currency"] == "USD"
-    assert transaction["base_amount"] == 842.08
+    assert transaction["base_amount"] == pytest.approx(842.08)
     assert transaction["base_currency"] == "TWD"
-    assert transaction["exchange_rate"] == 32.4
+    assert transaction["exchange_rate"] == pytest.approx(32.4)
     assert transaction["exchange_rate_date"] == "2026-02-18"
 
 
@@ -472,10 +472,10 @@ def test_manual_transaction_legacy_amount_defaults_to_twd(client: TestClient) ->
 
     assert response.status_code == 201
     transaction = response.json()["transaction"]
-    assert transaction["original_amount"] == 120.0
+    assert transaction["original_amount"] == pytest.approx(120.0)
     assert transaction["original_currency"] == "TWD"
-    assert transaction["base_amount"] == 120.0
-    assert transaction["exchange_rate"] == 1.0
+    assert transaction["base_amount"] == pytest.approx(120.0)
+    assert transaction["exchange_rate"] == pytest.approx(1.0)
 
 
 def test_manual_transaction_rejects_non_positive_exchange_rate(

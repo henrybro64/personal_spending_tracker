@@ -27,7 +27,7 @@ import { supportedCurrencies, type SupportedCurrency } from "../currency";
 import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
 import { buildBulkImportLlmPrompt } from "../bulk-import-llm-prompt";
-import { translate } from "../messages";
+import { translate, type MessageKey } from "../messages";
 
 type UploadResponse = {
   file_path: string;
@@ -256,6 +256,65 @@ function getTodayIsoDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function parseManualExchangeRate(
+  currency: SupportedCurrency,
+  exchangeRateInput: string
+): number | null {
+  if (currency === "TWD" || !exchangeRateInput.trim()) {
+    return null;
+  }
+  return Number(exchangeRateInput);
+}
+
+function validateManualSpendingForm(options: {
+  date: string;
+  merchant: string;
+  amount: number;
+  exchangeRate: number | null;
+  translate: (key: MessageKey) => string;
+}): string | null {
+  if (!options.date) {
+    return options.translate("errManualDateRequired");
+  }
+  if (!options.merchant) {
+    return options.translate("errManualMerchantRequired");
+  }
+  if (!Number.isFinite(options.amount) || options.amount <= 0) {
+    return options.translate("errManualAmountInvalid");
+  }
+  if (
+    options.exchangeRate !== null &&
+    (!Number.isFinite(options.exchangeRate) || options.exchangeRate <= 0)
+  ) {
+    return options.translate("errManualExchangeRateInvalid");
+  }
+  return null;
+}
+
+function buildManualTransactionPayload(options: {
+  date: string;
+  merchant: string;
+  amount: number;
+  currency: SupportedCurrency;
+  exchangeRate: number | null;
+  category: string;
+  paymentMethod: string;
+}) {
+  return {
+    date: options.date,
+    merchant: options.merchant,
+    amount: options.amount,
+    currency: options.currency,
+    original_amount: options.amount,
+    original_currency: options.currency,
+    base_currency: "TWD" as const,
+    exchange_rate: options.exchangeRate,
+    exchange_rate_date: options.exchangeRate === null ? null : options.date,
+    category: options.category === "Auto" ? null : options.category,
+    payment_method: options.paymentMethod || null,
+  };
+}
+
 export default function DataEntryPage() {
   const styles = useStyles();
   const { locale } = useLocale();
@@ -447,27 +506,16 @@ export default function DataEntryPage() {
   async function onAddManualSpending() {
     const merchant = manualMerchant.trim();
     const amount = Number(manualAmount);
-    const exchangeRate =
-      manualCurrency === "TWD" || !manualExchangeRate.trim()
-        ? null
-        : Number(manualExchangeRate);
-    if (!manualDate) {
-      setManualError(translate(locale, "errManualDateRequired"));
-      return;
-    }
-    if (!merchant) {
-      setManualError(translate(locale, "errManualMerchantRequired"));
-      return;
-    }
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setManualError(translate(locale, "errManualAmountInvalid"));
-      return;
-    }
-    if (
-      exchangeRate !== null &&
-      (!Number.isFinite(exchangeRate) || exchangeRate <= 0)
-    ) {
-      setManualError(translate(locale, "errManualExchangeRateInvalid"));
+    const exchangeRate = parseManualExchangeRate(manualCurrency, manualExchangeRate);
+    const validationError = validateManualSpendingForm({
+      date: manualDate,
+      merchant,
+      amount,
+      exchangeRate,
+      translate: (key) => translate(locale, key),
+    });
+    if (validationError) {
+      setManualError(validationError);
       return;
     }
 
@@ -478,19 +526,17 @@ export default function DataEntryPage() {
       const response = await apiFetch("/transactions/manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          date: manualDate,
-          merchant,
-          amount,
-          currency: manualCurrency,
-          original_amount: amount,
-          original_currency: manualCurrency,
-          base_currency: "TWD",
-          exchange_rate: exchangeRate,
-          exchange_rate_date: exchangeRate === null ? null : manualDate,
-          category: manualCategory === "Auto" ? null : manualCategory,
-          payment_method: manualPaymentMethod || null,
-        }),
+        body: JSON.stringify(
+          buildManualTransactionPayload({
+            date: manualDate,
+            merchant,
+            amount,
+            currency: manualCurrency,
+            exchangeRate,
+            category: manualCategory,
+            paymentMethod: manualPaymentMethod,
+          })
+        ),
       });
       const payload = (await response.json()) as { detail?: string };
       if (!response.ok) {

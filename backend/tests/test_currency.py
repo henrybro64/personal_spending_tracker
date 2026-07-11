@@ -31,9 +31,9 @@ def test_derive_base_money_fields_same_currency() -> None:
         base_currency="TWD",
     )
 
-    assert base_amount == 350.0
+    assert base_amount == pytest.approx(350.0)
     assert base_currency == "TWD"
-    assert exchange_rate == 1.0
+    assert exchange_rate == pytest.approx(1.0)
 
 
 def test_derive_base_money_fields_with_explicit_rate() -> None:
@@ -44,9 +44,9 @@ def test_derive_base_money_fields_with_explicit_rate() -> None:
         exchange_rate=32.4,
     )
 
-    assert base_amount == 842.08
+    assert base_amount == pytest.approx(842.08)
     assert base_currency == "TWD"
-    assert exchange_rate == 32.4
+    assert exchange_rate == pytest.approx(32.4)
 
 
 def test_derive_base_money_fields_without_rate_leaves_base_null() -> None:
