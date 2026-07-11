@@ -456,6 +456,51 @@ def test_manual_transaction_rejects_invalid_currency(client: TestClient) -> None
     assert "Invalid original currency" in response.json()["detail"]
 
 
+def test_manual_transaction_legacy_amount_defaults_to_twd(client: TestClient) -> None:
+    _register_user(client)
+
+    response = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2024-04-20",
+            "merchant": "Coffee Project",
+            "amount": 120,
+            "category": "Dining",
+            "payment_method": "Cash",
+        },
+    )
+
+    assert response.status_code == 201
+    transaction = response.json()["transaction"]
+    assert transaction["original_amount"] == 120.0
+    assert transaction["original_currency"] == "TWD"
+    assert transaction["base_amount"] == 120.0
+    assert transaction["exchange_rate"] == 1.0
+
+
+def test_manual_transaction_rejects_non_positive_exchange_rate(
+    client: TestClient,
+) -> None:
+    _register_user(client)
+
+    response = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2026-02-18",
+            "merchant": "Amazon",
+            "original_amount": 25.99,
+            "original_currency": "USD",
+            "base_currency": "TWD",
+            "exchange_rate": 0,
+            "category": "Shopping",
+            "payment_method": "Chase",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Exchange rate must be greater than zero" in response.json()["detail"]
+
+
 def test_dashboard_view_preserves_original_currency_and_recent_uploads_group_totals(
     client: TestClient,
     database_url: str,
