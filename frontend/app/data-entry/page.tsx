@@ -304,11 +304,11 @@ function StatementUploadCard({
   styles,
   locale,
   refreshSession,
-}: {
+}: Readonly<{
   styles: ReturnType<typeof useStyles>;
   locale: ReturnType<typeof useLocale>["locale"];
   refreshSession: () => Promise<void>;
-}) {
+}>) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pdfPassword, setPdfPassword] = useState("");
@@ -415,11 +415,11 @@ function BulkImportCard({
   styles,
   locale,
   refreshSession,
-}: {
+}: Readonly<{
   styles: ReturnType<typeof useStyles>;
   locale: ReturnType<typeof useLocale>["locale"];
   refreshSession: () => Promise<void>;
-}) {
+}>) {
   const bulkFileInputRef = useRef<HTMLInputElement>(null);
   const [bulkContent, setBulkContent] = useState("");
   const [bulkSourceName, setBulkSourceName] = useState("ctbc-import");
@@ -632,11 +632,11 @@ function ManualSpendingCard({
   styles,
   locale,
   refreshSession,
-}: {
+}: Readonly<{
   styles: ReturnType<typeof useStyles>;
   locale: ReturnType<typeof useLocale>["locale"];
   refreshSession: () => Promise<void>;
-}) {
+}>) {
   const [manualDate, setManualDate] = useState(getTodayIsoDate);
   const [manualMerchant, setManualMerchant] = useState("");
   const [manualAmount, setManualAmount] = useState("");
