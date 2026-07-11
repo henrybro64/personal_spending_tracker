@@ -31,44 +31,12 @@ import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
 import { describeCurrency, formatCurrencyAmount } from "../currency";
 import { useLocale } from "../locale-provider";
+import { useAppShellStyles } from "../app-shell-styles";
 import { translate } from "../messages";
 
 type InsightRange = "month" | "quarter" | "6months" | "year";
 
 const useStyles = makeStyles({
-  page: {
-    minHeight: "100vh",
-    backgroundColor: "var(--page-surface)",
-  },
-  shell: {
-    maxWidth: "1480px",
-    marginLeft: "auto",
-    marginRight: "auto",
-    paddingTop: "24px",
-    paddingBottom: "32px",
-    paddingLeft: "24px",
-    paddingRight: "24px",
-    display: "grid",
-    gridTemplateColumns: "320px minmax(0, 1fr)",
-    gap: "16px",
-    "@media (max-width: 1120px)": {
-      gridTemplateColumns: "1fr",
-    },
-    "@media (max-width: 640px)": {
-      paddingLeft: "16px",
-      paddingRight: "16px",
-    },
-  },
-  sidebar: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "16px",
-  },
-  main: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "16px",
-  },
   card: {
     display: "flex",
     flexDirection: "column",
@@ -94,22 +62,6 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: "8px",
-  },
-  sidebarNavLink: {
-    display: "block",
-    paddingTop: "10px",
-    paddingBottom: "10px",
-    paddingLeft: "12px",
-    paddingRight: "12px",
-    fontWeight: tokens.fontWeightSemibold,
-    color: tokens.colorNeutralForeground2,
-    backgroundColor: tokens.colorNeutralBackground2,
-    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2),
-    ...shorthands.borderRadius(tokens.borderRadiusMedium),
-    ":hover": {
-      backgroundColor: tokens.colorSubtleBackgroundHover,
-      color: tokens.colorNeutralForeground1,
-    },
   },
   sidebarNavLinkActive: {
     backgroundColor: tokens.colorBrandBackground2,
@@ -206,6 +158,7 @@ function rangeLabel(
 
 export default function AiInsightsPage() {
   const styles = useStyles();
+  const shellStyles = useAppShellStyles();
   const pathname = usePathname();
   const { locale } = useLocale();
   const { status } = useAuth();
@@ -307,9 +260,9 @@ export default function AiInsightsPage() {
   }
 
   return (
-    <main className={styles.page}>
-      <div className={styles.shell}>
-        <aside className={styles.sidebar}>
+    <main className={shellStyles.page}>
+      <div className={shellStyles.shell} data-testid="ai-insights-shell">
+        <aside className={shellStyles.sidebar}>
           <Card className={mergeClasses(styles.card, styles.sidebarPanel)}>
             <div className={styles.sectionEyebrow}>{translate(locale, "navTitle")}</div>
             <Title2>{translate(locale, "navTitle")}</Title2>
@@ -319,7 +272,7 @@ export default function AiInsightsPage() {
                 <Link
                   key={item.href}
                   className={mergeClasses(
-                    styles.sidebarNavLink,
+                    shellStyles.sidebarNavLink,
                     pathname === item.href && styles.sidebarNavLinkActive
                   )}
                   href={item.href}
@@ -332,7 +285,7 @@ export default function AiInsightsPage() {
           <SessionCard />
         </aside>
 
-        <section className={styles.main}>
+        <section className={shellStyles.contentColumn}>
           <Card className={styles.card}>
             <div className={styles.sectionEyebrow}>{translate(locale, "navAiInsights")}</div>
             <Title1>{translate(locale, "aiInsightsTitle")}</Title1>
