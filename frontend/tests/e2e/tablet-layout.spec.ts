@@ -1,30 +1,7 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-async function mockAuthenticatedSession(page: Page) {
-  await page.route("**/api/auth/session", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        authenticated: true,
-        user: {
-          id: 1,
-          email: "tester@example.com",
-          display_name: "Test User",
-          created_at: "2026-05-18T00:00:00+00:00",
-        },
-        claimed_legacy_transactions: 0,
-        claimed_legacy_uploads: 0,
-      }),
-    });
-  });
-}
-
-async function countGridColumns(locator: Locator) {
-  return locator.evaluate((element) => {
-    return getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length;
-  });
-}
+import { countGridColumns } from "./support/layout";
+import { mockAuthenticatedSession } from "./support/session";
 
 async function mockDashboardData(page: Page) {
   await page.route("**/api/uploads/recent?limit=6", async (route) => {
@@ -286,6 +263,32 @@ async function mockBatchReviewData(page: Page) {
   });
 }
 
+async function mockAiSettings(page: Page) {
+  await page.route("**/api/ai/settings", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        selected_provider: null,
+        providers: [
+          {
+            provider: "openai",
+            configured: false,
+            model: "gpt-4.1-mini",
+            has_api_key: false,
+          },
+          {
+            provider: "anthropic",
+            configured: false,
+            model: "claude-sonnet-4-20250514",
+            has_api_key: false,
+          },
+        ],
+      }),
+    });
+  });
+}
+
 test("dashboard keeps the desktop shell on common iPad landscape widths", async ({ page }) => {
   await mockAuthenticatedSession(page);
   await mockDashboardData(page);
@@ -303,7 +306,22 @@ test("dashboard keeps the desktop shell on common iPad landscape widths", async 
     await expect(shell).toBeVisible();
     await expect(page.getByText("Spending by category")).toBeVisible();
     expect(await countGridColumns(shell)).toBe(2);
+
+    const metricGrid = page.getByTestId("dashboard-metric-grid");
+    await expect(metricGrid).toBeVisible();
+    expect(await countGridColumns(metricGrid)).toBeGreaterThanOrEqual(2);
   }
+});
+
+test("dashboard stacks the shell on iPad portrait widths", async ({ page }) => {
+  await mockAuthenticatedSession(page);
+  await mockDashboardData(page);
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await page.goto("/");
+
+  const shell = page.getByTestId("dashboard-shell");
+  await expect(shell).toBeVisible();
+  expect(await countGridColumns(shell)).toBe(1);
 });
 
 test("data-entry keeps a two-column manual form on iPad landscape", async ({ page }) => {
@@ -338,4 +356,18 @@ test("transactions and batch review remain readable on 1024px tablet landscape",
   await expect(page.getByTestId("batch-review-shell")).toBeVisible();
   await expect(page.getByRole("table", { name: "Batch import review queue" })).toBeVisible();
   expect(await countGridColumns(page.getByTestId("batch-review-shell"))).toBe(2);
+});
+
+test("settings and ai insights keep the tablet landscape shell", async ({ page }) => {
+  await mockAuthenticatedSession(page);
+  await mockAiSettings(page);
+  await page.setViewportSize({ width: 1024, height: 768 });
+
+  await page.goto("/settings");
+  await expect(page.getByTestId("settings-shell")).toBeVisible();
+  expect(await countGridColumns(page.getByTestId("settings-shell"))).toBe(2);
+
+  await page.goto("/ai-insights");
+  await expect(page.getByTestId("ai-insights-shell")).toBeVisible();
+  expect(await countGridColumns(page.getByTestId("ai-insights-shell"))).toBe(2);
 });

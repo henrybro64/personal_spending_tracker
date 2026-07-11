@@ -1932,7 +1932,7 @@ export default function HomePage() {
             </div>
           </Card>
 
-          <div className={styles.metricGrid}>
+          <div className={styles.metricGrid} data-testid="dashboard-metric-grid">
             {metricCards.slice(0, 3).map((metricCard) => (
               <div className={styles.metricCard} key={metricCard.label}>
                 <div className={styles.metricAccent} />

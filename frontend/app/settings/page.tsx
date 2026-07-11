@@ -31,6 +31,7 @@ import {
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
+import { useAppShellStyles } from "../app-shell-styles";
 import { translate } from "../messages";
 
 type ProviderDraft = {
@@ -41,51 +42,6 @@ type ProviderDraft = {
 };
 
 const useStyles = makeStyles({
-  page: {
-    minHeight: "100dvh",
-    backgroundColor: "var(--page-surface)",
-  },
-  shell: {
-    maxWidth: "1480px",
-    marginLeft: "auto",
-    marginRight: "auto",
-    paddingTop: "max(20px, calc(env(safe-area-inset-top) + 16px))",
-    paddingBottom: "max(28px, calc(env(safe-area-inset-bottom) + 20px))",
-    paddingLeft: "max(20px, calc(env(safe-area-inset-left) + 16px))",
-    paddingRight: "max(20px, calc(env(safe-area-inset-right) + 16px))",
-    display: "grid",
-    gridTemplateColumns: "280px minmax(0, 1fr)",
-    gap: "16px",
-    alignItems: "start",
-    "@media (min-width: 1280px)": {
-      gridTemplateColumns: "320px minmax(0, 1fr)",
-      gap: "20px",
-    },
-    "@media (max-width: 959px)": {
-      gridTemplateColumns: "1fr",
-    },
-    "@media (max-width: 639px)": {
-      paddingLeft: "max(16px, calc(env(safe-area-inset-left) + 12px))",
-      paddingRight: "max(16px, calc(env(safe-area-inset-right) + 12px))",
-    },
-  },
-  sidebar: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "16px",
-    position: "sticky",
-    top: "max(16px, calc(env(safe-area-inset-top) + 8px))",
-    alignSelf: "start",
-    "@media (max-width: 959px)": {
-      position: "static",
-    },
-  },
-  main: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "16px",
-    minWidth: 0,
-  },
   card: {
     display: "flex",
     flexDirection: "column",
@@ -111,22 +67,6 @@ const useStyles = makeStyles({
     display: "flex",
     flexDirection: "column",
     gap: "8px",
-  },
-  sidebarNavLink: {
-    display: "block",
-    paddingTop: "12px",
-    paddingBottom: "12px",
-    paddingLeft: "12px",
-    paddingRight: "12px",
-    fontWeight: tokens.fontWeightSemibold,
-    color: tokens.colorNeutralForeground2,
-    backgroundColor: tokens.colorNeutralBackground2,
-    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2),
-    ...shorthands.borderRadius(tokens.borderRadiusMedium),
-    ":hover": {
-      backgroundColor: tokens.colorSubtleBackgroundHover,
-      color: tokens.colorNeutralForeground1,
-    },
   },
   sidebarNavLinkActive: {
     backgroundColor: tokens.colorBrandBackground2,
@@ -187,6 +127,7 @@ function navigationLinks(locale: ReturnType<typeof useLocale>["locale"]) {
 
 export default function SettingsPage() {
   const styles = useStyles();
+  const shellStyles = useAppShellStyles();
   const pathname = usePathname();
   const { locale } = useLocale();
   const { status } = useAuth();
@@ -347,9 +288,9 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className={styles.page}>
-      <div className={styles.shell}>
-        <aside className={styles.sidebar}>
+    <main className={shellStyles.page}>
+      <div className={shellStyles.shell} data-testid="settings-shell">
+        <aside className={shellStyles.sidebar}>
           <Card className={mergeClasses(styles.card, styles.sidebarPanel)}>
             <div className={styles.sectionEyebrow}>{translate(locale, "navTitle")}</div>
             <Title2>{translate(locale, "navTitle")}</Title2>
@@ -359,7 +300,7 @@ export default function SettingsPage() {
                 <Link
                   key={item.href}
                   className={mergeClasses(
-                    styles.sidebarNavLink,
+                    shellStyles.sidebarNavLink,
                     pathname === item.href && styles.sidebarNavLinkActive
                   )}
                   href={item.href}
@@ -372,7 +313,7 @@ export default function SettingsPage() {
           <SessionCard />
         </aside>
 
-        <section className={styles.main}>
+        <section className={shellStyles.contentColumn}>
           <Card className={styles.card}>
             <div className={styles.sectionEyebrow}>{translate(locale, "navSettings")}</div>
             <Title1>{translate(locale, "settingsTitle")}</Title1>
