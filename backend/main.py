@@ -110,9 +110,14 @@ from backend.batch_import import (  # noqa: E402
     resolve_allowed_file,
 )
 from backend.currency import (  # noqa: E402
+    DEFAULT_BASE_CURRENCY,
     DisplayCurrency,
+    SupportedCurrency,
+    SUPPORTED_CURRENCY_CODES,
     convert_amount,
+    derive_base_money_fields,
     exchange_rate_metadata,
+    normalize_supported_currency_code,
 )
 from backend.parser import Transaction, parse_transactions  # noqa: E402
 from backend.pdf_utils import (  # noqa: E402
@@ -262,7 +267,13 @@ class DashboardViewResponse(TypedDict):
 class ManualTransactionRequest(BaseModel):
     date: str
     merchant: str
-    amount: float
+    amount: float | None = None
+    currency: str | None = None
+    original_amount: float | None = None
+    original_currency: str | None = None
+    base_currency: str = DEFAULT_BASE_CURRENCY
+    exchange_rate: float | None = None
+    exchange_rate_date: str | None = None
     category: str | None = None
     payment_method: str | None = None
 
@@ -463,6 +474,41 @@ def _resolve_display_currency(currency_code: str) -> DisplayCurrency:
     )
 
 
+def _resolve_supported_currency(
+    currency_code: str | None,
+    *,
+    field_name: str,
+    default: str | None = None,
+) -> str:
+    try:
+        return normalize_supported_currency_code(
+            currency_code,
+            default=cast(SupportedCurrency, default) if default is not None else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}. Use one of: "
+            + ", ".join(SUPPORTED_CURRENCY_CODES),
+        ) from exc
+
+
+def _validate_optional_iso_date(value: str | None, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    normalized_value = value.strip()
+    if not normalized_value:
+        return None
+    try:
+        date.fromisoformat(normalized_value)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be YYYY-MM-DD.",
+        ) from None
+    return normalized_value
+
+
 def _resolve_ai_provider(provider_name: str) -> AiProvider:
     normalized_provider = provider_name.strip().lower()
     if normalized_provider in SUPPORTED_AI_PROVIDERS:
@@ -562,6 +608,41 @@ def _sort_transactions(
     else:
         sorted_transactions.sort(key=lambda item: item["amount"], reverse=True)
     return sorted_transactions
+
+
+def _dashboard_transaction_for_currency(
+    transaction: StoredTransaction,
+    display_currency: DisplayCurrency,
+) -> DashboardTransaction | None:
+    original_amount = float(transaction.get("original_amount", transaction["amount"]))
+    original_currency = transaction.get(
+        "original_currency",
+        transaction.get("currency", DEFAULT_BASE_CURRENCY),
+    ).upper()
+    base_amount = transaction.get("base_amount")
+    base_currency = transaction.get("base_currency", DEFAULT_BASE_CURRENCY).upper()
+
+    if base_amount is not None:
+        display_amount = convert_amount(
+            float(base_amount),
+            base_currency,
+            display_currency,
+        )
+    elif original_currency == display_currency:
+        display_amount = original_amount
+    else:
+        return None
+
+    return {
+        **transaction,
+        "amount": display_amount,
+        "currency": display_currency,
+        "original_amount": original_amount,
+        "original_currency": original_currency,
+        "display_amount": display_amount,
+        "display_currency": display_currency,
+        "is_converted": original_currency != display_currency,
+    }
 
 
 def _default_batch_sqlite_path_for_user(user_id: int) -> Path:
@@ -1104,24 +1185,12 @@ async def dashboard_view(
     ]
     converted_transactions: list[DashboardTransaction] = []
     for transaction in all_transactions:
-        original_currency = transaction.get("currency", "USD").upper()
-        converted_amount = convert_amount(
-            transaction["amount"],
-            original_currency,
+        dashboard_transaction = _dashboard_transaction_for_currency(
+            transaction,
             resolved_currency,
         )
-        converted_transactions.append(
-            {
-                **transaction,
-                "amount": converted_amount,
-                "currency": resolved_currency,
-                "original_amount": transaction["amount"],
-                "original_currency": original_currency,
-                "display_amount": converted_amount,
-                "display_currency": resolved_currency,
-                "is_converted": original_currency != resolved_currency,
-            }
-        )
+        if dashboard_transaction is not None:
+            converted_transactions.append(dashboard_transaction)
 
     normalized_search = search.strip().lower()
     base_filtered = []
@@ -1271,22 +1340,63 @@ async def create_manual_transaction(
 ) -> ManualTransactionResponse:
     transaction_date = payload.date.strip()
     merchant = payload.merchant.strip()
+    original_amount = (
+        payload.original_amount
+        if payload.original_amount is not None
+        else payload.amount
+    )
     if not merchant:
         raise HTTPException(status_code=400, detail="Merchant is required.")
 
-    if payload.amount == 0:
-        raise HTTPException(status_code=400, detail="Amount must be non-zero.")
+    if original_amount is None or original_amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive.")
 
     try:
         date.fromisoformat(transaction_date)
     except ValueError:
         raise HTTPException(status_code=400, detail="Date must be YYYY-MM-DD.") from None
 
+    original_currency = _resolve_supported_currency(
+        payload.original_currency or payload.currency,
+        field_name="original currency",
+        default=DEFAULT_BASE_CURRENCY,
+    )
+    base_currency = _resolve_supported_currency(
+        payload.base_currency,
+        field_name="base currency",
+        default=DEFAULT_BASE_CURRENCY,
+    )
+    if payload.exchange_rate is not None and payload.exchange_rate <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Exchange rate must be greater than zero when provided.",
+        )
+    exchange_rate_date = _validate_optional_iso_date(
+        payload.exchange_rate_date,
+        field_name="Exchange rate date",
+    )
+    if original_currency == base_currency or payload.exchange_rate is not None:
+        exchange_rate_date = exchange_rate_date or transaction_date
+
+    try:
+        derive_base_money_fields(
+            original_amount=original_amount,
+            original_currency=original_currency,
+            base_currency=base_currency,
+            exchange_rate=payload.exchange_rate,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     created = insert_manual_transaction(
         user_id=current_user["id"],
         transaction_date=transaction_date,
         merchant=merchant,
-        amount=payload.amount,
+        original_amount=original_amount,
+        original_currency=original_currency,
+        base_currency=base_currency,
+        exchange_rate=payload.exchange_rate,
+        exchange_rate_date=exchange_rate_date,
         category=payload.category,
         payment_method=payload.payment_method,
     )
@@ -1303,7 +1413,10 @@ async def create_manual_transaction(
         metadata={
             "merchant": created["merchant"],
             "date": created["date"],
-            "amount": created["amount"],
+            "original_amount": created["original_amount"],
+            "original_currency": created["original_currency"],
+            "base_amount": created["base_amount"],
+            "base_currency": created["base_currency"],
         },
     )
     return {"transaction": created}

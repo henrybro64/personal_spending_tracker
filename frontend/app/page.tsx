@@ -47,6 +47,7 @@ import {
   formatCurrencyAmount,
   formatCurrencyTotals,
   type CurrencyTotal,
+  type SupportedCurrency,
 } from "./currency";
 import { useLocale } from "./locale-provider";
 import { translate, type MessageKey } from "./messages";
@@ -57,9 +58,13 @@ type Transaction = {
   merchant: string;
   amount: number;
   category: string;
-  currency?: "USD" | "TWD";
+  currency?: SupportedCurrency;
   original_amount?: number;
-  original_currency?: "USD" | "TWD";
+  original_currency?: SupportedCurrency;
+  base_amount?: number | null;
+  base_currency?: SupportedCurrency;
+  exchange_rate?: number | null;
+  exchange_rate_date?: string | null;
   display_amount?: number;
   display_currency?: "USD" | "TWD";
   is_converted?: boolean;
@@ -80,7 +85,7 @@ type SummaryResponse = {
 };
 
 type RecentUploadCurrencyTotal = {
-  currency: "USD" | "TWD";
+  currency: SupportedCurrency;
   total_amount: number;
   transaction_count: number;
 };
@@ -148,6 +153,12 @@ type ManualTransactionPayload = {
   date: string;
   merchant: string;
   amount: number;
+  currency: SupportedCurrency;
+  original_amount: number;
+  original_currency: SupportedCurrency;
+  base_currency: SupportedCurrency;
+  exchange_rate: number | null;
+  exchange_rate_date: string | null;
   category: string | null;
   payment_method: string | null;
 };
@@ -1161,6 +1172,8 @@ export default function HomePage() {
   const [manualDate, setManualDate] = useState(getTodayIsoDate);
   const [manualMerchant, setManualMerchant] = useState("");
   const [manualAmount, setManualAmount] = useState("");
+  const [manualCurrency, setManualCurrency] = useState<SupportedCurrency>("TWD");
+  const [manualExchangeRate, setManualExchangeRate] = useState("");
   const [manualCategory, setManualCategory] = useState("Auto");
   const [manualPaymentMethod, setManualPaymentMethod] = useState("Cash");
   const [manualError, setManualError] = useState("");
@@ -1470,6 +1483,10 @@ export default function HomePage() {
   async function handleAddManualTransaction() {
     const merchant = manualMerchant.trim();
     const amountValue = Number(manualAmount);
+    const exchangeRateValue =
+      manualCurrency === "TWD" || !manualExchangeRate.trim()
+        ? null
+        : Number(manualExchangeRate);
     if (!merchant) {
       setManualError(translate(locale, "errManualMerchantRequired"));
       return;
@@ -1478,8 +1495,15 @@ export default function HomePage() {
       setManualError(translate(locale, "errManualDateRequired"));
       return;
     }
-    if (!Number.isFinite(amountValue) || amountValue === 0) {
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
       setManualError(translate(locale, "errManualAmountInvalid"));
+      return;
+    }
+    if (
+      exchangeRateValue !== null &&
+      (!Number.isFinite(exchangeRateValue) || exchangeRateValue <= 0)
+    ) {
+      setManualError(translate(locale, "errManualExchangeRateInvalid"));
       return;
     }
 
@@ -1487,6 +1511,12 @@ export default function HomePage() {
       date: manualDate,
       merchant,
       amount: amountValue,
+      currency: manualCurrency,
+      original_amount: amountValue,
+      original_currency: manualCurrency,
+      base_currency: "TWD",
+      exchange_rate: exchangeRateValue,
+      exchange_rate_date: exchangeRateValue === null ? null : manualDate,
       category: manualCategory === "Auto" ? null : manualCategory,
       payment_method: manualPaymentMethod || null,
     };
@@ -1511,6 +1541,8 @@ export default function HomePage() {
       }
       setManualMerchant("");
       setManualAmount("");
+      setManualCurrency("TWD");
+      setManualExchangeRate("");
       setManualCategory("Auto");
       setManualPaymentMethod("Cash");
       setManualDate(getTodayIsoDate());

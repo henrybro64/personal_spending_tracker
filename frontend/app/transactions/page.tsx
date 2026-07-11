@@ -33,6 +33,7 @@ import {
   normalizeCurrencyCode,
   summarizeCurrencyTotals,
   type CurrencyTotal,
+  type SupportedCurrency,
 } from "../currency";
 import { useLocale } from "../locale-provider";
 import { translate } from "../messages";
@@ -43,7 +44,13 @@ type Transaction = {
   merchant: string;
   amount: number;
   category: string;
-  currency?: "USD" | "TWD";
+  currency?: SupportedCurrency;
+  original_amount?: number;
+  original_currency?: SupportedCurrency;
+  base_amount?: number | null;
+  base_currency?: SupportedCurrency;
+  exchange_rate?: number | null;
+  exchange_rate_date?: string | null;
 };
 
 type TransactionsResponse = {

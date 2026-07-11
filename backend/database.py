@@ -5,6 +5,11 @@ from typing import Any, Literal, TypedDict
 import psycopg
 from psycopg.types.json import Json
 
+from backend.currency import (
+    DEFAULT_BASE_CURRENCY,
+    derive_base_money_fields,
+    normalize_supported_currency_code,
+)
 from backend.parser import Transaction, categorize_merchant
 
 
@@ -46,6 +51,12 @@ class StoredTransaction(TypedDict):
     amount: float
     category: str
     currency: str
+    original_amount: float
+    original_currency: str
+    base_amount: float | None
+    base_currency: str
+    exchange_rate: float | None
+    exchange_rate_date: str | None
     payment_method: str | None
     file_name: str
     original_file_name: str
@@ -94,6 +105,46 @@ def _normalize_category_for_storage(category: str | None, amount: float) -> str:
     if raw and raw.lower() != "miscellaneous":
         return raw
     return "Refunds & Credits" if amount < 0 else "Other Spending"
+
+
+STORED_TRANSACTION_SELECT_COLUMNS = """
+    id,
+    date,
+    merchant,
+    COALESCE(original_amount, amount) AS amount,
+    COALESCE(category, '') AS category,
+    COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD') AS currency,
+    payment_method,
+    file_name,
+    COALESCE(original_file_name, file_name) AS original_file_name,
+    COALESCE(original_amount, amount) AS original_amount,
+    COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD') AS original_currency,
+    base_amount,
+    COALESCE(NULLIF(base_currency, ''), 'TWD') AS base_currency,
+    exchange_rate,
+    exchange_rate_date
+"""
+
+
+def _stored_transaction_from_row(row: Any) -> StoredTransaction:
+    amount = float(row[3])
+    return {
+        "id": int(row[0]),
+        "date": str(row[1]),
+        "merchant": str(row[2]),
+        "amount": amount,
+        "category": _normalize_category_for_storage(str(row[4]), amount),
+        "currency": str(row[5]),
+        "payment_method": str(row[6]) if row[6] is not None else None,
+        "file_name": str(row[7]),
+        "original_file_name": str(row[8]),
+        "original_amount": float(row[9]),
+        "original_currency": str(row[10]),
+        "base_amount": float(row[11]) if row[11] is not None else None,
+        "base_currency": str(row[12]),
+        "exchange_rate": float(row[13]) if row[13] is not None else None,
+        "exchange_rate_date": str(row[14]) if row[14] is not None else None,
+    }
 
 
 def _iso_datetime(value: Any) -> str:
@@ -838,6 +889,55 @@ def insert_transactions(
 
     resolved_database_url = _resolve_database_url(database_url)
     display_name = original_file_name or file_name
+    insert_rows: list[tuple[object, ...]] = []
+    for transaction in transactions:
+        original_amount = float(transaction["amount"])
+        original_currency = normalize_supported_currency_code(
+            transaction.get("currency"),
+            default=DEFAULT_BASE_CURRENCY,
+        )
+        exchange_rate = transaction.get("exchange_rate")
+        base_currency = transaction.get(
+            "base_currency",
+            DEFAULT_BASE_CURRENCY,
+        )
+        base_amount, normalized_base_currency, normalized_exchange_rate = (
+            derive_base_money_fields(
+                original_amount=original_amount,
+                original_currency=original_currency,
+                base_currency=base_currency,
+                exchange_rate=(
+                    float(exchange_rate) if exchange_rate is not None else None
+                ),
+            )
+        )
+        exchange_rate_date = transaction.get(
+            "exchange_rate_date",
+            transaction["date"] if normalized_exchange_rate is not None else None,
+        )
+        insert_rows.append(
+            (
+                user_id,
+                statement_upload_id,
+                transaction["date"],
+                transaction["merchant"],
+                original_amount,
+                file_name,
+                display_name,
+                _normalize_category_for_storage(
+                    transaction.get("category"), original_amount
+                ),
+                file_fingerprint,
+                None,
+                original_currency,
+                original_amount,
+                original_currency,
+                base_amount,
+                normalized_base_currency,
+                normalized_exchange_rate,
+                exchange_rate_date,
+            )
+        )
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -854,28 +954,20 @@ def insert_transactions(
                     category,
                     file_fingerprint,
                     payment_method,
-                    currency
+                    currency,
+                    original_amount,
+                    original_currency,
+                    base_amount,
+                    base_currency,
+                    exchange_rate,
+                    exchange_rate_date
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s
+                )
                 """,
-                [
-                    (
-                        user_id,
-                        statement_upload_id,
-                        transaction["date"],
-                        transaction["merchant"],
-                        transaction["amount"],
-                        file_name,
-                        display_name,
-                        _normalize_category_for_storage(
-                            transaction.get("category"), transaction["amount"]
-                        ),
-                        file_fingerprint,
-                        None,
-                        transaction.get("currency", "USD"),
-                    )
-                    for transaction in transactions
-                ],
+                insert_rows,
             )
         connection.commit()
 
@@ -887,19 +979,43 @@ def insert_manual_transaction(
     user_id: int,
     transaction_date: str,
     merchant: str,
-    amount: float,
+    original_amount: float,
+    original_currency: str = DEFAULT_BASE_CURRENCY,
+    base_currency: str = DEFAULT_BASE_CURRENCY,
+    exchange_rate: float | None = None,
+    exchange_rate_date: str | None = None,
     category: str | None = None,
     payment_method: str | None = None,
     database_url: str | None = None,
 ) -> StoredTransaction:
     resolved_database_url = _resolve_database_url(database_url)
+    normalized_original_currency = normalize_supported_currency_code(
+        original_currency,
+        default=DEFAULT_BASE_CURRENCY,
+    )
+    base_amount, normalized_base_currency, normalized_exchange_rate = (
+        derive_base_money_fields(
+            original_amount=original_amount,
+            original_currency=normalized_original_currency,
+            base_currency=base_currency,
+            exchange_rate=exchange_rate,
+        )
+    )
+    resolved_exchange_rate_date = (
+        exchange_rate_date
+        if normalized_exchange_rate is not None
+        else None
+    )
     normalized_merchant = " ".join(merchant.split())
     inferred_category = (
         category.strip()
         if category and category.strip()
-        else categorize_merchant(normalized_merchant, amount)
+        else categorize_merchant(normalized_merchant, original_amount)
     )
-    normalized_category = _normalize_category_for_storage(inferred_category, amount)
+    normalized_category = _normalize_category_for_storage(
+        inferred_category,
+        original_amount,
+    )
     normalized_payment_method = (
         payment_method.strip() if payment_method and payment_method.strip() else None
     )
@@ -913,7 +1029,7 @@ def insert_manual_transaction(
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 INSERT INTO transactions (
                     user_id,
                     statement_upload_id,
@@ -925,32 +1041,39 @@ def insert_manual_transaction(
                     category,
                     file_fingerprint,
                     payment_method,
-                    currency
+                    currency,
+                    original_amount,
+                    original_currency,
+                    base_amount,
+                    base_currency,
+                    exchange_rate,
+                    exchange_rate_date
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s
+                )
                 RETURNING
-                    id,
-                    date,
-                    merchant,
-                    amount,
-                    COALESCE(category, '') AS category,
-                    COALESCE(currency, 'USD') AS currency,
-                    payment_method,
-                    file_name,
-                    COALESCE(original_file_name, file_name) AS original_file_name
+                    {STORED_TRANSACTION_SELECT_COLUMNS}
                 """,
                 (
                     user_id,
                     None,
                     transaction_date,
                     normalized_merchant,
-                    amount,
+                    original_amount,
                     file_name,
                     original_file_name,
                     normalized_category,
                     None,
                     normalized_payment_method,
-                    "USD",
+                    normalized_original_currency,
+                    original_amount,
+                    normalized_original_currency,
+                    base_amount,
+                    normalized_base_currency,
+                    normalized_exchange_rate,
+                    resolved_exchange_rate_date,
                 ),
             )
             row = cursor.fetchone()
@@ -959,17 +1082,7 @@ def insert_manual_transaction(
     if row is None:
         raise RuntimeError("Failed to insert manual transaction.")
 
-    return {
-        "id": int(row[0]),
-        "date": str(row[1]),
-        "merchant": str(row[2]),
-        "amount": float(row[3]),
-        "category": _normalize_category_for_storage(str(row[4]), float(row[3])),
-        "currency": str(row[5]),
-        "payment_method": str(row[6]) if row[6] is not None else None,
-        "file_name": str(row[7]),
-        "original_file_name": str(row[8]),
-    }
+    return _stored_transaction_from_row(row)
 
 
 def update_transaction_category(
@@ -1013,7 +1126,10 @@ def update_transaction(
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT merchant, amount, COALESCE(category, '') AS category
+                SELECT
+                    merchant,
+                    COALESCE(original_amount, amount) AS amount,
+                    COALESCE(category, '') AS category
                 FROM transactions
                 WHERE id = %s
                   AND user_id = %s
@@ -1040,7 +1156,7 @@ def update_transaction(
                 effective_category = str(existing[2])
 
             cursor.execute(
-                """
+                f"""
                 UPDATE transactions
                 SET
                     merchant = %s,
@@ -1048,15 +1164,7 @@ def update_transaction(
                 WHERE id = %s
                   AND user_id = %s
                 RETURNING
-                    id,
-                    date,
-                    merchant,
-                    amount,
-                    COALESCE(category, '') AS category,
-                    COALESCE(currency, 'USD') AS currency,
-                    payment_method,
-                    file_name,
-                    COALESCE(original_file_name, file_name) AS original_file_name
+                    {STORED_TRANSACTION_SELECT_COLUMNS}
                 """,
                 (
                     effective_merchant,
@@ -1073,17 +1181,7 @@ def update_transaction(
     if row is None:
         return None
 
-    return {
-        "id": int(row[0]),
-        "date": str(row[1]),
-        "merchant": str(row[2]),
-        "amount": float(row[3]),
-        "category": _normalize_category_for_storage(str(row[4]), float(row[3])),
-        "currency": str(row[5]),
-        "payment_method": str(row[6]) if row[6] is not None else None,
-        "file_name": str(row[7]),
-        "original_file_name": str(row[8]),
-    }
+    return _stored_transaction_from_row(row)
 
 
 def delete_transaction(
@@ -1174,18 +1272,19 @@ def get_transactions_summary(
     display_currency: str | None = None,
     database_url: str | None = None,
 ) -> TransactionsSummary:
-    from backend.currency import DisplayCurrency, convert_amount, normalize_currency_code
+    from backend.currency import convert_amount
 
     resolved_database_url = _resolve_database_url(database_url)
     date_filter_clause, query_params = _build_user_date_filter_clause(user_id, range_key)
     summary_query = f"""
         SELECT
-            COALESCE(currency, 'USD') AS currency,
-            COALESCE(SUM(amount), 0),
-            COUNT(*)
+            COALESCE(original_amount, amount) AS original_amount,
+            COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
+                AS original_currency,
+            base_amount,
+            COALESCE(NULLIF(base_currency, ''), 'TWD') AS base_currency
         FROM transactions
         {date_filter_clause}
-        GROUP BY COALESCE(currency, 'USD')
         """
     statement_count_query = f"""
         SELECT COUNT(DISTINCT statement_upload_id)
@@ -1196,22 +1295,35 @@ def get_transactions_summary(
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(summary_query, query_params)
-            currency_rows = cursor.fetchall()
+            rows = cursor.fetchall()
             cursor.execute(statement_count_query, query_params)
             statement_count = int(cursor.fetchone()[0])
 
-    transaction_count = sum(int(row[2]) for row in currency_rows)
+    transaction_count = len(rows)
     if display_currency:
-        target_currency: DisplayCurrency = normalize_currency_code(display_currency)
-        total_spending = sum(
-            convert_amount(float(row[1]), str(row[0]), target_currency)
-            for row in currency_rows
-        )
+        target_currency = display_currency.strip().upper()
+        display_amounts: list[float] = []
+        for original_amount, original_currency, base_amount, base_currency in rows:
+            normalized_original_currency = str(original_currency).upper()
+            normalized_base_currency = str(base_currency).upper()
+            if base_amount is not None:
+                display_amounts.append(
+                    convert_amount(
+                        float(base_amount),
+                        normalized_base_currency,
+                        target_currency,  # type: ignore[arg-type]
+                    )
+                )
+            elif normalized_original_currency == target_currency:
+                display_amounts.append(float(original_amount))
+        total_spending = sum(display_amounts)
+        average_count = len(display_amounts)
     else:
-        total_spending = sum(float(row[1]) for row in currency_rows)
+        total_spending = sum(float(row[0]) for row in rows)
+        average_count = transaction_count
 
     average_amount = (
-        total_spending / transaction_count if transaction_count > 0 else 0.0
+        total_spending / average_count if average_count > 0 else 0.0
     )
 
     return {
@@ -1239,7 +1351,8 @@ def get_recent_uploads(
                     statement_uploads.stored_file_name,
                     statement_uploads.original_file_name,
                     COUNT(transactions.id) AS transaction_count,
-                    COALESCE(SUM(transactions.amount), 0) AS total_amount,
+                    COALESCE(SUM(COALESCE(transactions.original_amount, transactions.amount)), 0)
+                        AS total_amount,
                     statement_uploads.uploaded_at,
                     statement_uploads.parse_status
                 FROM statement_uploads
@@ -1263,12 +1376,16 @@ def get_recent_uploads(
                     """
                     SELECT
                         statement_upload_id,
-                        COALESCE(currency, 'USD') AS currency,
-                        COALESCE(SUM(amount), 0) AS total_amount,
+                        COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
+                            AS currency,
+                        COALESCE(SUM(COALESCE(original_amount, amount)), 0)
+                            AS total_amount,
                         COUNT(*) AS transaction_count
                     FROM transactions
                     WHERE statement_upload_id = ANY(%s)
-                    GROUP BY statement_upload_id, COALESCE(currency, 'USD')
+                    GROUP BY
+                        statement_upload_id,
+                        COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
                     ORDER BY statement_upload_id ASC, currency ASC
                     """,
                     (upload_ids,),
@@ -1320,15 +1437,7 @@ def get_transactions(
     date_filter_clause, range_params = _build_user_date_filter_clause(user_id, range_key)
     transaction_query = f"""
         SELECT
-            id,
-            date,
-            merchant,
-            amount,
-            COALESCE(category, '') AS category,
-            COALESCE(currency, 'USD') AS currency,
-            payment_method,
-            file_name,
-            COALESCE(original_file_name, file_name) AS original_file_name
+            {STORED_TRANSACTION_SELECT_COLUMNS}
         FROM transactions
         {date_filter_clause}
         ORDER BY
@@ -1349,20 +1458,7 @@ def get_transactions(
             cursor.execute(transaction_query, query_params)
             rows = cursor.fetchall()
 
-    return [
-        {
-            "id": int(row[0]),
-            "date": str(row[1]),
-            "merchant": str(row[2]),
-            "amount": float(row[3]),
-            "category": _normalize_category_for_storage(str(row[4]), float(row[3])),
-            "currency": str(row[5]),
-            "payment_method": str(row[6]) if row[6] is not None else None,
-            "file_name": str(row[7]),
-            "original_file_name": str(row[8]),
-        }
-        for row in rows
-    ]
+    return [_stored_transaction_from_row(row) for row in rows]
 
 
 def get_existing_upload_by_fingerprint(

@@ -1,6 +1,29 @@
 "use client";
 
-export type SupportedCurrency = "USD" | "TWD";
+export type SupportedCurrency =
+  | "TWD"
+  | "USD"
+  | "JPY"
+  | "EUR"
+  | "CNY"
+  | "HKD"
+  | "PHP"
+  | "SGD"
+  | "KRW"
+  | "GBP";
+
+export const supportedCurrencies: SupportedCurrency[] = [
+  "TWD",
+  "USD",
+  "JPY",
+  "EUR",
+  "CNY",
+  "HKD",
+  "PHP",
+  "SGD",
+  "KRW",
+  "GBP",
+];
 
 export type CurrencyAmount = {
   amount: number;
@@ -15,19 +38,40 @@ export type CurrencyTotal = {
 const currencySortOrder: Record<SupportedCurrency, number> = {
   USD: 0,
   TWD: 1,
+  JPY: 2,
+  EUR: 3,
+  CNY: 4,
+  HKD: 5,
+  PHP: 6,
+  SGD: 7,
+  KRW: 8,
+  GBP: 9,
 };
 
 export function normalizeCurrencyCode(currencyCode?: string): SupportedCurrency {
-  return currencyCode?.toUpperCase() === "TWD" ? "TWD" : "USD";
+  const normalizedCurrency = currencyCode?.trim().toUpperCase();
+  return supportedCurrencies.includes(normalizedCurrency as SupportedCurrency)
+    ? (normalizedCurrency as SupportedCurrency)
+    : "TWD";
 }
 
 export function currencySymbol(currencyCode?: string): string {
-  return normalizeCurrencyCode(currencyCode) === "TWD" ? "NT$" : "US$";
+  const normalizedCurrency = normalizeCurrencyCode(currencyCode);
+  if (normalizedCurrency === "TWD") {
+    return "NT$";
+  }
+  if (normalizedCurrency === "USD") {
+    return "US$";
+  }
+  return normalizedCurrency;
 }
 
 export function describeCurrency(currencyCode?: string): string {
   const normalizedCurrency = normalizeCurrencyCode(currencyCode);
-  return `${currencySymbol(normalizedCurrency)} (${normalizedCurrency})`;
+  const symbol = currencySymbol(normalizedCurrency);
+  return symbol === normalizedCurrency
+    ? normalizedCurrency
+    : `${symbol} (${normalizedCurrency})`;
 }
 
 export function formatCurrencyAmount(
@@ -36,12 +80,18 @@ export function formatCurrencyAmount(
   intlLocale: string
 ): string {
   const normalizedCurrency = normalizeCurrencyCode(currencyCode);
+  const maximumFractionDigits =
+    normalizedCurrency === "JPY" || normalizedCurrency === "KRW" ? 0 : 2;
   const formattedAmount = new Intl.NumberFormat(intlLocale, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: maximumFractionDigits,
+    maximumFractionDigits,
   }).format(Math.abs(amount));
   const prefix = currencySymbol(normalizedCurrency);
-  return amount < 0 ? `-${prefix}${formattedAmount}` : `${prefix}${formattedAmount}`;
+  const separator =
+    normalizedCurrency === "USD" || normalizedCurrency === "TWD" ? "" : " ";
+  return amount < 0
+    ? `-${prefix}${separator}${formattedAmount}`
+    : `${prefix}${separator}${formattedAmount}`;
 }
 
 export function summarizeCurrencyTotals(

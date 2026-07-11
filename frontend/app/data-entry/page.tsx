@@ -23,6 +23,7 @@ import {
 } from "@fluentui/react-components";
 import { apiFetch } from "../api";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
+import { supportedCurrencies, type SupportedCurrency } from "../currency";
 import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
 import { buildBulkImportLlmPrompt } from "../bulk-import-llm-prompt";
@@ -271,6 +272,8 @@ export default function DataEntryPage() {
   const [manualDate, setManualDate] = useState(getTodayIsoDate);
   const [manualMerchant, setManualMerchant] = useState("");
   const [manualAmount, setManualAmount] = useState("");
+  const [manualCurrency, setManualCurrency] = useState<SupportedCurrency>("TWD");
+  const [manualExchangeRate, setManualExchangeRate] = useState("");
   const [manualCategory, setManualCategory] = useState("Auto");
   const [manualPaymentMethod, setManualPaymentMethod] = useState("Cash");
   const [manualSaving, setManualSaving] = useState(false);
@@ -444,6 +447,10 @@ export default function DataEntryPage() {
   async function onAddManualSpending() {
     const merchant = manualMerchant.trim();
     const amount = Number(manualAmount);
+    const exchangeRate =
+      manualCurrency === "TWD" || !manualExchangeRate.trim()
+        ? null
+        : Number(manualExchangeRate);
     if (!manualDate) {
       setManualError(translate(locale, "errManualDateRequired"));
       return;
@@ -452,8 +459,15 @@ export default function DataEntryPage() {
       setManualError(translate(locale, "errManualMerchantRequired"));
       return;
     }
-    if (!Number.isFinite(amount) || amount === 0) {
+    if (!Number.isFinite(amount) || amount <= 0) {
       setManualError(translate(locale, "errManualAmountInvalid"));
+      return;
+    }
+    if (
+      exchangeRate !== null &&
+      (!Number.isFinite(exchangeRate) || exchangeRate <= 0)
+    ) {
+      setManualError(translate(locale, "errManualExchangeRateInvalid"));
       return;
     }
 
@@ -468,6 +482,12 @@ export default function DataEntryPage() {
           date: manualDate,
           merchant,
           amount,
+          currency: manualCurrency,
+          original_amount: amount,
+          original_currency: manualCurrency,
+          base_currency: "TWD",
+          exchange_rate: exchangeRate,
+          exchange_rate_date: exchangeRate === null ? null : manualDate,
           category: manualCategory === "Auto" ? null : manualCategory,
           payment_method: manualPaymentMethod || null,
         }),
@@ -483,6 +503,8 @@ export default function DataEntryPage() {
       setManualMessage(translate(locale, "dataEntryManualSuccess"));
       setManualMerchant("");
       setManualAmount("");
+      setManualCurrency("TWD");
+      setManualExchangeRate("");
       setManualCategory("Auto");
       setManualPaymentMethod("Cash");
       setManualDate(getTodayIsoDate());
@@ -823,6 +845,33 @@ export default function DataEntryPage() {
                 onChange={(_, data) => setManualAmount(data.value)}
               />
             </Field>
+            <Field label={translate(locale, "manualCurrencyLabel")}>
+              <select
+                aria-label={translate(locale, "manualCurrencyLabel")}
+                className={styles.selectControl}
+                value={manualCurrency}
+                onChange={(event) =>
+                  setManualCurrency(event.target.value as SupportedCurrency)
+                }
+              >
+                {supportedCurrencies.map((currencyOption) => (
+                  <option key={currencyOption} value={currencyOption}>
+                    {currencyOption}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {manualCurrency !== "TWD" ? (
+              <Field label={translate(locale, "manualExchangeRateLabel")}>
+                <Input
+                  type="number"
+                  step="0.0001"
+                  placeholder="32.40"
+                  value={manualExchangeRate}
+                  onChange={(_, data) => setManualExchangeRate(data.value)}
+                />
+              </Field>
+            ) : null}
           </div>
           <Field label={translate(locale, "manualMerchantLabel")}>
             <Input
