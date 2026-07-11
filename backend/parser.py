@@ -1,6 +1,6 @@
 from datetime import date, datetime
 import re
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from backend.statement_parse_utils import (
     MERCHANT_MISSING_FROM_PDF_CATEGORY,
@@ -28,6 +28,9 @@ class Transaction(TypedDict):
     amount: float
     category: str
     currency: str
+    base_currency: NotRequired[str]
+    exchange_rate: NotRequired[float | None]
+    exchange_rate_date: NotRequired[str | None]
 
 
 CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [

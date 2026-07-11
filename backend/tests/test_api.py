@@ -179,7 +179,7 @@ def test_ai_insights_returns_generated_text_and_snapshot(
     assert payload["model"] == "gpt-4.1"
     assert payload["insight_text"] == "Observations\n- Test insight"
     assert payload["snapshot"]["transaction_count"] == 2
-    assert payload["snapshot"]["display_currency"] == "USD"
+    assert payload["snapshot"]["display_currency"] == "TWD"
 
 
 def test_ai_settings_requires_authentication(client: TestClient) -> None:
@@ -328,7 +328,177 @@ def test_manual_transaction_rejects_zero_amount(client: TestClient) -> None:
     )
 
     assert response.status_code == 400
-    assert response.json() == {"detail": "Amount must be non-zero."}
+    assert response.json() == {"detail": "Amount must be positive."}
+
+
+def test_manual_transaction_rejects_negative_amount(client: TestClient) -> None:
+    _register_user(client)
+
+    response = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2024-04-20",
+            "merchant": "Coffee Project",
+            "original_amount": -10,
+            "original_currency": "TWD",
+            "category": None,
+            "payment_method": None,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Amount must be positive."}
+
+
+def test_manual_twd_transaction_sets_base_fields(client: TestClient) -> None:
+    _register_user(client)
+
+    response = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2024-04-20",
+            "merchant": "Coffee Project",
+            "original_amount": 350,
+            "original_currency": "TWD",
+            "base_currency": "TWD",
+            "category": "Dining",
+            "payment_method": "Cash",
+        },
+    )
+
+    assert response.status_code == 201
+    transaction = response.json()["transaction"]
+    assert transaction["amount"] == pytest.approx(350.0)
+    assert transaction["currency"] == "TWD"
+    assert transaction["original_amount"] == pytest.approx(350.0)
+    assert transaction["original_currency"] == "TWD"
+    assert transaction["base_amount"] == pytest.approx(350.0)
+    assert transaction["base_currency"] == "TWD"
+    assert transaction["exchange_rate"] == pytest.approx(1.0)
+    assert transaction["exchange_rate_date"] == "2024-04-20"
+
+
+def test_manual_usd_transaction_with_exchange_rate_calculates_base(
+    client: TestClient,
+) -> None:
+    _register_user(client)
+
+    response = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2026-02-18",
+            "merchant": "Amazon",
+            "original_amount": 25.99,
+            "original_currency": "USD",
+            "base_currency": "TWD",
+            "exchange_rate": 32.4,
+            "exchange_rate_date": "2026-02-18",
+            "category": "Shopping",
+            "payment_method": "Chase",
+        },
+    )
+
+    assert response.status_code == 201
+    transaction = response.json()["transaction"]
+    assert transaction["amount"] == pytest.approx(25.99)
+    assert transaction["currency"] == "USD"
+    assert transaction["base_amount"] == pytest.approx(842.08)
+    assert transaction["base_currency"] == "TWD"
+    assert transaction["exchange_rate"] == pytest.approx(32.4)
+    assert transaction["exchange_rate_date"] == "2026-02-18"
+
+
+def test_manual_usd_transaction_without_exchange_rate_leaves_base_null(
+    client: TestClient,
+) -> None:
+    _register_user(client)
+
+    created = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2026-02-18",
+            "merchant": "Amazon",
+            "original_amount": 25.99,
+            "original_currency": "USD",
+            "base_currency": "TWD",
+            "category": "Shopping",
+            "payment_method": "Chase",
+        },
+    )
+    assert created.status_code == 201
+    transaction = created.json()["transaction"]
+    assert transaction["base_amount"] is None
+    assert transaction["exchange_rate"] is None
+
+    transactions = client.get("/transactions?range=all&limit=10")
+    assert transactions.status_code == 200
+    amazon = transactions.json()["transactions"][0]
+    assert amazon["original_currency"] == "USD"
+    assert amazon["base_amount"] is None
+
+
+def test_manual_transaction_rejects_invalid_currency(client: TestClient) -> None:
+    _register_user(client)
+
+    response = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2024-04-20",
+            "merchant": "Coffee Project",
+            "original_amount": 42.5,
+            "original_currency": "NTD",
+            "category": None,
+            "payment_method": None,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Invalid original currency" in response.json()["detail"]
+
+
+def test_manual_transaction_legacy_amount_defaults_to_twd(client: TestClient) -> None:
+    _register_user(client)
+
+    response = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2024-04-20",
+            "merchant": "Coffee Project",
+            "amount": 120,
+            "category": "Dining",
+            "payment_method": "Cash",
+        },
+    )
+
+    assert response.status_code == 201
+    transaction = response.json()["transaction"]
+    assert transaction["original_amount"] == pytest.approx(120.0)
+    assert transaction["original_currency"] == "TWD"
+    assert transaction["base_amount"] == pytest.approx(120.0)
+    assert transaction["exchange_rate"] == pytest.approx(1.0)
+
+
+def test_manual_transaction_rejects_non_positive_exchange_rate(
+    client: TestClient,
+) -> None:
+    _register_user(client)
+
+    response = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2026-02-18",
+            "merchant": "Amazon",
+            "original_amount": 25.99,
+            "original_currency": "USD",
+            "base_currency": "TWD",
+            "exchange_rate": 0,
+            "category": "Shopping",
+            "payment_method": "Chase",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Exchange rate must be greater than zero" in response.json()["detail"]
 
 
 def test_dashboard_view_preserves_original_currency_and_recent_uploads_group_totals(
@@ -355,6 +525,8 @@ def test_dashboard_view_preserves_original_currency_and_recent_uploads_group_tot
                 "amount": 20.0,
                 "category": "Digital Services",
                 "currency": "USD",
+                "exchange_rate": 32.0,
+                "exchange_rate_date": "2025-04-21",
             },
             {
                 "date": "2025-04-20",

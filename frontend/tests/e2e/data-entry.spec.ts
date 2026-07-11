@@ -50,6 +50,12 @@ test("manual transaction form validates client-side and posts on success", async
           amount: 12.5,
           category: "Dining",
           currency: "USD",
+          original_amount: 12.5,
+          original_currency: "USD",
+          base_amount: null,
+          base_currency: "TWD",
+          exchange_rate: null,
+          exchange_rate_date: null,
           payment_method: "Cash",
           file_name: "manual-entry",
           original_file_name: "Manual entry",
@@ -69,9 +75,12 @@ test("manual transaction form validates client-side and posts on success", async
   await page.getByLabel("Amount").fill("0");
   await page.getByRole("button", { name: "Add spending" }).click();
   await expect(
-    page.getByText("Amount must be a non-zero number.")
+    page.getByText("Amount must be a positive number.")
   ).toBeVisible();
 
+  const manualCurrency = page.getByRole("combobox", { name: "Currency" }).first();
+  await expect(manualCurrency).toHaveValue("TWD");
+  await manualCurrency.selectOption("USD");
   await page.getByLabel("Amount").fill("12.50");
   await page.getByRole("button", { name: "Add spending" }).click();
 
@@ -79,6 +88,12 @@ test("manual transaction form validates client-side and posts on success", async
   expect(manualPayload).toMatchObject({
     merchant: "Coffee Project",
     amount: 12.5,
+    currency: "USD",
+    original_amount: 12.5,
+    original_currency: "USD",
+    base_currency: "TWD",
+    exchange_rate: null,
+    exchange_rate_date: null,
   });
 });
 
