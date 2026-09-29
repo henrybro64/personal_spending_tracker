@@ -2,8 +2,10 @@
 
 import {
   ChangeEvent,
+  Dispatch,
   DragEvent,
   KeyboardEvent,
+  SetStateAction,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -1158,6 +1160,417 @@ const useStyles = makeStyles({
   },
 });
 
+type DashboardStyles = ReturnType<typeof useStyles>;
+type DashboardFormatters = ReturnType<typeof createFormatters>;
+
+function DashboardCharts({
+  styles,
+  locale,
+  fm,
+  activeCurrency,
+  activeCurrencyLabel,
+  merchantBreakdown,
+  merchantBarMaximum,
+  selectedMerchant,
+  setSelectedMerchant,
+  categoryBreakdown,
+  categoryPieBackground,
+  categorySpendTotal,
+}: {
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  activeCurrency: DisplayCurrency;
+  activeCurrencyLabel: string;
+  merchantBreakdown: MerchantBreakdown[];
+  merchantBarMaximum: number;
+  selectedMerchant: string | null;
+  setSelectedMerchant: Dispatch<SetStateAction<string | null>>;
+  categoryBreakdown: CategoryBreakdown[];
+  categoryPieBackground: string;
+  categorySpendTotal: number;
+}) {
+  return (
+    <div className={styles.primaryVisualsGrid}>
+      <Card className={mergeClasses(styles.panel, styles.visualCard)}>
+        <div className={styles.cardHeader}>
+          <div className={styles.cardHeaderTitle}>
+            <Title2>{translate(locale, "merchantContributionTitle")}</Title2>
+            <Body1 className={styles.cardContext}>
+              {translate(locale, "chartDisplayCurrencyHintTemplate", {
+                currency: activeCurrencyLabel,
+              })}
+            </Body1>
+          </div>
+        </div>
+
+        {merchantBreakdown.length > 0 ? (
+          <div className={styles.merchantRows}>
+            {merchantBreakdown.map((merchantItem) => (
+              <div className={styles.merchantRow} key={merchantItem.merchant}>
+                <div className={styles.merchantMain}>
+                  <Button
+                    appearance="transparent"
+                    className={styles.merchantButton}
+                    onClick={() =>
+                      setSelectedMerchant((currentValue) =>
+                        currentValue === merchantItem.merchant
+                          ? null
+                          : merchantItem.merchant
+                      )
+                    }
+                    size="small"
+                  >
+                    <span className={styles.merchantName}>
+                      {merchantItem.merchant}
+                    </span>
+                  </Button>
+                  <div className={styles.barTrack}>
+                    <div
+                      className={mergeClasses(
+                        styles.barFill,
+                        selectedMerchant === merchantItem.merchant &&
+                          styles.barFillSelected
+                      )}
+                      style={{
+                        width: `${
+                          merchantBarMaximum > 0
+                            ? (merchantItem.abs_total / merchantBarMaximum) * 100
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className={styles.merchantValue}>
+                  {fm.formatCurrency(merchantItem.total, activeCurrency)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Body1 className={styles.emptyState}>
+            {translate(locale, "emptyMerchantVisual")}
+          </Body1>
+        )}
+      </Card>
+
+      <Card className={mergeClasses(styles.panel, styles.visualCard)}>
+        <div className={styles.cardHeader}>
+          <div className={styles.cardHeaderTitle}>
+            <Title2>{translate(locale, "spendingByCategoryTitle")}</Title2>
+            <Body1 className={styles.cardContext}>
+              {translate(locale, "chartDisplayCurrencyHintTemplate", {
+                currency: activeCurrencyLabel,
+              })}
+            </Body1>
+          </div>
+          <Badge appearance="outline" color="warning">
+            {translate(locale, "badgePositiveOnly")}
+          </Badge>
+        </div>
+
+        {categoryBreakdown.length > 0 ? (
+          <div className={styles.pieLayout}>
+            <div className={styles.pieChartWrap}>
+              <div
+                className={styles.pieChart}
+                style={{ backgroundImage: categoryPieBackground }}
+              >
+                <div className={styles.pieChartHole}>
+                  <div className={styles.pieCenterValue}>
+                    {fm.formatCurrency(categorySpendTotal, activeCurrency)}
+                  </div>
+                  <div className={styles.pieCenterLabel}>
+                    {translate(locale, "pieCenterSpendInView")}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className={styles.categoryLegend}>
+              {categoryBreakdown.map((categoryItem) => (
+                <div className={styles.categoryLegendRow} key={categoryItem.category}>
+                  <div
+                    className={styles.categoryLegendSwatch}
+                    style={{ backgroundColor: categoryItem.color }}
+                  />
+                  <div className={styles.categoryLegendMain}>
+                    <div className={styles.categoryLegendLabel}>
+                      {categoryItem.category}
+                    </div>
+                    <div className={styles.categoryLegendMeta}>
+                      {fm.formatPercent(categoryItem.share)}{" "}
+                      {translate(locale, "shareOfVisibleSpend")}
+                    </div>
+                  </div>
+                  <div className={styles.categoryLegendValue}>
+                    {fm.formatCurrency(categoryItem.total, activeCurrency)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <Body1 className={styles.emptyState}>
+            {translate(locale, "emptyCategoryVisual")}
+          </Body1>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function DashboardTransactionTable({
+  styles,
+  locale,
+  fm,
+  activeCurrency,
+  activeCurrencyLabel,
+  visibleRowsCount,
+  sortedTransactions,
+  hasSortedTransactions,
+  recentUploads,
+  statementCount,
+}: {
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  activeCurrency: DisplayCurrency;
+  activeCurrencyLabel: string;
+  visibleRowsCount: number;
+  sortedTransactions: Transaction[];
+  hasSortedTransactions: boolean;
+  recentUploads: RecentUpload[];
+  statementCount: number;
+}) {
+  let emptyMessageKey: MessageKey = "emptyNoUpload";
+  if (recentUploads.length > 0 || statementCount > 0) {
+    emptyMessageKey = "emptySlicerNoRows";
+  }
+
+  return (
+    <Card className={mergeClasses(styles.panel, styles.tableCard)}>
+      <div className={styles.tableHeader}>
+        <div className={styles.cardHeaderTitle}>
+          <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
+            {translate(locale, "detailMatrixEyebrow")}
+          </div>
+          <Title2>{translate(locale, "transactionsTitle")}</Title2>
+          <Body1 className={styles.cardContext}>
+            {translate(locale, "dashboardTableCurrencyNoteTemplate", {
+              currency: activeCurrencyLabel,
+            })}
+          </Body1>
+        </div>
+        <div className={styles.tableTools}>
+          <Badge appearance="outline" color="brand">
+            {fm.formatCount(visibleRowsCount)} {translate(locale, "visibleSuffix")}
+          </Badge>
+        </div>
+      </div>
+
+      {hasSortedTransactions ? (
+        <div className={styles.tableWrap}>
+          <Table aria-label={translate(locale, "tableAriaLabel")} className={styles.dataTable}>
+            <TableHeader>
+              <TableRow>
+                <TableHeaderCell className={styles.tableHeaderCell}>
+                  {translate(locale, "colDate")}
+                </TableHeaderCell>
+                <TableHeaderCell className={styles.tableHeaderCell}>
+                  {translate(locale, "colMerchant")}
+                </TableHeaderCell>
+                <TableHeaderCell className={styles.tableHeaderCell}>
+                  {translate(locale, "colCategory")}
+                </TableHeaderCell>
+                <TableHeaderCell className={styles.tableHeaderCell}>
+                  {translate(locale, "colAmount")}
+                </TableHeaderCell>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sortedTransactions.map((transaction, index) => (
+                <TransactionAmountRow
+                  activeCurrency={activeCurrency}
+                  fm={fm}
+                  index={index}
+                  key={`${transaction.date}-${transaction.merchant}-${index}`}
+                  locale={locale}
+                  styles={styles}
+                  transaction={transaction}
+                />
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : (
+        <Body1 className={styles.emptyState}>
+          {translate(locale, emptyMessageKey)}
+        </Body1>
+      )}
+    </Card>
+  );
+}
+
+function TransactionAmountRow({
+  styles,
+  locale,
+  fm,
+  activeCurrency,
+  transaction,
+  index,
+}: {
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  activeCurrency: DisplayCurrency;
+  transaction: Transaction;
+  index: number;
+}) {
+  const amountClass =
+    transaction.amount < 0 ? styles.amountNegative : styles.amountPositive;
+  const amountCurrency = transaction.currency ?? activeCurrency;
+  const originalCurrency =
+    transaction.original_currency ?? transaction.currency ?? activeCurrency;
+  const showsConvertedOriginal =
+    transaction.is_converted &&
+    transaction.original_amount !== undefined &&
+    Boolean(transaction.original_currency);
+
+  return (
+    <TableRow className={index % 2 === 1 ? styles.rowAlt : undefined}>
+      <TableCell className={styles.tableCell}>
+        {fm.formatTransactionDate(transaction.date, true)}
+      </TableCell>
+      <TableCell className={mergeClasses(styles.tableCell, styles.merchantCell)}>
+        {transaction.merchant}
+      </TableCell>
+      <TableCell className={styles.tableCell}>{transaction.category}</TableCell>
+      <TableCell className={styles.tableCell}>
+        <div className={styles.amountCell}>
+          <div className={amountClass}>
+            {fm.formatCurrency(transaction.amount, amountCurrency)}
+          </div>
+          <div className={styles.amountMeta}>
+            {showsConvertedOriginal
+              ? translate(locale, "dashboardConvertedFromTemplate", {
+                  amount: fm.formatCurrency(
+                    transaction.original_amount ?? 0,
+                    transaction.original_currency ?? amountCurrency
+                  ),
+                })
+              : translate(locale, "dashboardOriginalCurrencyTemplate", {
+                  currency: describeCurrency(originalCurrency),
+                })}
+          </div>
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function RecentStatementsCard({
+  styles,
+  locale,
+  fm,
+  intlLocale,
+  isDashboardLoading,
+  recentUploads,
+}: {
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  intlLocale: string;
+  isDashboardLoading: boolean;
+  recentUploads: RecentUpload[];
+}) {
+  let historyBody = (
+    <Body1 className={styles.emptyState}>{translate(locale, "noUploadsYet")}</Body1>
+  );
+  if (isDashboardLoading && recentUploads.length === 0) {
+    historyBody = (
+      <Body1 className={styles.emptyState}>
+        {translate(locale, "loadingHistoryLabel")}
+      </Body1>
+    );
+  } else if (recentUploads.length > 0) {
+    historyBody = (
+      <div className={styles.historyList}>
+        {recentUploads.map((upload) => (
+          <RecentStatementRow
+            fm={fm}
+            intlLocale={intlLocale}
+            key={upload.file_name}
+            locale={locale}
+            styles={styles}
+            upload={upload}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
+      <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
+        {translate(locale, "historyEyebrow")}
+      </div>
+      <Title2>{translate(locale, "recentStatementsTitle")}</Title2>
+      {historyBody}
+    </Card>
+  );
+}
+
+function RecentStatementRow({
+  styles,
+  locale,
+  fm,
+  intlLocale,
+  upload,
+}: {
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  intlLocale: string;
+  upload: RecentUpload;
+}) {
+  const totalsLabel = translate(
+    locale,
+    isRecentUploadMixedCurrency(upload)
+      ? "recentUploadOriginalTotals"
+      : "recentUploadOriginalTotal"
+  );
+
+  return (
+    <div className={styles.historyItem}>
+      <div className={styles.historyTop}>
+        <div className={styles.historyName}>{upload.display_name}</div>
+        <div className={styles.historyMeta}>{fm.formatUploadDate(upload.uploaded_at)}</div>
+      </div>
+      <div className={styles.historyStats}>
+        <div className={styles.historyStat}>
+          <div className={styles.historyStatLabel}>
+            {translate(locale, "recentUploadRowsLabel")}
+          </div>
+          <div className={styles.historyStatValue}>
+            {fm.formatCount(upload.transaction_count)}{" "}
+            {translate(locale, "historyRowsWord")}
+          </div>
+        </div>
+        {upload.currency_totals.length > 0 ? (
+          <div className={styles.historyStat}>
+            <div className={styles.historyStatLabel}>{totalsLabel}</div>
+            <div className={styles.historyStatValue}>
+              {formatCurrencyTotals(toCurrencyTotals(upload.currency_totals), intlLocale)}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function isRecentUploadMixedCurrency(upload: RecentUpload): boolean {
   return upload.currency_totals.length > 1;
 }
@@ -1273,19 +1686,6 @@ export default function HomePage() {
     translate(locale, "noStatementSelected");
   const latestUpload = recentUploads[0];
   const hasSortedTransactions = sortedTransactions.length > 0;
-
-  function formatUploadTotals(upload: RecentUpload) {
-    return formatCurrencyTotals(toCurrencyTotals(upload.currency_totals), intlLocale);
-  }
-
-  function uploadTotalsLabel(upload: RecentUpload) {
-    return translate(
-      locale,
-      isRecentUploadMixedCurrency(upload)
-        ? "recentUploadOriginalTotals"
-        : "recentUploadOriginalTotal"
-    );
-  }
 
   const metricCards: MetricCard[] = useMemo(
     () => [
@@ -1820,55 +2220,14 @@ export default function HomePage() {
             </div>
           </Card>
 
-          <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
-            <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
-              {translate(locale, "historyEyebrow")}
-            </div>
-            <Title2>{translate(locale, "recentStatementsTitle")}</Title2>
-            {isDashboardLoading && recentUploads.length === 0 ? (
-              <Body1 className={styles.emptyState}>
-                {translate(locale, "loadingHistoryLabel")}
-              </Body1>
-            ) : recentUploads.length > 0 ? (
-              <div className={styles.historyList}>
-                {recentUploads.map((upload) => (
-                  <div className={styles.historyItem} key={upload.file_name}>
-                    <div className={styles.historyTop}>
-                      <div className={styles.historyName}>{upload.display_name}</div>
-                      <div className={styles.historyMeta}>
-                        {fm.formatUploadDate(upload.uploaded_at)}
-                      </div>
-                    </div>
-                    <div className={styles.historyStats}>
-                      <div className={styles.historyStat}>
-                        <div className={styles.historyStatLabel}>
-                          {translate(locale, "recentUploadRowsLabel")}
-                        </div>
-                        <div className={styles.historyStatValue}>
-                          {fm.formatCount(upload.transaction_count)}{" "}
-                          {translate(locale, "historyRowsWord")}
-                        </div>
-                      </div>
-                      {upload.currency_totals.length > 0 ? (
-                        <div className={styles.historyStat}>
-                          <div className={styles.historyStatLabel}>
-                            {uploadTotalsLabel(upload)}
-                          </div>
-                          <div className={styles.historyStatValue}>
-                            {formatUploadTotals(upload)}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <Body1 className={styles.emptyState}>
-                {translate(locale, "noUploadsYet")}
-              </Body1>
-            )}
-          </Card>
+          <RecentStatementsCard
+            fm={fm}
+            intlLocale={intlLocale}
+            isDashboardLoading={isDashboardLoading}
+            locale={locale}
+            recentUploads={recentUploads}
+            styles={styles}
+          />
 
         </aside>
 
@@ -2006,241 +2365,34 @@ export default function HomePage() {
             ))}
           </div>
 
-          <div className={styles.primaryVisualsGrid}>
-            <Card className={mergeClasses(styles.panel, styles.visualCard)}>
-              <div className={styles.cardHeader}>
-                <div className={styles.cardHeaderTitle}>
-                  <Title2>{translate(locale, "merchantContributionTitle")}</Title2>
-                  <Body1 className={styles.cardContext}>
-                    {translate(locale, "chartDisplayCurrencyHintTemplate", {
-                      currency: activeCurrencyLabel,
-                    })}
-                  </Body1>
-                </div>
-              </div>
+          <DashboardCharts
+            activeCurrency={activeCurrency}
+            activeCurrencyLabel={activeCurrencyLabel}
+            categoryBreakdown={categoryBreakdown}
+            categoryPieBackground={categoryPieBackground}
+            categorySpendTotal={categorySpendTotal}
+            fm={fm}
+            locale={locale}
+            merchantBarMaximum={merchantBarMaximum}
+            merchantBreakdown={merchantBreakdown}
+            selectedMerchant={selectedMerchant}
+            setSelectedMerchant={setSelectedMerchant}
+            styles={styles}
+          />
 
-              {merchantBreakdown.length > 0 ? (
-                <div className={styles.merchantRows}>
-                  {merchantBreakdown.map((merchantItem) => (
-                    <div className={styles.merchantRow} key={merchantItem.merchant}>
-                      <div className={styles.merchantMain}>
-                        <Button
-                          appearance="transparent"
-                          className={styles.merchantButton}
-                          onClick={() =>
-                            setSelectedMerchant((currentValue) =>
-                              currentValue === merchantItem.merchant
-                                ? null
-                                : merchantItem.merchant
-                            )
-                          }
-                          size="small"
-                        >
-                          <span className={styles.merchantName}>
-                            {merchantItem.merchant}
-                          </span>
-                        </Button>
-                        <div className={styles.barTrack}>
-                          <div
-                            className={mergeClasses(
-                              styles.barFill,
-                              selectedMerchant === merchantItem.merchant &&
-                                styles.barFillSelected
-                            )}
-                            style={{
-                              width: `${
-                                merchantBarMaximum > 0
-                                  ? (merchantItem.abs_total / merchantBarMaximum) * 100
-                                  : 0
-                              }%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <div className={styles.merchantValue}>
-                        {fm.formatCurrency(merchantItem.total, activeCurrency)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <Body1 className={styles.emptyState}>
-                  {translate(locale, "emptyMerchantVisual")}
-                </Body1>
-              )}
-            </Card>
+          <DashboardTransactionTable
+            activeCurrency={activeCurrency}
+            activeCurrencyLabel={activeCurrencyLabel}
+            fm={fm}
+            hasSortedTransactions={hasSortedTransactions}
+            locale={locale}
+            recentUploads={recentUploads}
+            sortedTransactions={sortedTransactions}
+            statementCount={summary.number_of_statements}
+            styles={styles}
+            visibleRowsCount={visibleRowsCount}
+          />
 
-            <Card className={mergeClasses(styles.panel, styles.visualCard)}>
-              <div className={styles.cardHeader}>
-                <div className={styles.cardHeaderTitle}>
-                  <Title2>{translate(locale, "spendingByCategoryTitle")}</Title2>
-                  <Body1 className={styles.cardContext}>
-                    {translate(locale, "chartDisplayCurrencyHintTemplate", {
-                      currency: activeCurrencyLabel,
-                    })}
-                  </Body1>
-                </div>
-                <Badge appearance="outline" color="warning">
-                  {translate(locale, "badgePositiveOnly")}
-                </Badge>
-              </div>
-
-              {categoryBreakdown.length > 0 ? (
-                <div className={styles.pieLayout}>
-                  <div className={styles.pieChartWrap}>
-                    <div
-                      className={styles.pieChart}
-                      style={{ backgroundImage: categoryPieBackground }}
-                    >
-                      <div className={styles.pieChartHole}>
-                        <div className={styles.pieCenterValue}>
-                          {fm.formatCurrency(categorySpendTotal, activeCurrency)}
-                        </div>
-                        <div className={styles.pieCenterLabel}>
-                          {translate(locale, "pieCenterSpendInView")}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className={styles.categoryLegend}>
-                    {categoryBreakdown.map((categoryItem) => (
-                      <div
-                        className={styles.categoryLegendRow}
-                        key={categoryItem.category}
-                      >
-                        <div
-                          className={styles.categoryLegendSwatch}
-                          style={{ backgroundColor: categoryItem.color }}
-                        />
-                        <div className={styles.categoryLegendMain}>
-                          <div className={styles.categoryLegendLabel}>
-                            {categoryItem.category}
-                          </div>
-                          <div className={styles.categoryLegendMeta}>
-                            {fm.formatPercent(categoryItem.share)}{" "}
-                            {translate(locale, "shareOfVisibleSpend")}
-                          </div>
-                        </div>
-                        <div className={styles.categoryLegendValue}>
-                          {fm.formatCurrency(categoryItem.total, activeCurrency)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <Body1 className={styles.emptyState}>
-                  {translate(locale, "emptyCategoryVisual")}
-                </Body1>
-              )}
-            </Card>
-
-          </div>
-
-          <Card className={mergeClasses(styles.panel, styles.tableCard)}>
-            <div className={styles.tableHeader}>
-              <div className={styles.cardHeaderTitle}>
-                <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
-                  {translate(locale, "detailMatrixEyebrow")}
-                </div>
-                <Title2>{translate(locale, "transactionsTitle")}</Title2>
-                <Body1 className={styles.cardContext}>
-                  {translate(locale, "dashboardTableCurrencyNoteTemplate", {
-                    currency: activeCurrencyLabel,
-                  })}
-                </Body1>
-              </div>
-              <div className={styles.tableTools}>
-                <Badge appearance="outline" color="brand">
-                  {fm.formatCount(visibleRowsCount)} {translate(locale, "visibleSuffix")}
-                </Badge>
-              </div>
-            </div>
-
-            {hasSortedTransactions ? (
-              <div className={styles.tableWrap}>
-                <Table aria-label={translate(locale, "tableAriaLabel")} className={styles.dataTable}>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHeaderCell className={styles.tableHeaderCell}>
-                        {translate(locale, "colDate")}
-                      </TableHeaderCell>
-                      <TableHeaderCell className={styles.tableHeaderCell}>
-                        {translate(locale, "colMerchant")}
-                      </TableHeaderCell>
-                      <TableHeaderCell className={styles.tableHeaderCell}>
-                        {translate(locale, "colCategory")}
-                      </TableHeaderCell>
-                      <TableHeaderCell className={styles.tableHeaderCell}>
-                        {translate(locale, "colAmount")}
-                      </TableHeaderCell>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {sortedTransactions.map((transaction, index) => (
-                      <TableRow
-                        className={index % 2 === 1 ? styles.rowAlt : undefined}
-                        key={`${transaction.date}-${transaction.merchant}-${index}`}
-                      >
-                        <TableCell className={styles.tableCell}>
-                          {fm.formatTransactionDate(transaction.date, true)}
-                        </TableCell>
-                        <TableCell className={mergeClasses(styles.tableCell, styles.merchantCell)}>
-                          {transaction.merchant}
-                        </TableCell>
-                        <TableCell className={styles.tableCell}>
-                          {transaction.category}
-                        </TableCell>
-                        <TableCell className={styles.tableCell}>
-                          <div className={styles.amountCell}>
-                            <div
-                              className={
-                                transaction.amount < 0
-                                  ? styles.amountNegative
-                                  : styles.amountPositive
-                              }
-                            >
-                              {fm.formatCurrency(
-                                transaction.amount,
-                                transaction.currency ?? activeCurrency
-                              )}
-                            </div>
-                            <div className={styles.amountMeta}>
-                              {transaction.is_converted &&
-                              transaction.original_amount !== undefined &&
-                              transaction.original_currency ? (
-                                translate(locale, "dashboardConvertedFromTemplate", {
-                                  amount: fm.formatCurrency(
-                                    transaction.original_amount,
-                                    transaction.original_currency
-                                  ),
-                                })
-                              ) : (
-                                translate(locale, "dashboardOriginalCurrencyTemplate", {
-                                  currency: describeCurrency(
-                                    transaction.original_currency ??
-                                      transaction.currency ??
-                                      activeCurrency
-                                  ),
-                                })
-                              )}
-                            </div>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            ) : (
-              <Body1 className={styles.emptyState}>
-                {recentUploads.length > 0 || summary.number_of_statements > 0
-                  ? translate(locale, "emptySlicerNoRows")
-                  : translate(locale, "emptyNoUpload")}
-              </Body1>
-            )}
-          </Card>
 
         </section>
       </div>

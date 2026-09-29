@@ -320,8 +320,12 @@ test("an older dashboard response cannot overwrite a newer currency", async ({
   page,
 }) => {
   let releaseStale = () => {};
+  let markStaleSettled = () => {};
   const staleGate = new Promise<void>((resolve) => {
     releaseStale = resolve;
+  });
+  const staleSettled = new Promise<void>((resolve) => {
+    markStaleSettled = resolve;
   });
   let heldStaleRequest = false;
 
@@ -351,6 +355,8 @@ test("an older dashboard response cannot overwrite a newer currency", async ({
         });
       } catch {
         // The page aborts this request once a newer filter is selected.
+      } finally {
+        markStaleSettled();
       }
       return;
     }
@@ -377,7 +383,7 @@ test("an older dashboard response cannot overwrite a newer currency", async ({
   );
 
   releaseStale();
-  await page.waitForTimeout(400);
+  await staleSettled;
   await expect(page.getByText("US$4,321.09").first()).toBeVisible();
   await expect(page.getByText("NT$138,274.88")).toHaveCount(0);
   await expect(page.getByText("stale failure")).toHaveCount(0);
@@ -451,7 +457,10 @@ test("clearing slicers requests the reset filters once and drops the previous se
       queries.slice(requestCountBeforeClear).some(isClearedMonthQuery)
     )
     .toBe(true);
-  await page.waitForTimeout(400);
+  await expect(page.getByTestId("dashboard-shell")).toHaveAttribute(
+    "data-dashboard-loading",
+    "false"
+  );
 
   const requestsAfterClear = queries.slice(requestCountBeforeClear);
   expect(requestsAfterClear.length).toBeGreaterThan(0);
