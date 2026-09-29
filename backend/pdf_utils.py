@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,42 @@ def _unwrap_pdfminer_exception(exc: BaseException) -> BaseException:
 
 def extract_pdf_text(
     file_path: str | Path, password: str | None = None
+) -> str:
+    # pdfminer is CPU-bound. A thread would still hold this process's GIL and
+    # stall the event loop, so the extraction runs in a child process.
+    from backend.process_pool import run_cpu_bound
+
+    return run_cpu_bound(
+        _extract_pdf_text_in_process,
+        os.fspath(file_path),
+        password,
+    )
+
+
+def read_statement_pdf(
+    file_path: str | Path, password: str | None = None
+) -> tuple[str, list[dict[str, Any]]]:
+    """Extract and parse one statement without holding the API process GIL."""
+    from backend.process_pool import run_cpu_bound
+
+    return run_cpu_bound(
+        _read_statement_pdf_in_process,
+        os.fspath(file_path),
+        password,
+    )
+
+
+def _read_statement_pdf_in_process(
+    file_path: str, password: str | None
+) -> tuple[str, list[dict[str, Any]]]:
+    from backend.parser import parse_transactions
+
+    text = _extract_pdf_text_in_process(file_path, password)
+    return text, list(parse_transactions(text))
+
+
+def _extract_pdf_text_in_process(
+    file_path: str, password: str | None = None
 ) -> str:
     pdf_path = Path(file_path)
     page_text: list[str] = []

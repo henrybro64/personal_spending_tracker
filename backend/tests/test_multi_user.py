@@ -124,21 +124,19 @@ async def test_duplicate_statement_detection_is_scoped_per_user(
 ) -> None:
     monkeypatch.setattr(
         api_main,
-        "extract_pdf_text",
-        lambda path, password=None: "synthetic statement text",
-    )
-    monkeypatch.setattr(
-        api_main,
-        "parse_transactions",
-        lambda text: [
-            {
-                "date": "2024-04-20",
-                "merchant": "Shared Merchant",
-                "amount": 19.25,
-                "category": "Dining",
-                "currency": "USD",
-            }
-        ],
+        "_load_uploaded_statement",
+        lambda path, password=None: (
+            "synthetic statement text",
+            [
+                {
+                    "date": "2024-04-20",
+                    "merchant": "Shared Merchant",
+                    "amount": 19.25,
+                    "category": "Dining",
+                    "currency": "USD",
+                }
+            ],
+        ),
     )
 
     pdf_bytes = b"%PDF-1.4 synthetic statement"

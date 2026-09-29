@@ -6,7 +6,6 @@ from datetime import date
 from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
-from shutil import copyfileobj
 from typing import Literal, TypedDict, cast
 from uuid import uuid4
 
@@ -37,6 +36,7 @@ from backend.auth import (  # noqa: E402
     clear_session_cookie,
     display_name_from_username,
     generate_session_token,
+    AuditRequestContext,
     get_audit_request_context,
     get_optional_current_user,
     hash_password,
@@ -119,12 +119,13 @@ from backend.currency import (  # noqa: E402
     exchange_rate_metadata,
     normalize_supported_currency_code,
 )
-from backend.parser import Transaction, parse_transactions  # noqa: E402
+from backend.parser import Transaction  # noqa: E402
 from backend.pdf_utils import (  # noqa: E402
     PdfDecryptError,
     PdfPasswordProtectedError,
-    extract_pdf_text,
+    read_statement_pdf,
 )
+from backend.process_pool import shutdown_process_pool  # noqa: E402
 
 
 DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
@@ -872,13 +873,23 @@ def _get_batch_import_store(
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     try:
-        init_db()
+        # Schema setup talks to Postgres. Keep it off the event loop.
+        await asyncio.to_thread(init_db)
     except RuntimeError as exc:
         if "DATABASE_URL environment variable is required" not in str(exc):
             raise
-    yield
+    try:
+        yield
+    finally:
+        shutdown_process_pool()
 
 
+# Concurrency model: one Uvicorn worker. `/health` stays on the event loop.
+# Database calls and import orchestration use the worker thread pool: plain
+# `def` endpoints are scheduled there, and handlers that also await network I/O
+# move the blocking section with `asyncio.to_thread`. PDF extraction and
+# statement parsing run in a child process so that CPU work does not hold this
+# process's GIL. A long import must not freeze unrelated requests.
 app = FastAPI(title="Personal Spending Tracker API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
@@ -905,11 +916,12 @@ async def read_root() -> dict[str, str]:
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
+    # Stay on the event loop so a saturated worker pool cannot hide a live process.
     return {"status": "ok"}
 
 
 @app.get("/auth/session")
-async def auth_session(
+def auth_session(
     current_user: UserRecord | None = Depends(get_optional_current_user),
 ) -> SessionResponse:
     return {
@@ -921,7 +933,7 @@ async def auth_session(
 
 
 @app.post("/auth/register", status_code=status.HTTP_201_CREATED)
-async def register(
+def register(
     payload: AuthRequest,
     request: Request,
     response: Response,
@@ -998,7 +1010,7 @@ async def register(
 
 
 @app.post("/auth/login")
-async def login(
+def login(
     payload: AuthRequest,
     request: Request,
     response: Response,
@@ -1048,7 +1060,7 @@ async def login(
 
 
 @app.post("/auth/logout")
-async def logout(
+def logout(
     request: Request,
     response: Response,
     current_user: UserRecord | None = Depends(get_optional_current_user),
@@ -1079,7 +1091,7 @@ async def logout(
 
 
 @app.get("/ai/settings")
-async def ai_settings(
+def ai_settings(
     current_user: UserRecord = Depends(require_current_user),
 ) -> AiSettingsResponse:
     stored_settings = list_user_ai_provider_settings(user_id=current_user["id"])
@@ -1087,7 +1099,7 @@ async def ai_settings(
 
 
 @app.put("/ai/settings/{provider_name}")
-async def save_ai_settings(
+def save_ai_settings(
     provider_name: str,
     payload: AiProviderSettingsRequest,
     request: Request,
@@ -1140,7 +1152,7 @@ async def save_ai_settings(
 
 
 @app.delete("/ai/settings/{provider_name}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ai_settings(
+def delete_ai_settings(
     provider_name: str,
     request: Request,
     current_user: UserRecord = Depends(require_current_user),
@@ -1167,19 +1179,17 @@ async def delete_ai_settings(
     )
 
 
-@app.post("/ai/insights")
-async def ai_insights(
-    payload: AiInsightsRequest,
-    request: Request,
-    current_user: UserRecord = Depends(require_current_user),
-) -> AiInsightResponse:
-    resolved_range = _resolve_ai_insight_range(payload.range)
-    audit_context = get_audit_request_context(request)
-
+def _load_ai_insight_inputs(
+    *,
+    user_id: int,
+    provider: AiProvider | None,
+    resolved_range: TimeRange,
+    language: InsightLanguage,
+):
     try:
         configured_provider = get_user_ai_provider_secret(
-            user_id=current_user["id"],
-            provider=payload.provider,
+            user_id=user_id,
+            provider=provider,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -1193,7 +1203,7 @@ async def ai_insights(
     transactions = [
         transaction
         for transaction in get_transactions(
-            user_id=current_user["id"],
+            user_id=user_id,
             range_key=resolved_range,
             limit=None,
         )
@@ -1211,6 +1221,24 @@ async def ai_insights(
     snapshot = build_spending_insight_snapshot(
         transactions,
         range_key=resolved_range,
+        language=language,
+    )
+    return configured_provider, transactions, snapshot
+
+
+@app.post("/ai/insights")
+async def ai_insights(
+    payload: AiInsightsRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_current_user),
+) -> AiInsightResponse:
+    resolved_range = _resolve_ai_insight_range(payload.range)
+    audit_context = get_audit_request_context(request)
+    configured_provider, transactions, snapshot = await asyncio.to_thread(
+        _load_ai_insight_inputs,
+        user_id=current_user["id"],
+        provider=payload.provider,
+        resolved_range=resolved_range,
         language=cast(InsightLanguage, payload.language),
     )
 
@@ -1222,7 +1250,8 @@ async def ai_insights(
             snapshot=snapshot,
         )
     except RuntimeError as exc:
-        record_audit_event(
+        await asyncio.to_thread(
+            record_audit_event,
             action="ai_insights_generate",
             status="rejected",
             user_id=current_user["id"],
@@ -1239,7 +1268,8 @@ async def ai_insights(
         )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    record_audit_event(
+    await asyncio.to_thread(
+        record_audit_event,
         action="ai_insights_generate",
         status="success",
         user_id=current_user["id"],
@@ -1274,7 +1304,7 @@ async def ai_insights(
 
 
 @app.get("/summary")
-async def summary(
+def summary(
     range: str = Query(default="all"),
     currency: str = Query(default="USD"),
     current_user: UserRecord = Depends(require_current_user),
@@ -1289,7 +1319,7 @@ async def summary(
 
 
 @app.get("/uploads/recent")
-async def recent_uploads(
+def recent_uploads(
     limit: int = 5,
     current_user: UserRecord = Depends(require_current_user),
 ) -> RecentUploadsResponse:
@@ -1303,7 +1333,7 @@ async def recent_uploads(
 
 
 @app.delete("/uploads/{upload_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_statement_upload(
+def delete_statement_upload(
     upload_id: int,
     request: Request,
     current_user: UserRecord = Depends(require_current_user),
@@ -1343,7 +1373,7 @@ async def delete_statement_upload(
 
 
 @app.get("/transactions")
-async def transactions(
+def transactions(
     range: str = Query(default="all"),
     limit: int = Query(default=5000, ge=1, le=20000),
     current_user: UserRecord = Depends(require_current_user),
@@ -1359,7 +1389,7 @@ async def transactions(
 
 
 @app.get("/dashboard/view")
-async def dashboard_view(
+def dashboard_view(
     range: str = Query(default="all"),
     search: str = Query(default=""),
     amount_filter: str = Query(default="all"),
@@ -1432,7 +1462,7 @@ async def dashboard_view(
     status_code=status.HTTP_201_CREATED,
     responses={400: {"description": "Invalid manual transaction request"}},
 )
-async def create_manual_transaction(
+def create_manual_transaction(
     payload: ManualTransactionRequest,
     request: Request,
     current_user: UserRecord = Depends(require_current_user),
@@ -1485,7 +1515,7 @@ async def create_manual_transaction(
 
 
 @app.patch("/transactions/{transaction_id}")
-async def patch_transaction(
+def patch_transaction(
     transaction_id: int,
     payload: TransactionUpdateRequest,
     request: Request,
@@ -1531,7 +1561,7 @@ async def patch_transaction(
 
 
 @app.delete("/transactions/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_dashboard_transaction(
+def delete_dashboard_transaction(
     transaction_id: int,
     request: Request,
     current_user: UserRecord = Depends(require_current_user),
@@ -1556,41 +1586,33 @@ async def delete_dashboard_transaction(
     )
 
 
-@app.post("/batch-imports/run", status_code=status.HTTP_201_CREATED)
-async def run_batch_import(
-    request: Request,
-    payload: BatchImportRequest | None = None,
-    current_user: UserRecord = Depends(require_current_user),
+def _execute_batch_import(
+    *,
+    user_id: int,
+    request_payload: BatchImportRequest,
+    audit_context: AuditRequestContext,
 ) -> BatchImportRunExecutionResponse:
-    request_payload = payload or BatchImportRequest()
-    logger.info(
-        "batch-imports/run started user_id=%s",
-        current_user["id"],
-    )
+    logger.info("batch-imports/run started user_id=%s", user_id)
     try:
-        store = _get_batch_import_store(
-            current_user["id"],
-            request_payload.sqlite_output_path,
-        )
+        store = _get_batch_import_store(user_id, request_payload.sqlite_output_path)
         pdf_source_dir = resolve_allowed_directory(
             request_payload.pdf_source_dir,
-            default=_default_batch_pdf_source_dir_for_user(current_user["id"]),
+            default=_default_batch_pdf_source_dir_for_user(user_id),
         )
         text_source_dir = resolve_allowed_directory(
             request_payload.text_source_dir,
-            default=_default_batch_text_source_dir_for_user(current_user["id"]),
+            default=_default_batch_text_source_dir_for_user(user_id),
         )
         importer = StatementImporter(
             pdf_source_dir=str(pdf_source_dir),
             text_source_dir=str(text_source_dir),
             csv_output_path=resolve_allowed_file(
                 request_payload.csv_output_path,
-                default=_default_batch_csv_path_for_user(current_user["id"]),
+                default=_default_batch_csv_path_for_user(user_id),
             ),
             store=store,
         )
-        # Run off the event loop so /health stays responsive during long PDF imports.
-        result = await asyncio.to_thread(importer.import_transactions)
+        result = importer.import_transactions()
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -1602,16 +1624,15 @@ async def run_batch_import(
 
     logger.info(
         "batch-imports/run finished user_id=%s statements=%s transactions=%s skipped=%s",
-        current_user["id"],
+        user_id,
         result.statement_count,
         result.transaction_count,
         len(result.skipped_files),
     )
-    audit_context = get_audit_request_context(request)
     record_audit_event(
         action="batch_import_run",
         status="success",
-        user_id=current_user["id"],
+        user_id=user_id,
         target_type="batch_import_run",
         request_id=audit_context.request_id,
         ip_address=audit_context.ip_address,
@@ -1625,8 +1646,22 @@ async def run_batch_import(
     return {"run": result.to_payload()}
 
 
+@app.post("/batch-imports/run", status_code=status.HTTP_201_CREATED)
+async def run_batch_import(
+    request: Request,
+    payload: BatchImportRequest | None = None,
+    current_user: UserRecord = Depends(require_current_user),
+) -> BatchImportRunExecutionResponse:
+    return await asyncio.to_thread(
+        _execute_batch_import,
+        user_id=current_user["id"],
+        request_payload=payload or BatchImportRequest(),
+        audit_context=get_audit_request_context(request),
+    )
+
+
 @app.post("/batch-imports/import", status_code=status.HTTP_201_CREATED)
-async def import_batch_content(
+def import_batch_content(
     payload: BulkContentImportRequest,
     current_user: UserRecord = Depends(require_current_user),
 ) -> BulkContentImportResponse:
@@ -1709,7 +1744,7 @@ async def import_batch_content(
 
 
 @app.post("/batch-imports/merge", status_code=status.HTTP_200_OK)
-async def merge_batch_import(
+def merge_batch_import(
     request: Request,
     payload: BatchImportMergeRequest | None = None,
     current_user: UserRecord = Depends(require_current_user),
@@ -1757,7 +1792,7 @@ async def merge_batch_import(
 
 
 @app.get("/batch-imports/latest")
-async def batch_import_latest(
+def batch_import_latest(
     sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportLatestResponse:
@@ -1766,7 +1801,7 @@ async def batch_import_latest(
 
 
 @app.get("/batch-imports/transactions")
-async def batch_import_transactions(
+def batch_import_transactions(
     needs_review_only: bool = Query(default=False),
     run_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=500, ge=1, le=5000),
@@ -1784,7 +1819,7 @@ async def batch_import_transactions(
 
 
 @app.patch("/batch-imports/transactions/{transaction_id}")
-async def update_batch_import_transaction(
+def update_batch_import_transaction(
     transaction_id: int,
     payload: BatchReviewUpdateRequest,
     request: Request,
@@ -1835,7 +1870,7 @@ async def update_batch_import_transaction(
     "/batch-imports/transactions/{transaction_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def delete_batch_import_transaction(
+def delete_batch_import_transaction(
     transaction_id: int,
     request: Request,
     sqlite_path: str | None = Query(default=None),
@@ -1878,7 +1913,7 @@ async def delete_batch_import_transaction(
 
 
 @app.get("/batch-imports/needs-review-merchants")
-async def batch_import_needs_review_merchants(
+def batch_import_needs_review_merchants(
     run_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=20, ge=1, le=200),
     sqlite_path: str | None = Query(default=None),
@@ -1900,7 +1935,7 @@ async def batch_import_needs_review_merchants(
 
 
 @app.post("/batch-imports/review/bulk", status_code=status.HTTP_200_OK)
-async def bulk_update_batch_import_review(
+def bulk_update_batch_import_review(
     payload: BatchReviewBulkUpdateRequest,
     sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
@@ -1924,7 +1959,7 @@ async def bulk_update_batch_import_review(
 
 
 @app.get("/batch-imports/digit-noise-pending-count")
-async def batch_import_digit_noise_pending_count(
+def batch_import_digit_noise_pending_count(
     run_id: int | None = Query(default=None, ge=1),
     sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
@@ -1936,7 +1971,7 @@ async def batch_import_digit_noise_pending_count(
 
 
 @app.post("/batch-imports/review/dismiss-digit-noise", status_code=status.HTTP_200_OK)
-async def dismiss_batch_import_digit_noise(
+def dismiss_batch_import_digit_noise(
     payload: BatchReviewDismissDigitNoiseRequest,
     sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
@@ -1947,7 +1982,7 @@ async def dismiss_batch_import_digit_noise(
 
 
 @app.post("/batch-imports/review/auto-categorize", status_code=status.HTTP_200_OK)
-async def auto_categorize_batch_import_review(
+def auto_categorize_batch_import_review(
     payload: BatchReviewDismissDigitNoiseRequest,
     sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
@@ -1964,23 +1999,30 @@ async def auto_categorize_batch_import_review(
     }
 
 
-@app.post("/upload", status_code=status.HTTP_201_CREATED)
-async def upload_pdf(
-    request: Request,
-    file: UploadFile = File(...),
-    password: str | None = Form(default=None),
-    current_user: UserRecord = Depends(require_current_user),
+def _load_uploaded_statement(
+    file_path: Path, password: str | None
+) -> tuple[str, list[Transaction]]:
+    # Tests replace this helper. Production runs PDF CPU in a child process.
+    return read_statement_pdf(file_path, password)
+
+
+def _store_uploaded_pdf(
+    *,
+    file_bytes: bytes,
+    original_name: str,
+    content_type: str | None,
+    password: str | None,
+    user_id: int,
+    audit_context: AuditRequestContext,
 ) -> UploadResponse:
-    audit_context = get_audit_request_context(request)
-    original_name = file.filename or ""
     has_pdf_extension = Path(original_name).suffix.lower() == ".pdf"
-    is_pdf_content = file.content_type == "application/pdf"
+    is_pdf_content = content_type == "application/pdf"
 
     if not has_pdf_extension and not is_pdf_content:
         record_audit_event(
             action="statement_upload_attempt",
             status="rejected",
-            user_id=current_user["id"],
+            user_id=user_id,
             target_type="statement_upload",
             request_id=audit_context.request_id,
             ip_address=audit_context.ip_address,
@@ -1993,7 +2035,7 @@ async def upload_pdf(
     record_audit_event(
         action="statement_upload_attempt",
         status="started",
-        user_id=current_user["id"],
+        user_id=user_id,
         target_type="statement_upload",
         request_id=audit_context.request_id,
         ip_address=audit_context.ip_address,
@@ -2001,20 +2043,13 @@ async def upload_pdf(
         metadata={"file_name": original_name},
     )
 
-    upload_dir = _get_upload_dir(current_user["id"])
+    upload_dir = _get_upload_dir(user_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
     temp_path = upload_dir / f".tmp-{uuid4().hex}.pdf"
-
-    try:
-        with temp_path.open("wb") as buffer:
-            copyfileobj(file.file, buffer)
-    finally:
-        await file.close()
-
-    file_bytes = temp_path.read_bytes()
+    temp_path.write_bytes(file_bytes)
     sha256_fingerprint = sha256(file_bytes).hexdigest()
     existing_upload = get_existing_upload_by_fingerprint(
-        user_id=current_user["id"],
+        user_id=user_id,
         file_fingerprint_sha256=sha256_fingerprint,
     )
     if existing_upload:
@@ -2022,7 +2057,7 @@ async def upload_pdf(
         record_audit_event(
             action="duplicate_upload_rejection",
             status="rejected",
-            user_id=current_user["id"],
+            user_id=user_id,
             target_type="statement_upload",
             target_id=str(existing_upload["id"]),
             request_id=audit_context.request_id,
@@ -2043,7 +2078,10 @@ async def upload_pdf(
     temp_path.rename(saved_path)
 
     try:
-        extracted_text = extract_pdf_text(saved_path, password=password_clean)
+        extracted_text, transactions = _load_uploaded_statement(
+            saved_path,
+            password_clean,
+        )
     except PdfPasswordProtectedError as e:
         saved_path.unlink(missing_ok=True)
         need_password = (
@@ -2053,7 +2091,7 @@ async def upload_pdf(
         record_audit_event(
             action="statement_upload_parse_failure",
             status="rejected",
-            user_id=current_user["id"],
+            user_id=user_id,
             target_type="statement_upload",
             request_id=audit_context.request_id,
             ip_address=audit_context.ip_address,
@@ -2077,7 +2115,7 @@ async def upload_pdf(
         record_audit_event(
             action="statement_upload_parse_failure",
             status="rejected",
-            user_id=current_user["id"],
+            user_id=user_id,
             target_type="statement_upload",
             request_id=audit_context.request_id,
             ip_address=audit_context.ip_address,
@@ -2085,7 +2123,6 @@ async def upload_pdf(
             metadata={"file_name": original_name, "reason": "decrypt_error"},
         )
         raise HTTPException(status_code=400, detail=cannot_open) from None
-    transactions = parse_transactions(extracted_text)
     display_name = original_name or saved_name
 
     parse_reason: str | None = None
@@ -2097,7 +2134,7 @@ async def upload_pdf(
         parse_status = "no_transactions"
 
     upload_record = create_statement_upload(
-        user_id=current_user["id"],
+        user_id=user_id,
         original_file_name=display_name,
         stored_file_name=saved_name,
         file_fingerprint_sha256=sha256_fingerprint,
@@ -2107,7 +2144,7 @@ async def upload_pdf(
     )
     insert_transactions(
         transactions,
-        user_id=current_user["id"],
+        user_id=user_id,
         file_name=saved_name,
         file_fingerprint=sha256_fingerprint,
         original_file_name=display_name,
@@ -2116,7 +2153,7 @@ async def upload_pdf(
     record_audit_event(
         action="statement_upload_success",
         status="success",
-        user_id=current_user["id"],
+        user_id=user_id,
         target_type="statement_upload",
         target_id=str(upload_record["id"]),
         request_id=audit_context.request_id,
@@ -2135,3 +2172,26 @@ async def upload_pdf(
         "transactions": transactions,
         "parse_reason": parse_reason,
     }
+
+
+@app.post("/upload", status_code=status.HTTP_201_CREATED)
+async def upload_pdf(
+    request: Request,
+    file: UploadFile = File(...),
+    password: str | None = Form(default=None),
+    current_user: UserRecord = Depends(require_current_user),
+) -> UploadResponse:
+    # UploadFile.read() already leaves the event loop. Database writes run in
+    # a worker thread. PDF extraction and parsing run in a child process so
+    # CPU work cannot hold this process's GIL and block /health.
+    file_bytes = await file.read()
+    await file.close()
+    return await asyncio.to_thread(
+        _store_uploaded_pdf,
+        file_bytes=file_bytes,
+        original_name=file.filename or "",
+        content_type=file.content_type,
+        password=password,
+        user_id=current_user["id"],
+        audit_context=get_audit_request_context(request),
+    )

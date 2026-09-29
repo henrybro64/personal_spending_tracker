@@ -9,7 +9,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useTransition,
 } from "react";
 import Link from "next/link";
 import {
@@ -40,6 +39,16 @@ import {
 } from "@fluentui/react-components";
 
 import { apiFetch, apiFetchJson, ApiError } from "./api";
+import {
+  DashboardRequestCoordinator,
+  type DashboardFilters,
+  dashboardLoadKey,
+  effectiveSearchQuery,
+  loadDashboardSnapshot,
+  refreshAfterUpload,
+  runGuardedDashboardLoad,
+  shouldReleaseSearchPin,
+} from "./dashboard-refresh";
 import { AuthPage, AuthPanel, SessionCard } from "./auth-card";
 import { useAuth } from "./auth-provider";
 import {
@@ -1149,13 +1158,6 @@ const useStyles = makeStyles({
   },
 });
 
-async function fetchJson<T>(
-  path: string,
-  requestFailedFallback: string
-): Promise<T> {
-  return apiFetchJson<T>(path, requestFailedFallback);
-}
-
 function isRecentUploadMixedCurrency(upload: RecentUpload): boolean {
   return upload.currency_totals.length > 1;
 }
@@ -1196,7 +1198,6 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
-  const [isTransitionPending, startTransition] = useTransition();
   const [manualDate, setManualDate] = useState(getTodayIsoDate);
   const [manualMerchant, setManualMerchant] = useState("");
   const [manualAmount, setManualAmount] = useState("");
@@ -1207,6 +1208,44 @@ export default function HomePage() {
   const [manualError, setManualError] = useState("");
   const [isManualSaving, setIsManualSaving] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
+  const [pinnedSearch, setPinnedSearch] = useState<string | null>(null);
+  const [mutationRevision, setMutationRevision] = useState(0);
+  const requestCoordinatorRef = useRef(new DashboardRequestCoordinator());
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const searchForRequest = effectiveSearchQuery(
+    searchQuery,
+    deferredSearchQuery,
+    pinnedSearch
+  );
+  const requestFilters = useMemo<DashboardFilters>(
+    () => ({
+      timeRange,
+      searchQuery: searchForRequest,
+      amountFilter,
+      sortOption,
+      selectedMerchant,
+      displayCurrency,
+    }),
+    [
+      amountFilter,
+      displayCurrency,
+      searchForRequest,
+      selectedMerchant,
+      sortOption,
+      timeRange,
+    ]
+  );
+  const latestFiltersRef = useRef<DashboardFilters>(requestFilters);
+  latestFiltersRef.current = {
+    timeRange,
+    searchQuery,
+    amountFilter,
+    sortOption,
+    selectedMerchant,
+    displayCurrency,
+  };
+  const dashboardLoadToken = dashboardLoadKey(requestFilters, mutationRevision);
   const [dashboardView, setDashboardView] = useState<DashboardViewResponse | null>(null);
   const sortedTransactions = dashboardView?.sorted_transactions ?? [];
   const merchantBreakdown = dashboardView?.merchant_breakdown ?? [];
@@ -1297,77 +1336,12 @@ export default function HomePage() {
     ]
   );
 
-  async function loadDashboardData(showLoadingState: boolean) {
-    if (showLoadingState) {
-      setIsDashboardLoading(true);
+  useEffect(() => {
+    if (!shouldReleaseSearchPin(searchQuery, deferredSearchQuery, pinnedSearch)) {
+      return;
     }
-
-    try {
-      const recentUploadsData = await fetchJson<RecentUploadsResponse>(
-        "/uploads/recent?limit=6",
-        translate(locale, "errRequestFailed")
-      );
-      setRecentUploads(recentUploadsData.uploads);
-      setDashboardError("");
-    } catch (dashboardLoadError) {
-      if (dashboardLoadError instanceof ApiError && dashboardLoadError.status === 401) {
-        await refreshSession();
-        return;
-      }
-      setDashboardError(
-        dashboardLoadError instanceof Error
-          ? dashboardLoadError.message
-          : translate(locale, "errDashboardUnavailable")
-      );
-    } finally {
-      if (showLoadingState) {
-        setIsDashboardLoading(false);
-      }
-    }
-  }
-
-  async function loadTransactionsData(showLoadingState: boolean) {
-    if (showLoadingState) {
-      setIsDashboardLoading(true);
-    }
-
-    try {
-      const dashboardData = await fetchJson<DashboardViewResponse>(
-        `/dashboard/view?range=${encodeURIComponent(
-          timeRange
-        )}&search=${encodeURIComponent(
-          deferredSearchQuery
-        )}&amount_filter=${encodeURIComponent(
-          amountFilter
-        )}&selected_merchant=${encodeURIComponent(
-          selectedMerchant ?? ""
-        )}&sort=${encodeURIComponent(sortOption)}&currency=${encodeURIComponent(
-          displayCurrency
-        )}&limit=5000`,
-        translate(locale, "errRequestFailed")
-      );
-      setDashboardView(dashboardData);
-      setSummary(dashboardData.summary);
-      setTransactions(dashboardData.transactions);
-      setError("");
-    } catch (transactionLoadError) {
-      if (transactionLoadError instanceof ApiError && transactionLoadError.status === 401) {
-        await refreshSession();
-        return;
-      }
-      setDashboardView(null);
-      setTransactions([]);
-      setError(
-        transactionLoadError instanceof Error
-          ? transactionLoadError.message
-          : translate(locale, "errRequestFailed")
-      );
-    } finally {
-      if (showLoadingState) {
-        setIsDashboardLoading(false);
-      }
-    }
-  }
+    setPinnedSearch(null);
+  }, [deferredSearchQuery, pinnedSearch, searchQuery]);
 
   useEffect(() => {
     if (authStatus !== "authenticated") {
@@ -1379,17 +1353,85 @@ export default function HomePage() {
       return;
     }
 
-    void Promise.all([loadDashboardData(true), loadTransactionsData(true)]);
-  }, [
-    authStatus,
-    timeRange,
-    displayCurrency,
-    amountFilter,
-    sortOption,
-    selectedMerchant,
-    deferredSearchQuery,
-    refreshSession,
-  ]);
+    const coordinator = requestCoordinatorRef.current;
+    const ticket = coordinator.start();
+    const filters = requestFilters;
+    setIsDashboardLoading(true);
+
+    void runGuardedDashboardLoad({
+      coordinator,
+      generation: ticket.generation,
+      signal: ticket.signal,
+      load: () =>
+        loadDashboardSnapshot<RecentUploadsResponse, DashboardViewResponse>({
+          filters,
+          signal: ticket.signal,
+          fetchJson: (path, signal) =>
+            apiFetchJson(
+              path,
+              translate(localeRef.current, "errRequestFailed"),
+              { signal }
+            ),
+        }),
+      apply: (snapshot) => {
+        if (snapshot.uploads.status === "ok") {
+          setRecentUploads(snapshot.uploads.value.uploads);
+          setDashboardError("");
+        } else if (
+          snapshot.uploads.error instanceof ApiError &&
+          snapshot.uploads.error.status === 401
+        ) {
+          void refreshSession();
+        } else {
+          setDashboardError(
+            snapshot.uploads.error instanceof Error
+              ? snapshot.uploads.error.message
+              : translate(localeRef.current, "errDashboardUnavailable")
+          );
+        }
+
+        if (snapshot.view.status === "ok") {
+          setDashboardView(snapshot.view.value);
+          setSummary(snapshot.view.value.summary);
+          setTransactions(snapshot.view.value.transactions);
+          setError("");
+        } else if (
+          snapshot.view.error instanceof ApiError &&
+          snapshot.view.error.status === 401
+        ) {
+          void refreshSession();
+        } else {
+          setDashboardView(null);
+          setTransactions([]);
+          setError(
+            snapshot.view.error instanceof Error
+              ? snapshot.view.error.message
+              : translate(localeRef.current, "errRequestFailed")
+          );
+        }
+      },
+      onError: (loadError) => {
+        if (loadError instanceof ApiError && loadError.status === 401) {
+          void refreshSession();
+          return;
+        }
+        const message =
+          loadError instanceof Error
+            ? loadError.message
+            : translate(localeRef.current, "errRequestFailed");
+        setDashboardView(null);
+        setTransactions([]);
+        setError(message);
+      },
+      onSettled: () => {
+        setIsDashboardLoading(false);
+      },
+    });
+
+    return () => {
+      ticket.abort();
+    };
+  }, [authStatus, dashboardLoadToken, refreshSession, requestFilters]);
 
   function handleNextFile(nextFile: File | null) {
     if (!nextFile) {
@@ -1431,11 +1473,18 @@ export default function HomePage() {
     }
   }
 
+  function applyClearedSlicers(filters: DashboardFilters) {
+    const nextFilters = refreshAfterUpload(filters);
+    setSearchQuery(nextFilters.searchQuery);
+    setSelectedMerchant(nextFilters.selectedMerchant);
+    setAmountFilter(nextFilters.amountFilter as AmountFilter);
+    setSortOption(nextFilters.sortOption as SortOption);
+    setPinnedSearch(nextFilters.searchQuery);
+    return nextFilters;
+  }
+
   function clearSlicers() {
-    setSearchQuery("");
-    setSelectedMerchant(null);
-    setAmountFilter("all");
-    setSortOption("amount_desc");
+    applyClearedSlicers(latestFiltersRef.current);
   }
 
   async function handleUpload() {
@@ -1474,25 +1523,20 @@ export default function HomePage() {
 
       const uploadData = data as UploadResponse;
 
-      startTransition(() => {
-        setFilePath(uploadData.file_path);
-        setUploadedFileName(uploadData.original_file_name);
-        const reason = uploadData.parse_reason;
-        setLastUploadParseReason(
-          reason === "empty_text" || reason === "no_matching_lines"
-            ? reason
-            : null
-        );
-        setSelectedFile(null);
-        setPdfPassword("");
-        clearSlicers();
-      });
+      setFilePath(uploadData.file_path);
+      setUploadedFileName(uploadData.original_file_name);
+      const reason = uploadData.parse_reason;
+      setLastUploadParseReason(
+        reason === "empty_text" || reason === "no_matching_lines" ? reason : null
+      );
+      setSelectedFile(null);
+      setPdfPassword("");
+      applyClearedSlicers(latestFiltersRef.current);
+      setMutationRevision((current) => current + 1);
 
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
-
-      await Promise.all([loadDashboardData(false), loadTransactionsData(false)]);
     } catch (uploadError) {
       setTransactions([]);
       setFilePath("");
@@ -1574,7 +1618,7 @@ export default function HomePage() {
       setManualCategory("Auto");
       setManualPaymentMethod("Cash");
       setManualDate(getTodayIsoDate());
-      await Promise.all([loadDashboardData(false), loadTransactionsData(false)]);
+      setMutationRevision((current) => current + 1);
     } catch (manualSaveError) {
       setManualError(
         manualSaveError instanceof Error
@@ -1612,7 +1656,11 @@ export default function HomePage() {
 
   return (
     <main className={styles.page}>
-      <div className={styles.shell} data-testid="dashboard-shell">
+      <div
+        className={styles.shell}
+        data-dashboard-loading={isDashboardLoading ? "true" : "false"}
+        data-testid="dashboard-shell"
+      >
         <aside className={styles.sidebar}>
           <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
             <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
@@ -1825,6 +1873,16 @@ export default function HomePage() {
         </aside>
 
         <section className={styles.reportArea}>
+          {error ? (
+            <MessageBar intent="error">
+              <MessageBarBody>{error}</MessageBarBody>
+            </MessageBar>
+          ) : null}
+          {dashboardError ? (
+            <MessageBar intent="error">
+              <MessageBarBody>{dashboardError}</MessageBarBody>
+            </MessageBar>
+          ) : null}
           <Card className={mergeClasses(styles.panel, styles.reportHeader)}>
             <div className={styles.reportHeaderTop}>
               <div className={styles.reportHeaderTitle}>

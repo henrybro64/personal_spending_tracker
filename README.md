@@ -9,6 +9,12 @@ Minimal full-stack app for authenticated users to upload statement PDFs, parse t
 - Database: PostgreSQL
 - PDF parsing: `pdfplumber`
 
+## API concurrency
+
+The API runs as one Uvicorn process. `/health` stays on the event loop. Database calls and import orchestration run in a worker thread pool: synchronous FastAPI endpoints are scheduled there, and handlers that also await network I/O (`/upload`, `/ai/insights`, `/batch-imports/run`) move the blocking section with `asyncio.to_thread`. PDF text extraction and statement parsing run in a child process, so that CPU work does not hold the API process GIL. A long import does not freeze unrelated requests such as `/health`, `/transactions`, or `/dashboard/view`.
+
+The dashboard keeps one refresh path. Filter changes and post-upload or manual-entry refreshes share a request generation, so an older response cannot overwrite newer totals.
+
 ## Project Layout
 
 ```text
