@@ -6,7 +6,7 @@ from datetime import date
 from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import BinaryIO, Literal, NoReturn, TypedDict, cast
 from uuid import uuid4
 
 # Repo root on sys.path so `from backend.*` works when running
@@ -58,15 +58,17 @@ from backend.ai_insights import (  # noqa: E402
 )
 from backend.transaction_exclusions import should_exclude_from_spending
 from backend.database import (  # noqa: E402
+    ExistingUpload,
     UserAiProviderSettingRecord,
     RecentUpload,
     StoredTransaction,
     TimeRange,
     TransactionsSummary,
     UserRecord,
+    DuplicateStatementUploadError,
+    DuplicateUsernameError,
     create_session,
     create_statement_upload,
-    create_user,
     delete_user_ai_provider_setting,
     get_existing_upload_by_fingerprint,
     get_recent_uploads,
@@ -78,8 +80,8 @@ from backend.database import (  # noqa: E402
     insert_manual_transaction,
     insert_transactions,
     list_user_ai_provider_settings,
-    maybe_claim_legacy_data_for_first_user,
     record_audit_event,
+    register_new_user,
     revoke_session,
     upsert_user_ai_provider_setting,
     delete_statement_upload_for_user,
@@ -963,12 +965,27 @@ def register(
             detail="An account already exists for that username.",
         )
 
-    created_user = create_user(
-        email=normalized_username,
-        password_hash=hash_password(payload.password),
-        display_name=display_name,
-    )
-    claimed_counts = maybe_claim_legacy_data_for_first_user(created_user["id"])
+    try:
+        created_user, claimed_counts = register_new_user(
+            email=normalized_username,
+            password_hash=hash_password(payload.password),
+            display_name=display_name,
+        )
+    except DuplicateUsernameError:
+        record_audit_event(
+            action="user_register",
+            status="rejected",
+            target_type="user",
+            target_id=normalized_username,
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"reason": "duplicate_username"},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="An account already exists for that username.",
+        ) from None
 
     session_token = generate_session_token()
     create_session(
@@ -2006,9 +2023,61 @@ def _load_uploaded_statement(
     return read_statement_pdf(file_path, password)
 
 
+MAX_STATEMENT_UPLOAD_BYTES = 32 * 1024 * 1024
+
+
+class _StatementUploadTooLarge(Exception):
+    pass
+
+
+def _copy_upload_stream(source: BinaryIO, dest: Path) -> str:
+    """Copy an upload to disk in chunks and return its SHA-256 hex digest."""
+    digest = sha256()
+    total = 0
+    with dest.open("wb") as buffer:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_STATEMENT_UPLOAD_BYTES:
+                raise _StatementUploadTooLarge()
+            buffer.write(chunk)
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _reject_duplicate_upload(
+    *,
+    existing_upload: ExistingUpload | None,
+    user_id: int,
+    original_name: str,
+    audit_context: AuditRequestContext,
+) -> NoReturn:
+    record_audit_event(
+        action="duplicate_upload_rejection",
+        status="rejected",
+        user_id=user_id,
+        target_type="statement_upload",
+        target_id=str(existing_upload["id"]) if existing_upload else None,
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={"file_name": original_name},
+    )
+    if existing_upload:
+        detail = (
+            "This statement was already imported as "
+            f"'{existing_upload['display_name']}' on {existing_upload['uploaded_at']}."
+        )
+    else:
+        detail = "This statement was already imported."
+    raise HTTPException(status_code=409, detail=detail)
+
+
 def _store_uploaded_pdf(
     *,
-    file_bytes: bytes,
+    upload_stream: BinaryIO,
     original_name: str,
     content_type: str | None,
     password: str | None,
@@ -2046,31 +2115,35 @@ def _store_uploaded_pdf(
     upload_dir = _get_upload_dir(user_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
     temp_path = upload_dir / f".tmp-{uuid4().hex}.pdf"
-    temp_path.write_bytes(file_bytes)
-    sha256_fingerprint = sha256(file_bytes).hexdigest()
+    try:
+        sha256_fingerprint = _copy_upload_stream(upload_stream, temp_path)
+    except _StatementUploadTooLarge:
+        temp_path.unlink(missing_ok=True)
+        record_audit_event(
+            action="statement_upload_attempt",
+            status="rejected",
+            user_id=user_id,
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"reason": "file_too_large", "file_name": original_name},
+        )
+        raise HTTPException(
+            status_code=413,
+            detail="PDF uploads must be 32 MB or smaller.",
+        ) from None
     existing_upload = get_existing_upload_by_fingerprint(
         user_id=user_id,
         file_fingerprint_sha256=sha256_fingerprint,
     )
     if existing_upload:
         temp_path.unlink(missing_ok=True)
-        record_audit_event(
-            action="duplicate_upload_rejection",
-            status="rejected",
+        _reject_duplicate_upload(
+            existing_upload=existing_upload,
             user_id=user_id,
-            target_type="statement_upload",
-            target_id=str(existing_upload["id"]),
-            request_id=audit_context.request_id,
-            ip_address=audit_context.ip_address,
-            user_agent=audit_context.user_agent,
-            metadata={"file_name": original_name},
-        )
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This statement was already imported as "
-                f"'{existing_upload['display_name']}' on {existing_upload['uploaded_at']}."
-            ),
+            original_name=original_name,
+            audit_context=audit_context,
         )
 
     saved_name = f"{uuid4().hex}.pdf"
@@ -2133,15 +2206,27 @@ def _store_uploaded_pdf(
         )
         parse_status = "no_transactions"
 
-    upload_record = create_statement_upload(
-        user_id=user_id,
-        original_file_name=display_name,
-        stored_file_name=saved_name,
-        file_fingerprint_sha256=sha256_fingerprint,
-        parse_status=parse_status,
-        parse_reason=parse_reason,
-        currency=transactions[0].get("currency") if transactions else None,
-    )
+    try:
+        upload_record = create_statement_upload(
+            user_id=user_id,
+            original_file_name=display_name,
+            stored_file_name=saved_name,
+            file_fingerprint_sha256=sha256_fingerprint,
+            parse_status=parse_status,
+            parse_reason=parse_reason,
+            currency=transactions[0].get("currency") if transactions else None,
+        )
+    except DuplicateStatementUploadError:
+        saved_path.unlink(missing_ok=True)
+        _reject_duplicate_upload(
+            existing_upload=get_existing_upload_by_fingerprint(
+                user_id=user_id,
+                file_fingerprint_sha256=sha256_fingerprint,
+            ),
+            user_id=user_id,
+            original_name=original_name,
+            audit_context=audit_context,
+        )
     insert_transactions(
         transactions,
         user_id=user_id,
@@ -2181,17 +2266,19 @@ async def upload_pdf(
     password: str | None = Form(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> UploadResponse:
-    # UploadFile.read() already leaves the event loop. Database writes run in
-    # a worker thread. PDF extraction and parsing run in a child process so
-    # CPU work cannot hold this process's GIL and block /health.
-    file_bytes = await file.read()
-    await file.close()
-    return await asyncio.to_thread(
-        _store_uploaded_pdf,
-        file_bytes=file_bytes,
-        original_name=file.filename or "",
-        content_type=file.content_type,
-        password=password,
-        user_id=current_user["id"],
-        audit_context=get_audit_request_context(request),
-    )
+    # Stream the body to disk on a worker thread so a large PDF is not held in
+    # memory on the event loop. Database writes stay on that thread. PDF
+    # extraction and parsing run in a child process so CPU work cannot hold
+    # this process's GIL and block /health.
+    try:
+        return await asyncio.to_thread(
+            _store_uploaded_pdf,
+            upload_stream=file.file,
+            original_name=file.filename or "",
+            content_type=file.content_type,
+            password=password,
+            user_id=current_user["id"],
+            audit_context=get_audit_request_context(request),
+        )
+    finally:
+        await file.close()

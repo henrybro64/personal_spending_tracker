@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pdfplumber
 from pdfminer.pdfdocument import PDFEncryptionError, PDFPasswordIncorrect
@@ -10,9 +10,25 @@ from pdfplumber.utils.exceptions import PdfminerException
 class PdfPasswordProtectedError(Exception):
     """PDF requires a password, or the supplied password was rejected."""
 
-    def __init__(self, *, had_password: bool) -> None:
-        self.had_password = had_password
-        super().__init__()
+    def __init__(self, had_password: bool = False) -> None:
+        # had_password is a positional arg so ProcessPoolExecutor can unpickle
+        # this exception if it ever crosses the process boundary directly.
+        self.had_password = bool(had_password)
+        super().__init__(self.had_password)
+
+
+class _PdfWorkerFailure(NamedTuple):
+    """Picklable stand-in for PDF errors raised inside the child process.
+
+    Third-party pdfminer exceptions, and exceptions chained with ``from``,
+    are not reliable to unpickle. A failed unpickle marks the process pool
+    broken, so workers return this value and the parent re-raises a local
+    exception.
+    """
+
+    kind: str
+    had_password: bool
+    message: str
 
 
 class PdfDecryptError(Exception):
@@ -67,10 +83,12 @@ def extract_pdf_text(
     # stall the event loop, so the extraction runs in a child process.
     from backend.process_pool import run_cpu_bound
 
-    return run_cpu_bound(
-        _extract_pdf_text_in_process,
-        os.fspath(file_path),
-        password,
+    return _raise_pdf_worker_failure(
+        run_cpu_bound(
+            _extract_pdf_text_in_process,
+            os.fspath(file_path),
+            password,
+        )
     )
 
 
@@ -80,23 +98,63 @@ def read_statement_pdf(
     """Extract and parse one statement without holding the API process GIL."""
     from backend.process_pool import run_cpu_bound
 
-    return run_cpu_bound(
-        _read_statement_pdf_in_process,
-        os.fspath(file_path),
-        password,
+    return _raise_pdf_worker_failure(
+        run_cpu_bound(
+            _read_statement_pdf_in_process,
+            os.fspath(file_path),
+            password,
+        )
     )
+
+
+def _pdf_worker_failure(exc: BaseException) -> _PdfWorkerFailure:
+    if isinstance(exc, PdfPasswordProtectedError):
+        return _PdfWorkerFailure("password", exc.had_password, "")
+    if isinstance(exc, PdfDecryptError):
+        return _PdfWorkerFailure("decrypt", False, str(exc))
+    if isinstance(exc, PdfminerException):
+        return _PdfWorkerFailure("pdfminer", False, str(exc))
+    return _PdfWorkerFailure(
+        "unexpected",
+        False,
+        f"{type(exc).__name__}: {exc}",
+    )
+
+
+def _raise_pdf_worker_failure(result: Any) -> Any:
+    if not isinstance(result, _PdfWorkerFailure):
+        return result
+    if result.kind == "password":
+        raise PdfPasswordProtectedError(result.had_password)
+    if result.kind == "decrypt":
+        raise PdfDecryptError(result.message or "Unable to decrypt PDF")
+    if result.kind == "pdfminer":
+        raise PdfminerException(result.message)
+    raise RuntimeError(result.message or "PDF worker failed")
 
 
 def _read_statement_pdf_in_process(
     file_path: str, password: str | None
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]]] | _PdfWorkerFailure:
     from backend.parser import parse_transactions
 
-    text = _extract_pdf_text_in_process(file_path, password)
-    return text, list(parse_transactions(text))
+    try:
+        text = _extract_pdf_text_unlocked(file_path, password)
+        return text, list(parse_transactions(text))
+    except Exception as exc:
+        return _pdf_worker_failure(exc)
 
 
 def _extract_pdf_text_in_process(
+    file_path: str, password: str | None = None
+) -> str | _PdfWorkerFailure:
+    try:
+        return _extract_pdf_text_unlocked(file_path, password)
+    except Exception as exc:
+        return _pdf_worker_failure(exc)
+
+
+def _extract_pdf_text_unlocked(
     file_path: str, password: str | None = None
 ) -> str:
     pdf_path = Path(file_path)

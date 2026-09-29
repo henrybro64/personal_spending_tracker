@@ -206,3 +206,262 @@ async def test_cpu_bound_pdf_work_does_not_stall_health(api_main) -> None:
         child_pid = await task
 
     assert child_pid != parent_pid
+
+
+def _password_failure_probe():
+    from backend.pdf_utils import _PdfWorkerFailure
+
+    return _PdfWorkerFailure("password", True, "")
+
+
+def test_password_error_round_trips_without_breaking_the_process_pool() -> None:
+    import pickle
+
+    from backend.pdf_utils import PdfPasswordProtectedError, _raise_pdf_worker_failure
+    from backend.process_pool import run_cpu_bound
+
+    restored = pickle.loads(
+        pickle.dumps(PdfPasswordProtectedError(had_password=True))
+    )
+    assert restored.had_password is True
+
+    with pytest.raises(PdfPasswordProtectedError) as first:
+        _raise_pdf_worker_failure(run_cpu_bound(_password_failure_probe))
+    assert first.value.had_password is True
+
+    with pytest.raises(PdfPasswordProtectedError) as second:
+        _raise_pdf_worker_failure(run_cpu_bound(_password_failure_probe))
+    assert second.value.had_password is True
+
+
+def test_oversized_upload_is_rejected_without_keeping_the_file(
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api_main, "MAX_STATEMENT_UPLOAD_BYTES", 8)
+    monkeypatch.setattr(api_main, "record_audit_event", lambda **kwargs: None)
+
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as caught:
+        api_main._store_uploaded_pdf(
+            upload_stream=BytesIO(b"%PDF-1.4 too large"),
+            original_name="statement.pdf",
+            content_type="application/pdf",
+            password=None,
+            user_id=1,
+            audit_context=api_main.get_audit_request_context(_upload_request()),
+        )
+
+    assert caught.value.status_code == 413
+    upload_dir = api_main._get_upload_dir(1)
+    assert list(upload_dir.glob("*")) == []
+
+
+def test_duplicate_fingerprint_conflict_removes_the_saved_pdf(
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from backend.database import DuplicateStatementUploadError
+
+    lookups = {"count": 0}
+
+    def lookup(**kwargs):
+        del kwargs
+        lookups["count"] += 1
+        if lookups["count"] == 1:
+            return None
+        return {
+            "id": 4,
+            "file_name": "saved.pdf",
+            "display_name": "Card.pdf",
+            "uploaded_at": "2026-01-02T00:00:00+00:00",
+            "parse_status": "parsed",
+        }
+
+    monkeypatch.setattr(api_main, "record_audit_event", lambda **kwargs: None)
+    monkeypatch.setattr(api_main, "get_existing_upload_by_fingerprint", lookup)
+    monkeypatch.setattr(
+        api_main,
+        "_load_uploaded_statement",
+        lambda path, password: ("statement", []),
+    )
+    def reject_duplicate(**kwargs):
+        del kwargs
+        raise DuplicateStatementUploadError("fp")
+
+    monkeypatch.setattr(api_main, "create_statement_upload", reject_duplicate)
+
+    with pytest.raises(HTTPException) as caught:
+        api_main._store_uploaded_pdf(
+            upload_stream=BytesIO(b"%PDF-1.4 synthetic"),
+            original_name="Card.pdf",
+            content_type="application/pdf",
+            password=None,
+            user_id=1,
+            audit_context=api_main.get_audit_request_context(_upload_request()),
+        )
+
+    assert caught.value.status_code == 409
+    assert "Card.pdf" in caught.value.detail
+    upload_dir = api_main._get_upload_dir(1)
+    assert list(upload_dir.glob("*")) == []
+
+
+def test_concurrent_duplicate_username_is_a_conflict(api_main, database_url: str) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend.database import DuplicateUsernameError, register_new_user
+
+    del api_main
+    barrier = threading.Barrier(2)
+
+    def attempt() -> str:
+        barrier.wait(timeout=5)
+        try:
+            register_new_user(
+                email="same-user@example.com",
+                password_hash="hash",
+                display_name="Same",
+                database_url=database_url,
+            )
+        except DuplicateUsernameError:
+            return "duplicate"
+        return "created"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = sorted(pool.map(lambda _: attempt(), (0, 1)))
+
+    assert results == ["created", "duplicate"]
+
+
+def test_concurrent_registrations_claim_legacy_data_once(
+    api_main,
+    database_url: str,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend.database import register_new_user
+
+    del api_main
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO transactions (
+                    date, merchant, amount, file_name, original_file_name,
+                    uploaded_at, category, file_fingerprint, currency
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s)
+                """,
+                (
+                    "2024-04-20",
+                    "Legacy Coffee",
+                    9.50,
+                    "legacy-statement.pdf",
+                    "Legacy Statement.pdf",
+                    "Dining",
+                    "legacy-sha1",
+                    "USD",
+                ),
+            )
+        connection.commit()
+
+    barrier = threading.Barrier(2)
+
+    def attempt(email: str) -> int:
+        barrier.wait(timeout=5)
+        _user, claimed = register_new_user(
+            email=email,
+            password_hash="hash",
+            display_name=email,
+            database_url=database_url,
+        )
+        return int(claimed["claimed_transaction_count"])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claimed_counts = sorted(
+            pool.map(
+                attempt,
+                ("first-owner@example.com", "second-owner@example.com"),
+            )
+        )
+
+    assert claimed_counts == [0, 1]
+
+
+def test_duplicate_statement_fingerprint_raises(
+    api_main,
+    database_url: str,
+) -> None:
+    from backend.database import (
+        DuplicateStatementUploadError,
+        create_statement_upload,
+        register_new_user,
+    )
+
+    del api_main
+    user, _claimed = register_new_user(
+        email="uploader@example.com",
+        password_hash="hash",
+        display_name="Uploader",
+        database_url=database_url,
+    )
+    payload = {
+        "user_id": user["id"],
+        "original_file_name": "Card.pdf",
+        "stored_file_name": "stored-a.pdf",
+        "file_fingerprint_sha256": "ab" * 32,
+        "parse_status": "parsed",
+        "database_url": database_url,
+    }
+    create_statement_upload(**payload)
+    with pytest.raises(DuplicateStatementUploadError):
+        create_statement_upload(
+            **{**payload, "stored_file_name": "stored-b.pdf"}
+        )
+
+
+def test_concurrent_provider_selection_keeps_one_selected(
+    api_main,
+    database_url: str,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend.database import (
+        list_user_ai_provider_settings,
+        register_new_user,
+        upsert_user_ai_provider_setting,
+    )
+
+    del api_main
+    user, _claimed = register_new_user(
+        email="ai-owner@example.com",
+        password_hash="hash",
+        display_name="AI Owner",
+        database_url=database_url,
+    )
+    barrier = threading.Barrier(2)
+
+    def save(provider: str) -> None:
+        barrier.wait(timeout=5)
+        upsert_user_ai_provider_setting(
+            user_id=user["id"],
+            provider=provider,  # type: ignore[arg-type]
+            api_key="sk-test-key-value",
+            model="model",
+            is_selected=True,
+            database_url=database_url,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(save, ("openai", "perplexity")))
+
+    selected = [
+        row
+        for row in list_user_ai_provider_settings(user["id"], database_url)
+        if row["is_selected"]
+    ]
+    assert len(selected) == 1
