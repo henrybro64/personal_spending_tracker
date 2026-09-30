@@ -33,10 +33,297 @@ export function buildBulkImportLlmPrompt(options: {
   const source = options.source.trim() || "statement-import";
   const categories = CATEGORY_OPTIONS.map((item) => `  - ${item}`).join("\n");
 
+  if (bank.toUpperCase() === "CTBC") {
+    return buildCtbcPrompt(bank, currency, source);
+  }
   if (options.locale === "zh-Hant") {
     return buildZhPrompt(bank, currency, source, categories);
   }
   return buildEnPrompt(bank, currency, source, categories);
+}
+
+function buildCtbcPrompt(
+  bank: string,
+  currency: string,
+  source: string
+): string {
+  return `請將我上傳的 CTBC 信用卡 PDF 帳單轉成個人支出追蹤 App 可匯入的 JSON。
+
+PDF password：若 PDF 有密碼，請使用我在同一則訊息中另外提供的密碼。不要猜測密碼。
+
+重要要求：
+
+你必須同時使用：
+
+* PDF OCR 文字層
+* PDF 頁面影像內容
+
+不得只依賴 OCR。
+
+若 OCR 與頁面影像衝突：
+
+以頁面影像為準。
+
+若 OCR 缺字、跑版、欄位錯位：
+
+必須回頭查看 PDF 頁面影像確認交易內容。
+
+────────────────────
+
+商家名稱規則
+
+* 商家名稱以帳單頁面實際顯示內容為準
+* 不得自行補字
+* 不得猜測完整店名
+* 不得依據網路資料補充商家名稱
+* 不得依據 Uber Eats、Google Maps 或其他資料來源推測完整名稱
+
+例如帳單顯示：
+
+優食-山水米餐酒
+
+則直接輸出：
+
+優食-山水米餐酒
+
+例如帳單顯示：
+
+優食-JAPOLI 義
+
+則直接輸出：
+
+優食-JAPOLI 義
+
+例如帳單顯示：
+
+優食-添好運 和億
+
+則直接輸出：
+
+優食-添好運 和億
+
+若帳單本身已截斷：
+
+保留截斷內容。
+
+不得補字。
+
+只有在：
+
+* OCR 無法辨識
+* 頁面影像也無法辨識
+
+時才允許：
+
+"(merchant not in PDF)"
+
+────────────────────
+
+解析規則
+
+* 逐筆人工判讀交易列
+* 不得只依靠 regex
+* 不得依賴 OCR 欄位位置
+* 保留帳單顯示的商家名稱
+* 保留分期資訊
+* 保留卡號末四碼
+* 保留交易日
+* 保留入帳日
+* 保留退款與負數交易
+* 保留國外交易手續費
+* 保留調整與退款項目
+
+────────────────────
+
+日期格式
+
+所有日期必須轉換成 ISO 8601：
+
+113/05/14 → 2024-05-14
+
+113/06/01 → 2024-06-01
+
+不得輸出民國日期。
+
+────────────────────
+
+JSON Schema
+
+{
+  "source": "${source}",
+  "bank": "${bank}",
+  "currency": "${currency}",
+  "card_counts": {
+    "0051": 0,
+    "6232": 0,
+    "6764": 0,
+    "3037": 0
+  },
+  "transactions": [
+    {
+      "date": "2024-06-01",
+      "posted_date": "2024-06-03",
+      "merchant": "Spotify P2CA51F9B3",
+      "amount": 198,
+      "card_last4": "0051",
+      "country": "SE"
+    }
+  ]
+}
+
+注意：App 匯入欄位名稱是 "posted_date"，不得輸出 "post_date"。
+
+────────────────────
+
+每筆交易必須包含
+
+* date
+* posted_date
+* merchant
+* amount
+* card_last4
+
+country 為選填。
+
+────────────────────
+
+國別規則
+
+若帳單顯示：
+
+TW → "TW"
+SG → "SG"
+SE → "SE"
+GB → "GB"
+US → "US"
+HK → "HK"
+IE → "IE"
+
+則輸出 country。
+
+若帳單未顯示國別：
+
+不要輸出 country 欄位。
+
+────────────────────
+
+負數交易規則
+
+退款、折讓、調整項目：
+
+amount 必須保留負號。
+
+例如：
+
+{
+  "amount": -577
+}
+
+不得轉成正數。
+
+不得刪除。
+
+────────────────────
+
+CTBC 特殊規則
+
+下列交易通常會拆成兩筆：
+
+* Disney PLUS
+* Spotify
+* Microsoft*Skype
+* SM.NORD* PASSCOM
+* 其他國外刷卡
+
+即：
+
+主交易
+
+國外交易手續費
+
+必須保留兩筆。
+
+不得合併。
+
+────────────────────
+
+驗證步驟
+
+1. 統計各卡號交易數量。card_counts 必須由實際抽出的交易列計算，不得猜測，也不得只抄帳單小計。
+
+2. 建立 transactions。
+
+3. 驗證：
+
+sum(card_counts.values()) == transactions.length
+
+4. 再逐一卡號確認 card_counts 與 transactions 中相同 card_last4 的實際筆數一致。
+
+5. 若不相等：
+
+停止輸出 JSON
+
+改輸出：
+
+ERROR_CARD_COUNT_MISMATCH
+
+6. 若某張卡交易數異常偏少：
+
+重新檢查該頁 PDF 影像。
+
+────────────────────
+
+頁面完整性驗證
+
+對每一個含交易明細的 PDF 頁面，都必須同時檢查文字/OCR 與頁面影像。
+
+每個含交易列的頁面都必須有至少一筆對應交易輸出；若該頁實際沒有交易列，才可標記為無交易頁。
+
+若任何頁面肉眼可見交易列，但 transactions 中沒有該頁的交易，停止輸出並回報：
+
+ERROR_MISSING_PAGE
+
+────────────────────
+
+輸出前再次確認以下交易是否存在：
+
+* Spotify
+* Disney PLUS
+* Microsoft*Skype
+* LeetCode
+* Udemy
+* 房屋稅
+* eTag ASV-5598
+* 悠遊卡加值
+* 電信費
+* 全聯
+* 康是美
+* Uber Eats（優食）
+* 國外交易手續費
+* 所有負數退款交易
+* 所有分期交易
+
+只有在帳單影像中確實存在時才輸出；此清單只用來做漏項檢查，不得憑空新增交易。
+
+────────────────────
+
+輸出規則
+
+只輸出合法 JSON。
+
+不要 markdown。
+
+不要解釋。
+
+不要摘要。
+
+不要統計文字。
+
+不要額外輸出驗證結果。
+
+不要遺漏任何交易。
+
+如果驗證失敗，只輸出指定錯誤字串 ERROR_CARD_COUNT_MISMATCH 或 ERROR_MISSING_PAGE。`;
 }
 
 function buildEnPrompt(
