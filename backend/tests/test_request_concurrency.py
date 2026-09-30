@@ -225,12 +225,14 @@ def test_password_error_round_trips_without_breaking_the_process_pool() -> None:
     )
     assert restored.had_password is True
 
+    first_failure = run_cpu_bound(_password_failure_probe)
     with pytest.raises(PdfPasswordProtectedError) as first:
-        _raise_pdf_worker_failure(run_cpu_bound(_password_failure_probe))
+        _raise_pdf_worker_failure(first_failure)
     assert first.value.had_password is True
 
+    second_failure = run_cpu_bound(_password_failure_probe)
     with pytest.raises(PdfPasswordProtectedError) as second:
-        _raise_pdf_worker_failure(run_cpu_bound(_password_failure_probe))
+        _raise_pdf_worker_failure(second_failure)
     assert second.value.had_password is True
 
 
@@ -243,6 +245,7 @@ def test_oversized_upload_is_rejected_without_keeping_the_file(
 
     from fastapi import HTTPException
 
+    audit_context = api_main.get_audit_request_context(_upload_request())
     with pytest.raises(HTTPException) as caught:
         api_main._store_uploaded_pdf(
             upload_stream=BytesIO(b"%PDF-1.4 too large"),
@@ -250,7 +253,7 @@ def test_oversized_upload_is_rejected_without_keeping_the_file(
             content_type="application/pdf",
             password=None,
             user_id=1,
-            audit_context=api_main.get_audit_request_context(_upload_request()),
+            audit_context=audit_context,
         )
 
     assert caught.value.status_code == 413
@@ -294,6 +297,7 @@ def test_duplicate_fingerprint_conflict_removes_the_saved_pdf(
 
     monkeypatch.setattr(api_main, "create_statement_upload", reject_duplicate)
 
+    audit_context = api_main.get_audit_request_context(_upload_request())
     with pytest.raises(HTTPException) as caught:
         api_main._store_uploaded_pdf(
             upload_stream=BytesIO(b"%PDF-1.4 synthetic"),
@@ -301,7 +305,7 @@ def test_duplicate_fingerprint_conflict_removes_the_saved_pdf(
             content_type="application/pdf",
             password=None,
             user_id=1,
-            audit_context=api_main.get_audit_request_context(_upload_request()),
+            audit_context=audit_context,
         )
 
     assert caught.value.status_code == 409

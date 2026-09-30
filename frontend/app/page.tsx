@@ -1176,7 +1176,7 @@ function DashboardCharts({
   categoryBreakdown,
   categoryPieBackground,
   categorySpendTotal,
-}: {
+}: Readonly<{
   styles: DashboardStyles;
   locale: ReturnType<typeof useLocale>["locale"];
   fm: DashboardFormatters;
@@ -1189,7 +1189,7 @@ function DashboardCharts({
   categoryBreakdown: CategoryBreakdown[];
   categoryPieBackground: string;
   categorySpendTotal: number;
-}) {
+}>) {
   return (
     <div className={styles.primaryVisualsGrid}>
       <Card className={mergeClasses(styles.panel, styles.visualCard)}>
@@ -1332,7 +1332,7 @@ function DashboardTransactionTable({
   hasSortedTransactions,
   recentUploads,
   statementCount,
-}: {
+}: Readonly<{
   styles: DashboardStyles;
   locale: ReturnType<typeof useLocale>["locale"];
   fm: DashboardFormatters;
@@ -1343,7 +1343,7 @@ function DashboardTransactionTable({
   hasSortedTransactions: boolean;
   recentUploads: RecentUpload[];
   statementCount: number;
-}) {
+}>) {
   let emptyMessageKey: MessageKey = "emptyNoUpload";
   if (recentUploads.length > 0 || statementCount > 0) {
     emptyMessageKey = "emptySlicerNoRows";
@@ -1420,14 +1420,14 @@ function TransactionAmountRow({
   activeCurrency,
   transaction,
   index,
-}: {
+}: Readonly<{
   styles: DashboardStyles;
   locale: ReturnType<typeof useLocale>["locale"];
   fm: DashboardFormatters;
   activeCurrency: DisplayCurrency;
   transaction: Transaction;
   index: number;
-}) {
+}>) {
   const amountClass =
     transaction.amount < 0 ? styles.amountNegative : styles.amountPositive;
   const amountCurrency = transaction.currency ?? activeCurrency;
@@ -1477,14 +1477,14 @@ function RecentStatementsCard({
   intlLocale,
   isDashboardLoading,
   recentUploads,
-}: {
+}: Readonly<{
   styles: DashboardStyles;
   locale: ReturnType<typeof useLocale>["locale"];
   fm: DashboardFormatters;
   intlLocale: string;
   isDashboardLoading: boolean;
   recentUploads: RecentUpload[];
-}) {
+}>) {
   let historyBody = (
     <Body1 className={styles.emptyState}>{translate(locale, "noUploadsYet")}</Body1>
   );
@@ -1528,13 +1528,13 @@ function RecentStatementRow({
   fm,
   intlLocale,
   upload,
-}: {
+}: Readonly<{
   styles: DashboardStyles;
   locale: ReturnType<typeof useLocale>["locale"];
   fm: DashboardFormatters;
   intlLocale: string;
   upload: RecentUpload;
-}) {
+}>) {
   const totalsLabel = translate(
     locale,
     isRecentUploadMixedCurrency(upload)

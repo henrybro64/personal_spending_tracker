@@ -934,7 +934,13 @@ def auth_session(
     }
 
 
-@app.post("/auth/register", status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/auth/register",
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        409: {"description": "An account already exists for that username."},
+    },
+)
 def register(
     payload: AuthRequest,
     request: Request,
@@ -2075,6 +2081,91 @@ def _reject_duplicate_upload(
     raise HTTPException(status_code=409, detail=detail)
 
 
+def _fingerprint_uploaded_pdf(
+    upload_stream: BinaryIO,
+    temp_path: Path,
+    *,
+    user_id: int,
+    original_name: str,
+    audit_context: AuditRequestContext,
+) -> str:
+    try:
+        return _copy_upload_stream(upload_stream, temp_path)
+    except _StatementUploadTooLarge:
+        temp_path.unlink(missing_ok=True)
+        record_audit_event(
+            action="statement_upload_attempt",
+            status="rejected",
+            user_id=user_id,
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"reason": "file_too_large", "file_name": original_name},
+        )
+        raise HTTPException(
+            status_code=413,
+            detail="PDF uploads must be 32 MB or smaller.",
+        ) from None
+
+
+def _open_uploaded_statement(
+    saved_path: Path,
+    password: str | None,
+    *,
+    user_id: int,
+    original_name: str,
+    audit_context: AuditRequestContext,
+) -> tuple[str, list[Transaction]]:
+    try:
+        return _load_uploaded_statement(saved_path, password)
+    except PdfPasswordProtectedError as exc:
+        saved_path.unlink(missing_ok=True)
+        record_audit_event(
+            action="statement_upload_parse_failure",
+            status="rejected",
+            user_id=user_id,
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={
+                "file_name": original_name,
+                "reason": (
+                    "incorrect_password" if exc.had_password else "password_required"
+                ),
+            },
+        )
+        if exc.had_password:
+            detail = "Incorrect PDF password."
+        else:
+            detail = (
+                "This PDF is password-protected. Enter the document password "
+                "below and try again."
+            )
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except PdfDecryptError:
+        saved_path.unlink(missing_ok=True)
+        record_audit_event(
+            action="statement_upload_parse_failure",
+            status="rejected",
+            user_id=user_id,
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"file_name": original_name, "reason": "decrypt_error"},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This PDF could not be opened. It may use unsupported "
+                "encryption; try removing the password in a PDF app and "
+                "export a new file."
+            ),
+        ) from None
+
+
 def _store_uploaded_pdf(
     *,
     upload_stream: BinaryIO,
@@ -2115,24 +2206,13 @@ def _store_uploaded_pdf(
     upload_dir = _get_upload_dir(user_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
     temp_path = upload_dir / f".tmp-{uuid4().hex}.pdf"
-    try:
-        sha256_fingerprint = _copy_upload_stream(upload_stream, temp_path)
-    except _StatementUploadTooLarge:
-        temp_path.unlink(missing_ok=True)
-        record_audit_event(
-            action="statement_upload_attempt",
-            status="rejected",
-            user_id=user_id,
-            target_type="statement_upload",
-            request_id=audit_context.request_id,
-            ip_address=audit_context.ip_address,
-            user_agent=audit_context.user_agent,
-            metadata={"reason": "file_too_large", "file_name": original_name},
-        )
-        raise HTTPException(
-            status_code=413,
-            detail="PDF uploads must be 32 MB or smaller.",
-        ) from None
+    sha256_fingerprint = _fingerprint_uploaded_pdf(
+        upload_stream,
+        temp_path,
+        user_id=user_id,
+        original_name=original_name,
+        audit_context=audit_context,
+    )
     existing_upload = get_existing_upload_by_fingerprint(
         user_id=user_id,
         file_fingerprint_sha256=sha256_fingerprint,
@@ -2149,53 +2229,13 @@ def _store_uploaded_pdf(
     saved_name = f"{uuid4().hex}.pdf"
     saved_path = upload_dir / saved_name
     temp_path.rename(saved_path)
-
-    try:
-        extracted_text, transactions = _load_uploaded_statement(
-            saved_path,
-            password_clean,
-        )
-    except PdfPasswordProtectedError as e:
-        saved_path.unlink(missing_ok=True)
-        need_password = (
-            "This PDF is password-protected. Enter the document password "
-            "below and try again."
-        )
-        record_audit_event(
-            action="statement_upload_parse_failure",
-            status="rejected",
-            user_id=user_id,
-            target_type="statement_upload",
-            request_id=audit_context.request_id,
-            ip_address=audit_context.ip_address,
-            user_agent=audit_context.user_agent,
-            metadata={
-                "file_name": original_name,
-                "reason": "incorrect_password" if e.had_password else "password_required",
-            },
-        )
-        raise HTTPException(
-            status_code=400,
-            detail="Incorrect PDF password." if e.had_password else need_password,
-        ) from e
-    except PdfDecryptError:
-        saved_path.unlink(missing_ok=True)
-        cannot_open = (
-            "This PDF could not be opened. It may use unsupported "
-            "encryption; try removing the password in a PDF app and "
-            "export a new file."
-        )
-        record_audit_event(
-            action="statement_upload_parse_failure",
-            status="rejected",
-            user_id=user_id,
-            target_type="statement_upload",
-            request_id=audit_context.request_id,
-            ip_address=audit_context.ip_address,
-            user_agent=audit_context.user_agent,
-            metadata={"file_name": original_name, "reason": "decrypt_error"},
-        )
-        raise HTTPException(status_code=400, detail=cannot_open) from None
+    extracted_text, transactions = _open_uploaded_statement(
+        saved_path,
+        password_clean,
+        user_id=user_id,
+        original_name=original_name,
+        audit_context=audit_context,
+    )
     display_name = original_name or saved_name
 
     parse_reason: str | None = None
