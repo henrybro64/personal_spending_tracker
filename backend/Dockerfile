@@ -12,5 +12,7 @@ COPY backend ./backend
 
 EXPOSE 8000
 
+# One API process. Database work uses the thread pool. PDF CPU runs in a
+# child process so this event loop can keep serving /health during an import.
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 

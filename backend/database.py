@@ -13,6 +13,22 @@ from backend.currency import (
 from backend.parser import Transaction, categorize_merchant
 
 
+class DuplicateUsernameError(Exception):
+    """The users.email unique constraint rejected this registration."""
+
+
+class DuplicateStatementUploadError(Exception):
+    """This user already imported a statement with the same fingerprint."""
+
+
+# Serializes registration with the first-user legacy claim. Two signups that
+# both pass the application lookup must not both observe "I am the only user".
+_REGISTRATION_LOCK_KEY = 872_341_221
+# Two-key advisory lock class for AI provider updates. Held until commit so
+# "deselect all, then insert selected" cannot overlap for one user.
+_AI_PROVIDER_LOCK_CLASS = 41_207
+
+
 class TransactionsSummary(TypedDict):
     total_spending: float
     number_of_transactions: int
@@ -212,6 +228,117 @@ def create_user(
     }
 
 
+def _claim_legacy_rows(cursor: psycopg.Cursor[Any], user_id: int) -> dict[str, int]:
+    cursor.execute("SELECT COUNT(*) FROM users")
+    user_count = int(cursor.fetchone()[0])
+    if user_count != 1:
+        return {
+            "claimed_transaction_count": 0,
+            "claimed_statement_count": 0,
+        }
+
+    cursor.execute(
+        """
+        UPDATE transactions
+        SET user_id = %s
+        WHERE user_id IS NULL
+        RETURNING id
+        """,
+        (user_id,),
+    )
+    claimed_transaction_count = cursor.rowcount
+
+    # Backfill missing statement_upload rows for legacy single-user data that
+    # predates statement_upload_id, so claimed upload counts stay accurate.
+    cursor.execute(
+        """
+        WITH legacy_groups AS (
+            SELECT
+                file_name,
+                COALESCE(MAX(original_file_name), file_name) AS display_name,
+                COALESCE(
+                    MAX(
+                        CASE
+                            WHEN LENGTH(COALESCE(file_fingerprint, '')) = 64
+                                THEN file_fingerprint
+                                ELSE NULL
+                        END
+                    ),
+                    ''
+                ) AS fingerprint_sha256,
+                COALESCE(MAX(currency), 'USD') AS currency,
+                MAX(uploaded_at) AS uploaded_at
+            FROM transactions
+            WHERE user_id = %s
+              AND statement_upload_id IS NULL
+              AND file_name <> 'manual-entry'
+            GROUP BY file_name
+        )
+        INSERT INTO statement_uploads (
+            user_id,
+            original_file_name,
+            stored_file_name,
+            file_fingerprint_sha256,
+            currency,
+            parse_status,
+            uploaded_at
+        )
+        SELECT
+            %s,
+            legacy_groups.display_name,
+            legacy_groups.file_name,
+            CASE
+                WHEN legacy_groups.fingerprint_sha256 <> ''
+                    THEN legacy_groups.fingerprint_sha256
+                ELSE md5(
+                    'legacy:' || %s::text || ':' || legacy_groups.file_name
+                ) || md5(
+                    'legacy-fallback:' || %s::text || ':' || legacy_groups.file_name
+                )
+            END,
+            legacy_groups.currency,
+            'parsed',
+            legacy_groups.uploaded_at
+        FROM legacy_groups
+        LEFT JOIN statement_uploads
+            ON statement_uploads.user_id = %s
+           AND statement_uploads.stored_file_name = legacy_groups.file_name
+        WHERE statement_uploads.id IS NULL
+        RETURNING id, stored_file_name
+        """,
+        (user_id, user_id, user_id, user_id, user_id),
+    )
+    created_statement_upload_rows = cursor.fetchall()
+    for upload_id, file_name in created_statement_upload_rows:
+        cursor.execute(
+            """
+            UPDATE transactions
+            SET statement_upload_id = %s
+            WHERE user_id = %s
+              AND statement_upload_id IS NULL
+              AND file_name = %s
+            """,
+            (int(upload_id), user_id, str(file_name)),
+        )
+    created_statement_count = len(created_statement_upload_rows)
+
+    cursor.execute(
+        """
+        UPDATE statement_uploads
+        SET user_id = %s
+        WHERE user_id IS NULL
+        RETURNING id
+        """,
+        (user_id,),
+    )
+    claimed_statement_count = created_statement_count + cursor.rowcount
+
+    return {
+        "claimed_transaction_count": claimed_transaction_count,
+        "claimed_statement_count": claimed_statement_count,
+    }
+
+
 def maybe_claim_legacy_data_for_first_user(
     user_id: int,
     database_url: str | None = None,
@@ -220,116 +347,60 @@ def maybe_claim_legacy_data_for_first_user(
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT COUNT(*) FROM users")
-            user_count = int(cursor.fetchone()[0])
-            if user_count != 1:
-                connection.commit()
-                return {
-                    "claimed_transaction_count": 0,
-                    "claimed_statement_count": 0,
-                }
-
             cursor.execute(
-                """
-                UPDATE transactions
-                SET user_id = %s
-                WHERE user_id IS NULL
-                RETURNING id
-                """,
-                (user_id,),
+                "SELECT pg_advisory_xact_lock(%s)",
+                (_REGISTRATION_LOCK_KEY,),
             )
-            claimed_transaction_count = cursor.rowcount
-
-            # Backfill missing statement_upload rows for legacy single-user data that
-            # predates statement_upload_id, so claimed upload counts stay accurate.
-            cursor.execute(
-                """
-                WITH legacy_groups AS (
-                    SELECT
-                        file_name,
-                        COALESCE(MAX(original_file_name), file_name) AS display_name,
-                        COALESCE(
-                            MAX(
-                                CASE
-                                    WHEN LENGTH(COALESCE(file_fingerprint, '')) = 64
-                                        THEN file_fingerprint
-                                    ELSE NULL
-                                END
-                            ),
-                            ''
-                        ) AS fingerprint_sha256,
-                        COALESCE(MAX(currency), 'USD') AS currency,
-                        MAX(uploaded_at) AS uploaded_at
-                    FROM transactions
-                    WHERE user_id = %s
-                      AND statement_upload_id IS NULL
-                      AND file_name <> 'manual-entry'
-                    GROUP BY file_name
-                )
-                INSERT INTO statement_uploads (
-                    user_id,
-                    original_file_name,
-                    stored_file_name,
-                    file_fingerprint_sha256,
-                    currency,
-                    parse_status,
-                    uploaded_at
-                )
-                SELECT
-                    %s,
-                    legacy_groups.display_name,
-                    legacy_groups.file_name,
-                    CASE
-                        WHEN legacy_groups.fingerprint_sha256 <> ''
-                            THEN legacy_groups.fingerprint_sha256
-                        ELSE md5(
-                            'legacy:' || %s::text || ':' || legacy_groups.file_name
-                        ) || md5(
-                            'legacy-fallback:' || %s::text || ':' || legacy_groups.file_name
-                        )
-                    END,
-                    legacy_groups.currency,
-                    'parsed',
-                    legacy_groups.uploaded_at
-                FROM legacy_groups
-                LEFT JOIN statement_uploads
-                    ON statement_uploads.user_id = %s
-                   AND statement_uploads.stored_file_name = legacy_groups.file_name
-                WHERE statement_uploads.id IS NULL
-                RETURNING id, stored_file_name
-                """,
-                (user_id, user_id, user_id, user_id, user_id),
-            )
-            created_statement_upload_rows = cursor.fetchall()
-            for upload_id, file_name in created_statement_upload_rows:
-                cursor.execute(
-                    """
-                    UPDATE transactions
-                    SET statement_upload_id = %s
-                    WHERE user_id = %s
-                      AND statement_upload_id IS NULL
-                      AND file_name = %s
-                    """,
-                    (int(upload_id), user_id, str(file_name)),
-                )
-            created_statement_count = len(created_statement_upload_rows)
-
-            cursor.execute(
-                """
-                UPDATE statement_uploads
-                SET user_id = %s
-                WHERE user_id IS NULL
-                RETURNING id
-                """,
-                (user_id,),
-            )
-            claimed_statement_count = created_statement_count + cursor.rowcount
+            claimed = _claim_legacy_rows(cursor, user_id)
         connection.commit()
 
-    return {
-        "claimed_transaction_count": claimed_transaction_count,
-        "claimed_statement_count": claimed_statement_count,
+    return claimed
+
+
+def register_new_user(
+    email: str,
+    password_hash: str,
+    display_name: str,
+    database_url: str | None = None,
+) -> tuple[UserRecord, dict[str, int]]:
+    """Create a user and claim legacy rows in one transaction.
+
+    An advisory lock is held from before the insert until commit, so concurrent
+    first registrations cannot both skip the claim, and a unique email conflict
+    is raised as DuplicateUsernameError instead of an uncaught constraint error.
+    """
+    resolved_database_url = _resolve_database_url(database_url)
+    normalized_email = email.strip().lower()
+    normalized_display_name = display_name.strip()
+
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (_REGISTRATION_LOCK_KEY,),
+            )
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO users (email, password_hash, display_name)
+                    VALUES (%s, %s, %s)
+                    RETURNING id, email, display_name, created_at
+                    """,
+                    (normalized_email, password_hash, normalized_display_name),
+                )
+            except psycopg.errors.UniqueViolation as exc:
+                raise DuplicateUsernameError(normalized_email) from exc
+            user_id, stored_email, stored_display_name, created_at = cursor.fetchone()
+            claimed = _claim_legacy_rows(cursor, int(user_id))
+        connection.commit()
+
+    user: UserRecord = {
+        "id": int(user_id),
+        "email": str(stored_email),
+        "display_name": str(stored_display_name),
+        "created_at": _iso_datetime(created_at),
     }
+    return user, claimed
 
 
 def get_user_auth_by_email(
@@ -605,12 +676,47 @@ def upsert_user_ai_provider_setting(
     is_selected: bool,
     database_url: str | None = None,
 ) -> UserAiProviderSettingRecord:
+    try:
+        return _upsert_user_ai_provider_setting_once(
+            user_id=user_id,
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            is_selected=is_selected,
+            database_url=database_url,
+        )
+    except psycopg.errors.UniqueViolation:
+        # The partial unique index rejected a second selected provider. Retry
+        # once so the lock can deselect the row that won the race.
+        return _upsert_user_ai_provider_setting_once(
+            user_id=user_id,
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            is_selected=is_selected,
+            database_url=database_url,
+        )
+
+
+def _upsert_user_ai_provider_setting_once(
+    *,
+    user_id: int,
+    provider: AiProvider,
+    api_key: str | None,
+    model: str | None,
+    is_selected: bool,
+    database_url: str | None = None,
+) -> UserAiProviderSettingRecord:
     resolved_database_url = _resolve_database_url(database_url)
     normalized_api_key = api_key.strip() if api_key and api_key.strip() else None
     normalized_model = model.strip() if model and model.strip() else None
 
     with psycopg.connect(resolved_database_url) as connection:
         with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(%s::integer, hashtext(%s))",
+                (_AI_PROVIDER_LOCK_CLASS, str(user_id)),
+            )
             cursor.execute(
                 """
                 SELECT 1
@@ -832,38 +938,41 @@ def create_statement_upload(
 ) -> StatementUploadRecord:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO statement_uploads (
-                    user_id,
-                    original_file_name,
-                    stored_file_name,
-                    file_fingerprint_sha256,
-                    currency,
-                    parse_status,
-                    parse_reason,
-                    parse_error
+    try:
+        with psycopg.connect(resolved_database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO statement_uploads (
+                        user_id,
+                        original_file_name,
+                        stored_file_name,
+                        file_fingerprint_sha256,
+                        currency,
+                        parse_status,
+                        parse_reason,
+                        parse_error
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id, stored_file_name, original_file_name, uploaded_at, parse_status
+                    """,
+                    (
+                        user_id,
+                        original_file_name,
+                        stored_file_name,
+                        file_fingerprint_sha256,
+                        currency,
+                        parse_status,
+                        parse_reason,
+                        parse_error,
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, stored_file_name, original_file_name, uploaded_at, parse_status
-                """,
-                (
-                    user_id,
-                    original_file_name,
-                    stored_file_name,
-                    file_fingerprint_sha256,
-                    currency,
-                    parse_status,
-                    parse_reason,
-                    parse_error,
-                ),
-            )
-            upload_id, file_name, display_name, uploaded_at, resolved_parse_status = (
-                cursor.fetchone()
-            )
-        connection.commit()
+                upload_id, file_name, display_name, uploaded_at, resolved_parse_status = (
+                    cursor.fetchone()
+                )
+            connection.commit()
+    except psycopg.errors.UniqueViolation as exc:
+        raise DuplicateStatementUploadError(file_fingerprint_sha256) from exc
 
     return {
         "id": int(upload_id),

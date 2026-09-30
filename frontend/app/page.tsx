@@ -1,15 +1,13 @@
 "use client";
 
 import {
-  ChangeEvent,
-  DragEvent,
-  KeyboardEvent,
+  Dispatch,
+  SetStateAction,
   useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
-  useTransition,
 } from "react";
 import Link from "next/link";
 import {
@@ -21,9 +19,7 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
-  MessageBarTitle,
   ProgressBar,
-  Spinner,
   Switch,
   Table,
   TableBody,
@@ -40,6 +36,16 @@ import {
 } from "@fluentui/react-components";
 
 import { apiFetch, apiFetchJson, ApiError } from "./api";
+import {
+  DashboardRequestCoordinator,
+  type DashboardFilters,
+  dashboardLoadKey,
+  effectiveSearchQuery,
+  loadDashboardSnapshot,
+  refreshAfterUpload,
+  runGuardedDashboardLoad,
+  shouldReleaseSearchPin,
+} from "./dashboard-refresh";
 import { AuthPage, AuthPanel, SessionCard } from "./auth-card";
 import { useAuth } from "./auth-provider";
 import {
@@ -68,13 +74,6 @@ type Transaction = {
   display_amount?: number;
   display_currency?: "USD" | "TWD";
   is_converted?: boolean;
-};
-
-type UploadResponse = {
-  file_path: string;
-  original_file_name: string;
-  transactions: Transaction[];
-  parse_reason?: string | null;
 };
 
 type SummaryResponse = {
@@ -149,20 +148,6 @@ type DashboardViewResponse = {
   };
 };
 
-type ManualTransactionPayload = {
-  date: string;
-  merchant: string;
-  amount: number;
-  currency: SupportedCurrency;
-  original_amount: number;
-  original_currency: SupportedCurrency;
-  base_currency: SupportedCurrency;
-  exchange_rate: number | null;
-  exchange_rate_date: string | null;
-  category: string | null;
-  payment_method: string | null;
-};
-
 type AmountFilter = "all" | "spend" | "refunds";
 type SortOption = "amount_desc" | "amount_asc" | "merchant" | "date";
 type TimeRange =
@@ -181,31 +166,6 @@ const dashboardTimeRangeOptions = [
   "year",
   "all",
 ] as const satisfies readonly TimeRange[];
-
-const manualPaymentMethods = [
-  "Cash",
-  "PayPal",
-  "EasyCard (悠遊卡)",
-  "iCash",
-  "Bank transfer",
-  "Other",
-] as const;
-
-const manualCategories = [
-  "Auto",
-  "Dining",
-  "Groceries",
-  "Transport",
-  "Shopping",
-  "Bills & Utilities",
-  "Entertainment",
-  "Health & Wellness",
-  "Travel",
-  "Income & Transfers",
-  "Cash & Fees",
-  "Other Spending",
-  "Refunds & Credits",
-] as const;
 
 function sortOptionMessageKey(option: SortOption): MessageKey {
   switch (option) {
@@ -339,10 +299,6 @@ function parseIsoDate(dateValue: string) {
   );
 
   return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
-}
-
-function getTodayIsoDate() {
-  return new Date().toISOString().slice(0, 10);
 }
 
 function buildPieChartBackground(categories: CategoryBreakdown[]) {
@@ -570,87 +526,11 @@ const useStyles = makeStyles({
     fontSize: tokens.fontSizeBase500,
     fontWeight: tokens.fontWeightSemibold,
   },
-  uploadCard: {
-    backgroundColor: tokens.colorNeutralBackground1,
-  },
-  dropZone: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-    paddingTop: "16px",
-    paddingBottom: "16px",
-    paddingLeft: "16px",
-    paddingRight: "16px",
-    cursor: "pointer",
-    backgroundColor: tokens.colorNeutralBackground2,
-    boxShadow: "inset 0 0 0 1px rgba(50, 49, 48, 0.08)",
-    transitionDuration: "140ms",
-    transitionProperty: "box-shadow, background-color, transform",
-    transitionTimingFunction: "ease",
-    ...shorthands.border("1px", "dashed", tokens.colorNeutralStrokeAccessible),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
-    ":hover": {
-      transform: "translateY(-1px)",
-      backgroundColor: tokens.colorSubtleBackgroundHover,
-      boxShadow: "inset 0 0 0 1px rgba(50, 49, 48, 0.16)",
-    },
-  },
-  dropZoneActive: {
-    backgroundColor: "rgba(237, 242, 255, 0.9)",
-    ...shorthands.borderColor(tokens.colorBrandStroke1),
-  },
-  dropZoneTitle: {
-    fontWeight: tokens.fontWeightSemibold,
-  },
-  dropZoneHint: {
-    color: "#605e5c",
-  },
-  hiddenInput: {
-    display: "none",
-  },
   actions: {
     display: "flex",
     gap: "8px",
     flexWrap: "wrap",
     alignItems: "center",
-  },
-  helperRow: {
-    display: "flex",
-    gap: "8px",
-    flexWrap: "wrap",
-  },
-  uploadNextBar: {
-    marginTop: "4px",
-  },
-  processActions: {
-    display: "flex",
-    gap: "8px",
-    flexWrap: "wrap",
-    alignItems: "center",
-    marginTop: "8px",
-  },
-  processPrimaryButton: {
-    minWidth: "200px",
-    fontWeight: tokens.fontWeightSemibold,
-  },
-  manualForm: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-  },
-  manualInlineGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: "8px",
-    "@media (max-width: 900px)": {
-      gridTemplateColumns: "1fr",
-    },
-  },
-  amountInput: {
-    width: "100%",
-  },
-  manualButton: {
-    width: "100%",
   },
   selectControl: {
     width: "100%",
@@ -736,12 +616,6 @@ const useStyles = makeStyles({
   historyStatValue: {
     fontWeight: tokens.fontWeightSemibold,
   },
-  filterSummary: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    flexWrap: "wrap",
-  },
   metricGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
@@ -793,14 +667,6 @@ const useStyles = makeStyles({
     "@media (max-width: 1366px)": {
       gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     },
-    "@media (max-width: 959px)": {
-      gridTemplateColumns: "1fr",
-    },
-  },
-  visualsGrid: {
-    display: "grid",
-    gridTemplateColumns: "minmax(0, 1.15fr) minmax(320px, 0.85fr)",
-    gap: "12px",
     "@media (max-width: 959px)": {
       gridTemplateColumns: "1fr",
     },
@@ -963,111 +829,6 @@ const useStyles = makeStyles({
     fontWeight: tokens.fontWeightSemibold,
     color: "#323130",
   },
-  columnsCard: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-  },
-  columnChart: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(48px, 1fr))",
-    gap: "8px",
-    minHeight: "300px",
-    alignItems: "end",
-    "@media (min-width: 1280px)": {
-      minHeight: "340px",
-    },
-    "@media (max-width: 959px)": {
-      minHeight: "280px",
-    },
-  },
-  columnItem: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: "8px",
-    minWidth: 0,
-  },
-  columnTrack: {
-    width: "100%",
-    height: "220px",
-    display: "flex",
-    alignItems: "flex-end",
-    backgroundColor: tokens.colorNeutralBackground3,
-    paddingLeft: "4px",
-    paddingRight: "4px",
-    ...shorthands.borderRadius("6px"),
-    "@media (min-width: 1280px)": {
-      height: "250px",
-    },
-    "@media (max-width: 959px)": {
-      height: "200px",
-    },
-  },
-  columnBar: {
-    width: "100%",
-    backgroundColor: tokens.colorBrandBackground,
-    minHeight: "8px",
-    ...shorthands.borderRadius("4px 4px 0 0"),
-  },
-  columnBarNegative: {
-    backgroundColor: "#d13438",
-  },
-  columnLabel: {
-    fontSize: tokens.fontSizeBase200,
-    color: "#605e5c",
-  },
-  columnValue: {
-    fontSize: tokens.fontSizeBase200,
-    fontWeight: tokens.fontWeightSemibold,
-    color: "#323130",
-  },
-  insightsList: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: "8px",
-    "@media (max-width: 520px)": {
-      gridTemplateColumns: "1fr",
-    },
-  },
-  insightCell: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "6px",
-    paddingTop: "12px",
-    paddingBottom: "12px",
-    paddingLeft: "12px",
-    paddingRight: "12px",
-    backgroundColor: tokens.colorNeutralBackground2,
-    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
-  },
-  insightLabel: {
-    color: "#605e5c",
-    fontSize: tokens.fontSizeBase200,
-    textTransform: "uppercase",
-    letterSpacing: "0.07em",
-  },
-  insightValue: {
-    fontWeight: tokens.fontWeightSemibold,
-    wordBreak: "break-word",
-  },
-  coverageBlock: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-  },
-  coverageTrack: {
-    height: "10px",
-    backgroundColor: tokens.colorNeutralBackground3,
-    overflow: "hidden",
-    ...shorthands.borderRadius("999px"),
-  },
-  coverageFill: {
-    height: "100%",
-    backgroundColor: tokens.colorBrandBackground2,
-    ...shorthands.borderRadius("999px"),
-  },
   tableCard: {
     display: "flex",
     flexDirection: "column",
@@ -1089,10 +850,6 @@ const useStyles = makeStyles({
   searchField: {
     minWidth: "240px",
     backgroundColor: "#ffffff",
-  },
-  filePath: {
-    color: "#605e5c",
-    wordBreak: "break-all",
   },
   tableWrap: {
     overflowX: "auto",
@@ -1149,11 +906,415 @@ const useStyles = makeStyles({
   },
 });
 
-async function fetchJson<T>(
-  path: string,
-  requestFailedFallback: string
-): Promise<T> {
-  return apiFetchJson<T>(path, requestFailedFallback);
+type DashboardStyles = ReturnType<typeof useStyles>;
+type DashboardFormatters = ReturnType<typeof createFormatters>;
+
+function DashboardCharts({
+  styles,
+  locale,
+  fm,
+  activeCurrency,
+  activeCurrencyLabel,
+  merchantBreakdown,
+  merchantBarMaximum,
+  selectedMerchant,
+  setSelectedMerchant,
+  categoryBreakdown,
+  categoryPieBackground,
+  categorySpendTotal,
+}: Readonly<{
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  activeCurrency: DisplayCurrency;
+  activeCurrencyLabel: string;
+  merchantBreakdown: MerchantBreakdown[];
+  merchantBarMaximum: number;
+  selectedMerchant: string | null;
+  setSelectedMerchant: Dispatch<SetStateAction<string | null>>;
+  categoryBreakdown: CategoryBreakdown[];
+  categoryPieBackground: string;
+  categorySpendTotal: number;
+}>) {
+  return (
+    <div className={styles.primaryVisualsGrid}>
+      <Card className={mergeClasses(styles.panel, styles.visualCard)}>
+        <div className={styles.cardHeader}>
+          <div className={styles.cardHeaderTitle}>
+            <Title2>{translate(locale, "merchantContributionTitle")}</Title2>
+            <Body1 className={styles.cardContext}>
+              {translate(locale, "chartDisplayCurrencyHintTemplate", {
+                currency: activeCurrencyLabel,
+              })}
+            </Body1>
+          </div>
+        </div>
+
+        {merchantBreakdown.length > 0 ? (
+          <div className={styles.merchantRows}>
+            {merchantBreakdown.map((merchantItem) => (
+              <div className={styles.merchantRow} key={merchantItem.merchant}>
+                <div className={styles.merchantMain}>
+                  <Button
+                    appearance="transparent"
+                    className={styles.merchantButton}
+                    onClick={() =>
+                      setSelectedMerchant((currentValue) =>
+                        currentValue === merchantItem.merchant
+                          ? null
+                          : merchantItem.merchant
+                      )
+                    }
+                    size="small"
+                  >
+                    <span className={styles.merchantName}>
+                      {merchantItem.merchant}
+                    </span>
+                  </Button>
+                  <div className={styles.barTrack}>
+                    <div
+                      className={mergeClasses(
+                        styles.barFill,
+                        selectedMerchant === merchantItem.merchant &&
+                          styles.barFillSelected
+                      )}
+                      style={{
+                        width: `${
+                          merchantBarMaximum > 0
+                            ? (merchantItem.abs_total / merchantBarMaximum) * 100
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className={styles.merchantValue}>
+                  {fm.formatCurrency(merchantItem.total, activeCurrency)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Body1 className={styles.emptyState}>
+            {translate(locale, "emptyMerchantVisual")}
+          </Body1>
+        )}
+      </Card>
+
+      <Card className={mergeClasses(styles.panel, styles.visualCard)}>
+        <div className={styles.cardHeader}>
+          <div className={styles.cardHeaderTitle}>
+            <Title2>{translate(locale, "spendingByCategoryTitle")}</Title2>
+            <Body1 className={styles.cardContext}>
+              {translate(locale, "chartDisplayCurrencyHintTemplate", {
+                currency: activeCurrencyLabel,
+              })}
+            </Body1>
+          </div>
+          <Badge appearance="outline" color="warning">
+            {translate(locale, "badgePositiveOnly")}
+          </Badge>
+        </div>
+
+        {categoryBreakdown.length > 0 ? (
+          <div className={styles.pieLayout}>
+            <div className={styles.pieChartWrap}>
+              <div
+                className={styles.pieChart}
+                style={{ backgroundImage: categoryPieBackground }}
+              >
+                <div className={styles.pieChartHole}>
+                  <div className={styles.pieCenterValue}>
+                    {fm.formatCurrency(categorySpendTotal, activeCurrency)}
+                  </div>
+                  <div className={styles.pieCenterLabel}>
+                    {translate(locale, "pieCenterSpendInView")}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className={styles.categoryLegend}>
+              {categoryBreakdown.map((categoryItem) => (
+                <div className={styles.categoryLegendRow} key={categoryItem.category}>
+                  <div
+                    className={styles.categoryLegendSwatch}
+                    style={{ backgroundColor: categoryItem.color }}
+                  />
+                  <div className={styles.categoryLegendMain}>
+                    <div className={styles.categoryLegendLabel}>
+                      {categoryItem.category}
+                    </div>
+                    <div className={styles.categoryLegendMeta}>
+                      {fm.formatPercent(categoryItem.share)}{" "}
+                      {translate(locale, "shareOfVisibleSpend")}
+                    </div>
+                  </div>
+                  <div className={styles.categoryLegendValue}>
+                    {fm.formatCurrency(categoryItem.total, activeCurrency)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <Body1 className={styles.emptyState}>
+            {translate(locale, "emptyCategoryVisual")}
+          </Body1>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function DashboardTransactionTable({
+  styles,
+  locale,
+  fm,
+  activeCurrency,
+  activeCurrencyLabel,
+  visibleRowsCount,
+  sortedTransactions,
+  hasSortedTransactions,
+  recentUploads,
+  statementCount,
+}: Readonly<{
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  activeCurrency: DisplayCurrency;
+  activeCurrencyLabel: string;
+  visibleRowsCount: number;
+  sortedTransactions: Transaction[];
+  hasSortedTransactions: boolean;
+  recentUploads: RecentUpload[];
+  statementCount: number;
+}>) {
+  let emptyMessageKey: MessageKey = "emptyNoUpload";
+  if (recentUploads.length > 0 || statementCount > 0) {
+    emptyMessageKey = "emptySlicerNoRows";
+  }
+
+  return (
+    <Card className={mergeClasses(styles.panel, styles.tableCard)}>
+      <div className={styles.tableHeader}>
+        <div className={styles.cardHeaderTitle}>
+          <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
+            {translate(locale, "detailMatrixEyebrow")}
+          </div>
+          <Title2>{translate(locale, "transactionsTitle")}</Title2>
+          <Body1 className={styles.cardContext}>
+            {translate(locale, "dashboardTableCurrencyNoteTemplate", {
+              currency: activeCurrencyLabel,
+            })}
+          </Body1>
+        </div>
+        <div className={styles.tableTools}>
+          <Badge appearance="outline" color="brand">
+            {fm.formatCount(visibleRowsCount)} {translate(locale, "visibleSuffix")}
+          </Badge>
+        </div>
+      </div>
+
+      {hasSortedTransactions ? (
+        <div className={styles.tableWrap}>
+          <Table aria-label={translate(locale, "tableAriaLabel")} className={styles.dataTable}>
+            <TableHeader>
+              <TableRow>
+                <TableHeaderCell className={styles.tableHeaderCell}>
+                  {translate(locale, "colDate")}
+                </TableHeaderCell>
+                <TableHeaderCell className={styles.tableHeaderCell}>
+                  {translate(locale, "colMerchant")}
+                </TableHeaderCell>
+                <TableHeaderCell className={styles.tableHeaderCell}>
+                  {translate(locale, "colCategory")}
+                </TableHeaderCell>
+                <TableHeaderCell className={styles.tableHeaderCell}>
+                  {translate(locale, "colAmount")}
+                </TableHeaderCell>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sortedTransactions.map((transaction, index) => (
+                <TransactionAmountRow
+                  activeCurrency={activeCurrency}
+                  fm={fm}
+                  index={index}
+                  key={`${transaction.date}-${transaction.merchant}-${index}`}
+                  locale={locale}
+                  styles={styles}
+                  transaction={transaction}
+                />
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : (
+        <Body1 className={styles.emptyState}>
+          {translate(locale, emptyMessageKey)}
+        </Body1>
+      )}
+    </Card>
+  );
+}
+
+function TransactionAmountRow({
+  styles,
+  locale,
+  fm,
+  activeCurrency,
+  transaction,
+  index,
+}: Readonly<{
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  activeCurrency: DisplayCurrency;
+  transaction: Transaction;
+  index: number;
+}>) {
+  const amountClass =
+    transaction.amount < 0 ? styles.amountNegative : styles.amountPositive;
+  const amountCurrency = transaction.currency ?? activeCurrency;
+  const originalCurrency =
+    transaction.original_currency ?? transaction.currency ?? activeCurrency;
+  const showsConvertedOriginal =
+    transaction.is_converted &&
+    transaction.original_amount !== undefined &&
+    Boolean(transaction.original_currency);
+
+  return (
+    <TableRow className={index % 2 === 1 ? styles.rowAlt : undefined}>
+      <TableCell className={styles.tableCell}>
+        {fm.formatTransactionDate(transaction.date, true)}
+      </TableCell>
+      <TableCell className={mergeClasses(styles.tableCell, styles.merchantCell)}>
+        {transaction.merchant}
+      </TableCell>
+      <TableCell className={styles.tableCell}>{transaction.category}</TableCell>
+      <TableCell className={styles.tableCell}>
+        <div className={styles.amountCell}>
+          <div className={amountClass}>
+            {fm.formatCurrency(transaction.amount, amountCurrency)}
+          </div>
+          <div className={styles.amountMeta}>
+            {showsConvertedOriginal
+              ? translate(locale, "dashboardConvertedFromTemplate", {
+                  amount: fm.formatCurrency(
+                    transaction.original_amount ?? 0,
+                    transaction.original_currency ?? amountCurrency
+                  ),
+                })
+              : translate(locale, "dashboardOriginalCurrencyTemplate", {
+                  currency: describeCurrency(originalCurrency),
+                })}
+          </div>
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function RecentStatementsCard({
+  styles,
+  locale,
+  fm,
+  intlLocale,
+  isDashboardLoading,
+  recentUploads,
+}: Readonly<{
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  intlLocale: string;
+  isDashboardLoading: boolean;
+  recentUploads: RecentUpload[];
+}>) {
+  let historyBody = (
+    <Body1 className={styles.emptyState}>{translate(locale, "noUploadsYet")}</Body1>
+  );
+  if (isDashboardLoading && recentUploads.length === 0) {
+    historyBody = (
+      <Body1 className={styles.emptyState}>
+        {translate(locale, "loadingHistoryLabel")}
+      </Body1>
+    );
+  } else if (recentUploads.length > 0) {
+    historyBody = (
+      <div className={styles.historyList}>
+        {recentUploads.map((upload) => (
+          <RecentStatementRow
+            fm={fm}
+            intlLocale={intlLocale}
+            key={upload.file_name}
+            locale={locale}
+            styles={styles}
+            upload={upload}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
+      <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
+        {translate(locale, "historyEyebrow")}
+      </div>
+      <Title2>{translate(locale, "recentStatementsTitle")}</Title2>
+      {historyBody}
+    </Card>
+  );
+}
+
+function RecentStatementRow({
+  styles,
+  locale,
+  fm,
+  intlLocale,
+  upload,
+}: Readonly<{
+  styles: DashboardStyles;
+  locale: ReturnType<typeof useLocale>["locale"];
+  fm: DashboardFormatters;
+  intlLocale: string;
+  upload: RecentUpload;
+}>) {
+  const totalsLabel = translate(
+    locale,
+    isRecentUploadMixedCurrency(upload)
+      ? "recentUploadOriginalTotals"
+      : "recentUploadOriginalTotal"
+  );
+
+  return (
+    <div className={styles.historyItem}>
+      <div className={styles.historyTop}>
+        <div className={styles.historyName}>{upload.display_name}</div>
+        <div className={styles.historyMeta}>{fm.formatUploadDate(upload.uploaded_at)}</div>
+      </div>
+      <div className={styles.historyStats}>
+        <div className={styles.historyStat}>
+          <div className={styles.historyStatLabel}>
+            {translate(locale, "recentUploadRowsLabel")}
+          </div>
+          <div className={styles.historyStatValue}>
+            {fm.formatCount(upload.transaction_count)}{" "}
+            {translate(locale, "historyRowsWord")}
+          </div>
+        </div>
+        {upload.currency_totals.length > 0 ? (
+          <div className={styles.historyStat}>
+            <div className={styles.historyStatLabel}>{totalsLabel}</div>
+            <div className={styles.historyStatValue}>
+              {formatCurrencyTotals(toCurrencyTotals(upload.currency_totals), intlLocale)}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function isRecentUploadMixedCurrency(upload: RecentUpload): boolean {
@@ -1174,11 +1335,6 @@ export default function HomePage() {
   const { locale, setLocale, intlLocale } = useLocale();
   const { refreshSession, status: authStatus, user } = useAuth();
   const fm = useMemo(() => createFormatters(intlLocale), [intlLocale]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [filePath, setFilePath] = useState("");
-  const [uploadedFileName, setUploadedFileName] = useState("");
   const [summary, setSummary] = useState<SummaryResponse>(emptySummary);
   const [recentUploads, setRecentUploads] = useState<RecentUpload[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1187,26 +1343,47 @@ export default function HomePage() {
   const [selectedMerchant, setSelectedMerchant] = useState<string | null>(null);
   const [amountFilter, setAmountFilter] = useState<AmountFilter>("all");
   const [sortOption, setSortOption] = useState<SortOption>("amount_desc");
-  const [pdfPassword, setPdfPassword] = useState("");
-  const [lastUploadParseReason, setLastUploadParseReason] = useState<
-    "empty_text" | "no_matching_lines" | null
-  >(null);
   const [error, setError] = useState("");
   const [dashboardError, setDashboardError] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isTransitionPending, startTransition] = useTransition();
-  const [manualDate, setManualDate] = useState(getTodayIsoDate);
-  const [manualMerchant, setManualMerchant] = useState("");
-  const [manualAmount, setManualAmount] = useState("");
-  const [manualCurrency, setManualCurrency] = useState<SupportedCurrency>("TWD");
-  const [manualExchangeRate, setManualExchangeRate] = useState("");
-  const [manualCategory, setManualCategory] = useState("Auto");
-  const [manualPaymentMethod, setManualPaymentMethod] = useState("Cash");
-  const [manualError, setManualError] = useState("");
-  const [isManualSaving, setIsManualSaving] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
+  const [pinnedSearch, setPinnedSearch] = useState<string | null>(null);
+  const requestCoordinatorRef = useRef(new DashboardRequestCoordinator());
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const searchForRequest = effectiveSearchQuery(
+    searchQuery,
+    deferredSearchQuery,
+    pinnedSearch
+  );
+  const requestFilters = useMemo<DashboardFilters>(
+    () => ({
+      timeRange,
+      searchQuery: searchForRequest,
+      amountFilter,
+      sortOption,
+      selectedMerchant,
+      displayCurrency,
+    }),
+    [
+      amountFilter,
+      displayCurrency,
+      searchForRequest,
+      selectedMerchant,
+      sortOption,
+      timeRange,
+    ]
+  );
+  const latestFiltersRef = useRef<DashboardFilters>(requestFilters);
+  latestFiltersRef.current = {
+    timeRange,
+    searchQuery,
+    amountFilter,
+    sortOption,
+    selectedMerchant,
+    displayCurrency,
+  };
+  const dashboardLoadToken = dashboardLoadKey(requestFilters, 0);
   const [dashboardView, setDashboardView] = useState<DashboardViewResponse | null>(null);
   const sortedTransactions = dashboardView?.sorted_transactions ?? [];
   const merchantBreakdown = dashboardView?.merchant_breakdown ?? [];
@@ -1228,25 +1405,8 @@ export default function HomePage() {
   const activeCurrencyLabel = describeCurrency(activeCurrency);
   const visibleRowsCount = sortedTransactions.length;
   const metrics = dashboardView?.metrics;
-  const currentStatementLabel =
-    uploadedFileName ||
-    selectedFile?.name ||
-    translate(locale, "noStatementSelected");
   const latestUpload = recentUploads[0];
   const hasSortedTransactions = sortedTransactions.length > 0;
-
-  function formatUploadTotals(upload: RecentUpload) {
-    return formatCurrencyTotals(toCurrencyTotals(upload.currency_totals), intlLocale);
-  }
-
-  function uploadTotalsLabel(upload: RecentUpload) {
-    return translate(
-      locale,
-      isRecentUploadMixedCurrency(upload)
-        ? "recentUploadOriginalTotals"
-        : "recentUploadOriginalTotal"
-    );
-  }
 
   const metricCards: MetricCard[] = useMemo(
     () => [
@@ -1297,293 +1457,111 @@ export default function HomePage() {
     ]
   );
 
-  async function loadDashboardData(showLoadingState: boolean) {
-    if (showLoadingState) {
-      setIsDashboardLoading(true);
+  useEffect(() => {
+    if (!shouldReleaseSearchPin(searchQuery, deferredSearchQuery, pinnedSearch)) {
+      return;
     }
-
-    try {
-      const recentUploadsData = await fetchJson<RecentUploadsResponse>(
-        "/uploads/recent?limit=6",
-        translate(locale, "errRequestFailed")
-      );
-      setRecentUploads(recentUploadsData.uploads);
-      setDashboardError("");
-    } catch (dashboardLoadError) {
-      if (dashboardLoadError instanceof ApiError && dashboardLoadError.status === 401) {
-        await refreshSession();
-        return;
-      }
-      setDashboardError(
-        dashboardLoadError instanceof Error
-          ? dashboardLoadError.message
-          : translate(locale, "errDashboardUnavailable")
-      );
-    } finally {
-      if (showLoadingState) {
-        setIsDashboardLoading(false);
-      }
-    }
-  }
-
-  async function loadTransactionsData(showLoadingState: boolean) {
-    if (showLoadingState) {
-      setIsDashboardLoading(true);
-    }
-
-    try {
-      const dashboardData = await fetchJson<DashboardViewResponse>(
-        `/dashboard/view?range=${encodeURIComponent(
-          timeRange
-        )}&search=${encodeURIComponent(
-          deferredSearchQuery
-        )}&amount_filter=${encodeURIComponent(
-          amountFilter
-        )}&selected_merchant=${encodeURIComponent(
-          selectedMerchant ?? ""
-        )}&sort=${encodeURIComponent(sortOption)}&currency=${encodeURIComponent(
-          displayCurrency
-        )}&limit=5000`,
-        translate(locale, "errRequestFailed")
-      );
-      setDashboardView(dashboardData);
-      setSummary(dashboardData.summary);
-      setTransactions(dashboardData.transactions);
-      setError("");
-    } catch (transactionLoadError) {
-      if (transactionLoadError instanceof ApiError && transactionLoadError.status === 401) {
-        await refreshSession();
-        return;
-      }
-      setDashboardView(null);
-      setTransactions([]);
-      setError(
-        transactionLoadError instanceof Error
-          ? transactionLoadError.message
-          : translate(locale, "errRequestFailed")
-      );
-    } finally {
-      if (showLoadingState) {
-        setIsDashboardLoading(false);
-      }
-    }
-  }
+    setPinnedSearch(null);
+  }, [deferredSearchQuery, pinnedSearch, searchQuery]);
 
   useEffect(() => {
     if (authStatus !== "authenticated") {
       setDashboardView(null);
-      setTransactions([]);
       setRecentUploads([]);
       setSummary(emptySummary);
       setIsDashboardLoading(authStatus === "loading");
       return;
     }
 
-    void Promise.all([loadDashboardData(true), loadTransactionsData(true)]);
-  }, [
-    authStatus,
-    timeRange,
-    displayCurrency,
-    amountFilter,
-    sortOption,
-    selectedMerchant,
-    deferredSearchQuery,
-    refreshSession,
-  ]);
+    const coordinator = requestCoordinatorRef.current;
+    const ticket = coordinator.start();
+    const filters = requestFilters;
+    setIsDashboardLoading(true);
 
-  function handleNextFile(nextFile: File | null) {
-    if (!nextFile) {
-      return;
-    }
+    void runGuardedDashboardLoad({
+      coordinator,
+      generation: ticket.generation,
+      signal: ticket.signal,
+      load: () =>
+        loadDashboardSnapshot<RecentUploadsResponse, DashboardViewResponse>({
+          filters,
+          signal: ticket.signal,
+          fetchJson: (path, signal) =>
+            apiFetchJson(
+              path,
+              translate(localeRef.current, "errRequestFailed"),
+              { signal }
+            ),
+        }),
+      apply: (snapshot) => {
+        if (snapshot.uploads.status === "ok") {
+          setRecentUploads(snapshot.uploads.value.uploads);
+          setDashboardError("");
+        } else if (
+          snapshot.uploads.error instanceof ApiError &&
+          snapshot.uploads.error.status === 401
+        ) {
+          void refreshSession();
+        } else {
+          setDashboardError(
+            snapshot.uploads.error instanceof Error
+              ? snapshot.uploads.error.message
+              : translate(localeRef.current, "errDashboardUnavailable")
+          );
+        }
 
-    const isPdfFile =
-      nextFile.type === "application/pdf" ||
-      nextFile.name.toLowerCase().endsWith(".pdf");
+        if (snapshot.view.status === "ok") {
+          setDashboardView(snapshot.view.value);
+          setSummary(snapshot.view.value.summary);
+          setError("");
+        } else if (
+          snapshot.view.error instanceof ApiError &&
+          snapshot.view.error.status === 401
+        ) {
+          void refreshSession();
+        } else {
+          setDashboardView(null);
+          setError(
+            snapshot.view.error instanceof Error
+              ? snapshot.view.error.message
+              : translate(localeRef.current, "errRequestFailed")
+          );
+        }
+      },
+      onError: (loadError) => {
+        if (loadError instanceof ApiError && loadError.status === 401) {
+          void refreshSession();
+          return;
+        }
+        const message =
+          loadError instanceof Error
+            ? loadError.message
+            : translate(localeRef.current, "errRequestFailed");
+        setDashboardView(null);
+        setError(message);
+      },
+      onSettled: () => {
+        setIsDashboardLoading(false);
+      },
+    });
 
-    if (!isPdfFile) {
-      setSelectedFile(null);
-      setError(translate(locale, "errOnlyPdf"));
-      return;
-    }
+    return () => {
+      ticket.abort();
+    };
+  }, [authStatus, dashboardLoadToken, refreshSession, requestFilters]);
 
-    setSelectedFile(nextFile);
-    setError("");
-  }
-
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    handleNextFile(event.target.files?.[0] ?? null);
-  }
-
-  function openFilePicker() {
-    fileInputRef.current?.click();
-  }
-
-  function handleDrop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setIsDragging(false);
-    handleNextFile(event.dataTransfer.files?.[0] ?? null);
-  }
-
-  function handleDropZoneKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      openFilePicker();
-    }
+  function applyClearedSlicers(filters: DashboardFilters) {
+    const nextFilters = refreshAfterUpload(filters);
+    setSearchQuery(nextFilters.searchQuery);
+    setSelectedMerchant(nextFilters.selectedMerchant);
+    setAmountFilter(nextFilters.amountFilter as AmountFilter);
+    setSortOption(nextFilters.sortOption as SortOption);
+    setPinnedSearch(nextFilters.searchQuery);
+    return nextFilters;
   }
 
   function clearSlicers() {
-    setSearchQuery("");
-    setSelectedMerchant(null);
-    setAmountFilter("all");
-    setSortOption("amount_desc");
-  }
-
-  async function handleUpload() {
-    if (!selectedFile) {
-      setError(translate(locale, "errSelectPdf"));
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-    formData.append("password", pdfPassword);
-
-    setIsLoading(true);
-    setError("");
-    setLastUploadParseReason(null);
-
-    try {
-      const response = await apiFetch("/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = (await response.json()) as UploadResponse | { detail?: string };
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          await refreshSession();
-          return;
-        }
-        const detail =
-          "detail" in data && typeof data.detail === "string"
-            ? data.detail
-            : translate(locale, "errUploadFailed");
-        throw new Error(detail);
-      }
-
-      const uploadData = data as UploadResponse;
-
-      startTransition(() => {
-        setFilePath(uploadData.file_path);
-        setUploadedFileName(uploadData.original_file_name);
-        const reason = uploadData.parse_reason;
-        setLastUploadParseReason(
-          reason === "empty_text" || reason === "no_matching_lines"
-            ? reason
-            : null
-        );
-        setSelectedFile(null);
-        setPdfPassword("");
-        clearSlicers();
-      });
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-
-      await Promise.all([loadDashboardData(false), loadTransactionsData(false)]);
-    } catch (uploadError) {
-      setTransactions([]);
-      setFilePath("");
-      setUploadedFileName("");
-      setLastUploadParseReason(null);
-      setError(
-        uploadError instanceof Error
-          ? uploadError.message
-          : translate(locale, "errUnexpectedUpload")
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function handleAddManualTransaction() {
-    const merchant = manualMerchant.trim();
-    const amountValue = Number(manualAmount);
-    const exchangeRateValue =
-      manualCurrency === "TWD" || !manualExchangeRate.trim()
-        ? null
-        : Number(manualExchangeRate);
-    if (!merchant) {
-      setManualError(translate(locale, "errManualMerchantRequired"));
-      return;
-    }
-    if (!manualDate) {
-      setManualError(translate(locale, "errManualDateRequired"));
-      return;
-    }
-    if (!Number.isFinite(amountValue) || amountValue <= 0) {
-      setManualError(translate(locale, "errManualAmountInvalid"));
-      return;
-    }
-    if (
-      exchangeRateValue !== null &&
-      (!Number.isFinite(exchangeRateValue) || exchangeRateValue <= 0)
-    ) {
-      setManualError(translate(locale, "errManualExchangeRateInvalid"));
-      return;
-    }
-
-    const payload: ManualTransactionPayload = {
-      date: manualDate,
-      merchant,
-      amount: amountValue,
-      currency: manualCurrency,
-      original_amount: amountValue,
-      original_currency: manualCurrency,
-      base_currency: "TWD",
-      exchange_rate: exchangeRateValue,
-      exchange_rate_date: exchangeRateValue === null ? null : manualDate,
-      category: manualCategory === "Auto" ? null : manualCategory,
-      payment_method: manualPaymentMethod || null,
-    };
-
-    setIsManualSaving(true);
-    setManualError("");
-    try {
-      const response = await apiFetch("/transactions/manual", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-      const responseBody = (await response.json()) as { detail?: string };
-      if (!response.ok) {
-        if (response.status === 401) {
-          await refreshSession();
-          return;
-        }
-        throw new Error(responseBody.detail || translate(locale, "errUploadFailed"));
-      }
-      setManualMerchant("");
-      setManualAmount("");
-      setManualCurrency("TWD");
-      setManualExchangeRate("");
-      setManualCategory("Auto");
-      setManualPaymentMethod("Cash");
-      setManualDate(getTodayIsoDate());
-      await Promise.all([loadDashboardData(false), loadTransactionsData(false)]);
-    } catch (manualSaveError) {
-      setManualError(
-        manualSaveError instanceof Error
-          ? manualSaveError.message
-          : translate(locale, "errUnexpectedUpload")
-      );
-    } finally {
-      setIsManualSaving(false);
-    }
+    applyClearedSlicers(latestFiltersRef.current);
   }
 
   if (authStatus === "loading") {
@@ -1612,7 +1590,11 @@ export default function HomePage() {
 
   return (
     <main className={styles.page}>
-      <div className={styles.shell} data-testid="dashboard-shell">
+      <div
+        className={styles.shell}
+        data-dashboard-loading={isDashboardLoading ? "true" : "false"}
+        data-testid="dashboard-shell"
+      >
         <aside className={styles.sidebar}>
           <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
             <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
@@ -1772,69 +1754,34 @@ export default function HomePage() {
             </div>
           </Card>
 
-          <Card className={mergeClasses(styles.panel, styles.sidebarPanel)}>
-            <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
-              {translate(locale, "historyEyebrow")}
-            </div>
-            <Title2>{translate(locale, "recentStatementsTitle")}</Title2>
-            {isDashboardLoading && recentUploads.length === 0 ? (
-              <Body1 className={styles.emptyState}>
-                {translate(locale, "loadingHistoryLabel")}
-              </Body1>
-            ) : recentUploads.length > 0 ? (
-              <div className={styles.historyList}>
-                {recentUploads.map((upload) => (
-                  <div className={styles.historyItem} key={upload.file_name}>
-                    <div className={styles.historyTop}>
-                      <div className={styles.historyName}>{upload.display_name}</div>
-                      <div className={styles.historyMeta}>
-                        {fm.formatUploadDate(upload.uploaded_at)}
-                      </div>
-                    </div>
-                    <div className={styles.historyStats}>
-                      <div className={styles.historyStat}>
-                        <div className={styles.historyStatLabel}>
-                          {translate(locale, "recentUploadRowsLabel")}
-                        </div>
-                        <div className={styles.historyStatValue}>
-                          {fm.formatCount(upload.transaction_count)}{" "}
-                          {translate(locale, "historyRowsWord")}
-                        </div>
-                      </div>
-                      {upload.currency_totals.length > 0 ? (
-                        <div className={styles.historyStat}>
-                          <div className={styles.historyStatLabel}>
-                            {uploadTotalsLabel(upload)}
-                          </div>
-                          <div className={styles.historyStatValue}>
-                            {formatUploadTotals(upload)}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <Body1 className={styles.emptyState}>
-                {translate(locale, "noUploadsYet")}
-              </Body1>
-            )}
-          </Card>
+          <RecentStatementsCard
+            fm={fm}
+            intlLocale={intlLocale}
+            isDashboardLoading={isDashboardLoading}
+            locale={locale}
+            recentUploads={recentUploads}
+            styles={styles}
+          />
 
         </aside>
 
         <section className={styles.reportArea}>
+          {error ? (
+            <MessageBar intent="error">
+              <MessageBarBody>{error}</MessageBarBody>
+            </MessageBar>
+          ) : null}
+          {dashboardError ? (
+            <MessageBar intent="error">
+              <MessageBarBody>{dashboardError}</MessageBarBody>
+            </MessageBar>
+          ) : null}
           <Card className={mergeClasses(styles.panel, styles.reportHeader)}>
             <div className={styles.reportHeaderTop}>
               <div className={styles.reportHeaderTitle}>
                 {translate(locale, "appTitle")}
               </div>
               <div className={styles.headerMeta}>
-                <Badge appearance="outline" color="informative">
-                  {translate(locale, "badgeCurrentFilePrefix")}{" "}
-                  {currentStatementLabel}
-                </Badge>
                 <div className={styles.languageRow}>
                   <Body1 className={styles.languageOption}>
                     {translate(locale, "currencyUsd")}
@@ -1948,241 +1895,34 @@ export default function HomePage() {
             ))}
           </div>
 
-          <div className={styles.primaryVisualsGrid}>
-            <Card className={mergeClasses(styles.panel, styles.visualCard)}>
-              <div className={styles.cardHeader}>
-                <div className={styles.cardHeaderTitle}>
-                  <Title2>{translate(locale, "merchantContributionTitle")}</Title2>
-                  <Body1 className={styles.cardContext}>
-                    {translate(locale, "chartDisplayCurrencyHintTemplate", {
-                      currency: activeCurrencyLabel,
-                    })}
-                  </Body1>
-                </div>
-              </div>
+          <DashboardCharts
+            activeCurrency={activeCurrency}
+            activeCurrencyLabel={activeCurrencyLabel}
+            categoryBreakdown={categoryBreakdown}
+            categoryPieBackground={categoryPieBackground}
+            categorySpendTotal={categorySpendTotal}
+            fm={fm}
+            locale={locale}
+            merchantBarMaximum={merchantBarMaximum}
+            merchantBreakdown={merchantBreakdown}
+            selectedMerchant={selectedMerchant}
+            setSelectedMerchant={setSelectedMerchant}
+            styles={styles}
+          />
 
-              {merchantBreakdown.length > 0 ? (
-                <div className={styles.merchantRows}>
-                  {merchantBreakdown.map((merchantItem) => (
-                    <div className={styles.merchantRow} key={merchantItem.merchant}>
-                      <div className={styles.merchantMain}>
-                        <Button
-                          appearance="transparent"
-                          className={styles.merchantButton}
-                          onClick={() =>
-                            setSelectedMerchant((currentValue) =>
-                              currentValue === merchantItem.merchant
-                                ? null
-                                : merchantItem.merchant
-                            )
-                          }
-                          size="small"
-                        >
-                          <span className={styles.merchantName}>
-                            {merchantItem.merchant}
-                          </span>
-                        </Button>
-                        <div className={styles.barTrack}>
-                          <div
-                            className={mergeClasses(
-                              styles.barFill,
-                              selectedMerchant === merchantItem.merchant &&
-                                styles.barFillSelected
-                            )}
-                            style={{
-                              width: `${
-                                merchantBarMaximum > 0
-                                  ? (merchantItem.abs_total / merchantBarMaximum) * 100
-                                  : 0
-                              }%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <div className={styles.merchantValue}>
-                        {fm.formatCurrency(merchantItem.total, activeCurrency)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <Body1 className={styles.emptyState}>
-                  {translate(locale, "emptyMerchantVisual")}
-                </Body1>
-              )}
-            </Card>
+          <DashboardTransactionTable
+            activeCurrency={activeCurrency}
+            activeCurrencyLabel={activeCurrencyLabel}
+            fm={fm}
+            hasSortedTransactions={hasSortedTransactions}
+            locale={locale}
+            recentUploads={recentUploads}
+            sortedTransactions={sortedTransactions}
+            statementCount={summary.number_of_statements}
+            styles={styles}
+            visibleRowsCount={visibleRowsCount}
+          />
 
-            <Card className={mergeClasses(styles.panel, styles.visualCard)}>
-              <div className={styles.cardHeader}>
-                <div className={styles.cardHeaderTitle}>
-                  <Title2>{translate(locale, "spendingByCategoryTitle")}</Title2>
-                  <Body1 className={styles.cardContext}>
-                    {translate(locale, "chartDisplayCurrencyHintTemplate", {
-                      currency: activeCurrencyLabel,
-                    })}
-                  </Body1>
-                </div>
-                <Badge appearance="outline" color="warning">
-                  {translate(locale, "badgePositiveOnly")}
-                </Badge>
-              </div>
-
-              {categoryBreakdown.length > 0 ? (
-                <div className={styles.pieLayout}>
-                  <div className={styles.pieChartWrap}>
-                    <div
-                      className={styles.pieChart}
-                      style={{ backgroundImage: categoryPieBackground }}
-                    >
-                      <div className={styles.pieChartHole}>
-                        <div className={styles.pieCenterValue}>
-                          {fm.formatCurrency(categorySpendTotal, activeCurrency)}
-                        </div>
-                        <div className={styles.pieCenterLabel}>
-                          {translate(locale, "pieCenterSpendInView")}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className={styles.categoryLegend}>
-                    {categoryBreakdown.map((categoryItem) => (
-                      <div
-                        className={styles.categoryLegendRow}
-                        key={categoryItem.category}
-                      >
-                        <div
-                          className={styles.categoryLegendSwatch}
-                          style={{ backgroundColor: categoryItem.color }}
-                        />
-                        <div className={styles.categoryLegendMain}>
-                          <div className={styles.categoryLegendLabel}>
-                            {categoryItem.category}
-                          </div>
-                          <div className={styles.categoryLegendMeta}>
-                            {fm.formatPercent(categoryItem.share)}{" "}
-                            {translate(locale, "shareOfVisibleSpend")}
-                          </div>
-                        </div>
-                        <div className={styles.categoryLegendValue}>
-                          {fm.formatCurrency(categoryItem.total, activeCurrency)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <Body1 className={styles.emptyState}>
-                  {translate(locale, "emptyCategoryVisual")}
-                </Body1>
-              )}
-            </Card>
-
-          </div>
-
-          <Card className={mergeClasses(styles.panel, styles.tableCard)}>
-            <div className={styles.tableHeader}>
-              <div className={styles.cardHeaderTitle}>
-                <div className={mergeClasses(styles.sectionEyebrow, styles.sectionEyebrowDark)}>
-                  {translate(locale, "detailMatrixEyebrow")}
-                </div>
-                <Title2>{translate(locale, "transactionsTitle")}</Title2>
-                <Body1 className={styles.cardContext}>
-                  {translate(locale, "dashboardTableCurrencyNoteTemplate", {
-                    currency: activeCurrencyLabel,
-                  })}
-                </Body1>
-              </div>
-              <div className={styles.tableTools}>
-                <Badge appearance="outline" color="brand">
-                  {fm.formatCount(visibleRowsCount)} {translate(locale, "visibleSuffix")}
-                </Badge>
-              </div>
-            </div>
-
-            {hasSortedTransactions ? (
-              <div className={styles.tableWrap}>
-                <Table aria-label={translate(locale, "tableAriaLabel")} className={styles.dataTable}>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHeaderCell className={styles.tableHeaderCell}>
-                        {translate(locale, "colDate")}
-                      </TableHeaderCell>
-                      <TableHeaderCell className={styles.tableHeaderCell}>
-                        {translate(locale, "colMerchant")}
-                      </TableHeaderCell>
-                      <TableHeaderCell className={styles.tableHeaderCell}>
-                        {translate(locale, "colCategory")}
-                      </TableHeaderCell>
-                      <TableHeaderCell className={styles.tableHeaderCell}>
-                        {translate(locale, "colAmount")}
-                      </TableHeaderCell>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {sortedTransactions.map((transaction, index) => (
-                      <TableRow
-                        className={index % 2 === 1 ? styles.rowAlt : undefined}
-                        key={`${transaction.date}-${transaction.merchant}-${index}`}
-                      >
-                        <TableCell className={styles.tableCell}>
-                          {fm.formatTransactionDate(transaction.date, true)}
-                        </TableCell>
-                        <TableCell className={mergeClasses(styles.tableCell, styles.merchantCell)}>
-                          {transaction.merchant}
-                        </TableCell>
-                        <TableCell className={styles.tableCell}>
-                          {transaction.category}
-                        </TableCell>
-                        <TableCell className={styles.tableCell}>
-                          <div className={styles.amountCell}>
-                            <div
-                              className={
-                                transaction.amount < 0
-                                  ? styles.amountNegative
-                                  : styles.amountPositive
-                              }
-                            >
-                              {fm.formatCurrency(
-                                transaction.amount,
-                                transaction.currency ?? activeCurrency
-                              )}
-                            </div>
-                            <div className={styles.amountMeta}>
-                              {transaction.is_converted &&
-                              transaction.original_amount !== undefined &&
-                              transaction.original_currency ? (
-                                translate(locale, "dashboardConvertedFromTemplate", {
-                                  amount: fm.formatCurrency(
-                                    transaction.original_amount,
-                                    transaction.original_currency
-                                  ),
-                                })
-                              ) : (
-                                translate(locale, "dashboardOriginalCurrencyTemplate", {
-                                  currency: describeCurrency(
-                                    transaction.original_currency ??
-                                      transaction.currency ??
-                                      activeCurrency
-                                  ),
-                                })
-                              )}
-                            </div>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            ) : (
-              <Body1 className={styles.emptyState}>
-                {recentUploads.length > 0 || summary.number_of_statements > 0
-                  ? translate(locale, "emptySlicerNoRows")
-                  : translate(locale, "emptyNoUpload")}
-              </Body1>
-            )}
-          </Card>
 
         </section>
       </div>

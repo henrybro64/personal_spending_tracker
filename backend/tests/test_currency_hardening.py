@@ -182,6 +182,7 @@ def test_migrations_apply_on_empty_database(database_url: str) -> None:
         "003_harden_user_foreign_keys",
         "004_ai_provider_settings",
         "005_transaction_original_base_amounts",
+        "006_one_selected_ai_provider",
     ]
 
 

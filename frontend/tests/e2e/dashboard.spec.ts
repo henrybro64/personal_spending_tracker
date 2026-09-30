@@ -1,5 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 
+type DashboardQuery = {
+  range: string;
+  search: string;
+  amountFilter: string;
+  sort: string;
+  selectedMerchant: string;
+  currency: DisplayCurrency;
+};
 
 type DisplayCurrency = "USD" | "TWD";
 
@@ -307,3 +315,165 @@ test("dashboard renders with mocked API data and survives a currency toggle", as
   expect(dashboardRequests.some((url) => url.includes("currency=USD"))).toBe(true);
   expect(dashboardRequests.some((url) => url.includes("currency=TWD"))).toBe(true);
 });
+
+test("an older dashboard response cannot overwrite a newer currency", async ({
+  page,
+}) => {
+  let releaseStale = () => {};
+  let markStaleSettled = () => {};
+  const staleGate = new Promise<void>((resolve) => {
+    releaseStale = resolve;
+  });
+  const staleSettled = new Promise<void>((resolve) => {
+    markStaleSettled = resolve;
+  });
+  let heldStaleRequest = false;
+
+  await mockAuthenticatedSession(page);
+
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ uploads: [] }),
+    });
+  });
+
+  await page.route("**/api/dashboard/view**", async (route) => {
+    const currency =
+      new URL(route.request().url()).searchParams.get("currency") === "TWD"
+        ? "TWD"
+        : "USD";
+    if (currency === "TWD" && !heldStaleRequest) {
+      heldStaleRequest = true;
+      try {
+        await staleGate;
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "stale failure" }),
+        });
+      } catch {
+        // The page aborts this request once a newer filter is selected.
+      } finally {
+        markStaleSettled();
+      }
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(buildDashboardView(currency)),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+
+  const currencySwitch = page.getByRole("switch", { name: "Display currency" });
+  await currencySwitch.click();
+  await expect.poll(() => heldStaleRequest).toBe(true);
+
+  await currencySwitch.click();
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  await expect(page.getByTestId("dashboard-shell")).toHaveAttribute(
+    "data-dashboard-loading",
+    "false"
+  );
+
+  releaseStale();
+  await staleSettled;
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  await expect(page.getByText("NT$138,274.88")).toHaveCount(0);
+  await expect(page.getByText("stale failure")).toHaveCount(0);
+  await expect(page.getByText("Dashboard data is unavailable.")).toHaveCount(0);
+  await expect(page.getByTestId("dashboard-shell")).toHaveAttribute(
+    "data-dashboard-loading",
+    "false"
+  );
+});
+
+test("clearing slicers requests the reset filters once and drops the previous search", async ({
+  page,
+}) => {
+  const queries: DashboardQuery[] = [];
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ uploads: [] }),
+    });
+  });
+  await page.route("**/api/dashboard/view**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const currency: DisplayCurrency =
+      requestUrl.searchParams.get("currency") === "TWD" ? "TWD" : "USD";
+    queries.push({
+      range: requestUrl.searchParams.get("range") ?? "",
+      search: requestUrl.searchParams.get("search") ?? "",
+      amountFilter: requestUrl.searchParams.get("amount_filter") ?? "",
+      sort: requestUrl.searchParams.get("sort") ?? "",
+      selectedMerchant: requestUrl.searchParams.get("selected_merchant") ?? "",
+      currency,
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(buildDashboardView(currency)),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+
+  const filters = page.getByRole("complementary");
+  await filters.getByRole("button", { name: "Past month" }).click();
+  await filters.getByLabel("Search").fill("uber");
+  await filters.getByRole("button", { name: "Spend", exact: true }).click();
+  await filters.locator("select").selectOption("date");
+  await filters.getByRole("button", { name: "UBER TRIP" }).click();
+
+  await expect
+    .poll(() =>
+      queries.some(
+        (query) =>
+          query.range === "month" &&
+          query.search === "uber" &&
+          query.amountFilter === "spend" &&
+          query.sort === "date" &&
+          query.selectedMerchant === "UBER TRIP" &&
+          query.currency === "USD"
+      )
+    )
+    .toBe(true);
+
+  const requestCountBeforeClear = queries.length;
+  await filters.getByRole("button", { name: "Clear slicers" }).click();
+  await expect
+    .poll(() =>
+      queries.slice(requestCountBeforeClear).some(isClearedMonthQuery)
+    )
+    .toBe(true);
+  await expect(page.getByTestId("dashboard-shell")).toHaveAttribute(
+    "data-dashboard-loading",
+    "false"
+  );
+
+  const requestsAfterClear = queries.slice(requestCountBeforeClear);
+  expect(requestsAfterClear.length).toBeGreaterThan(0);
+  expect(requestsAfterClear.every(isClearedMonthQuery)).toBe(true);
+});
+
+function isClearedMonthQuery(query: DashboardQuery): boolean {
+  return (
+    query.range === "month" &&
+    query.search === "" &&
+    query.amountFilter === "all" &&
+    query.sort === "amount_desc" &&
+    query.selectedMerchant === "" &&
+    query.currency === "USD"
+  );
+}

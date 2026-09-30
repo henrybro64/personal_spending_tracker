@@ -183,9 +183,10 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 30
             timeoutSeconds: 10
-            # Batch PDF import can block the single worker for minutes; avoid
-            # killing the pod when /health cannot respond within 1s (default).
-            failureThreshold: 10
+            # /health stays on the event loop, so a saturated worker pool does
+            # not fail this probe. Three misses restart a process whose loop is
+            # actually stuck.
+            failureThreshold: 3
       volumes:
         - name: uploads-data
           persistentVolumeClaim:
