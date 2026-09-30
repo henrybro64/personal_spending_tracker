@@ -246,9 +246,10 @@ def test_oversized_upload_is_rejected_without_keeping_the_file(
     from fastapi import HTTPException
 
     audit_context = api_main.get_audit_request_context(_upload_request())
+    upload_stream = BytesIO(b"%PDF-1.4 too large")
     with pytest.raises(HTTPException) as caught:
         api_main._store_uploaded_pdf(
-            upload_stream=BytesIO(b"%PDF-1.4 too large"),
+            upload_stream=upload_stream,
             original_name="statement.pdf",
             content_type="application/pdf",
             password=None,
@@ -298,9 +299,10 @@ def test_duplicate_fingerprint_conflict_removes_the_saved_pdf(
     monkeypatch.setattr(api_main, "create_statement_upload", reject_duplicate)
 
     audit_context = api_main.get_audit_request_context(_upload_request())
+    upload_stream = BytesIO(b"%PDF-1.4 synthetic")
     with pytest.raises(HTTPException) as caught:
         api_main._store_uploaded_pdf(
-            upload_stream=BytesIO(b"%PDF-1.4 synthetic"),
+            upload_stream=upload_stream,
             original_name="Card.pdf",
             content_type="application/pdf",
             password=None,
