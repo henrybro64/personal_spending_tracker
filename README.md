@@ -13,7 +13,7 @@ Minimal full-stack app for authenticated users to upload statement PDFs, parse t
 
 The API runs as one Uvicorn process. `/health` stays on the event loop. Database calls and import orchestration run in a worker thread pool: synchronous FastAPI endpoints are scheduled there, and handlers that also await network I/O (`/upload`, `/ai/insights`, `/batch-imports/run`) move the blocking section with `asyncio.to_thread`. PDF text extraction and statement parsing run in a child process, so that CPU work does not hold the API process GIL. A long import does not freeze unrelated requests such as `/health`, `/transactions`, or `/dashboard/view`.
 
-The dashboard keeps one refresh path. Filter changes and post-upload or manual-entry refreshes share a request generation, so an older response cannot overwrite newer totals.
+The dashboard keeps one refresh path. Filter changes share a request generation, so an older response cannot overwrite newer totals.
 
 ## Project Layout
 
@@ -28,29 +28,13 @@ storage/             Uploaded PDF files
 k8s/                 Single-node k3s manifests and deployment guide
 ```
 
-## Roadmap
+## Operations
 
-Core MVP stabilization work is tracked separately from later correctness and
-hardening work.
-
-- Current MVP-first sequence: issue
-  [#6](https://github.com/henrybro64/personal_spending_tracker/issues/6),
-  issue [#7](https://github.com/henrybro64/personal_spending_tracker/issues/7),
-  issue [#10](https://github.com/henrybro64/personal_spending_tracker/issues/10),
-  issue [#5](https://github.com/henrybro64/personal_spending_tracker/issues/5),
-  and issue [#3](https://github.com/henrybro64/personal_spending_tracker/issues/3)
-- Later MVP hardening order:
-  [docs/mvp-roadmap.md](docs/mvp-roadmap.md)
 - Database migrations: `python -m backend.migrate` or
   [scripts/migrate-db.sh](scripts/migrate-db.sh)
 - Backup/restore: [docs/backup-restore.md](docs/backup-restore.md)
 - Retention/privacy: [docs/data-lifecycle.md](docs/data-lifecycle.md)
 - Currency behavior: [docs/currency.md](docs/currency.md)
-- GitHub umbrella tracker for the later hardening lane:
-  issue [#13](https://github.com/henrybro64/personal_spending_tracker/issues/13)
-- GitHub issue titles now use `[MVP First]`, `[Later Hardening]`, and
-  `[Roadmap]` prefixes so the backlog lanes are visible without relying on
-  labels or milestones
 
 ## Prerequisites on macOS
 

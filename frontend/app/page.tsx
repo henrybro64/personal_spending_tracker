@@ -1,10 +1,7 @@
 "use client";
 
 import {
-  ChangeEvent,
   Dispatch,
-  DragEvent,
-  KeyboardEvent,
   SetStateAction,
   useDeferredValue,
   useEffect,
@@ -22,9 +19,7 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
-  MessageBarTitle,
   ProgressBar,
-  Spinner,
   Switch,
   Table,
   TableBody,
@@ -79,13 +74,6 @@ type Transaction = {
   display_amount?: number;
   display_currency?: "USD" | "TWD";
   is_converted?: boolean;
-};
-
-type UploadResponse = {
-  file_path: string;
-  original_file_name: string;
-  transactions: Transaction[];
-  parse_reason?: string | null;
 };
 
 type SummaryResponse = {
@@ -160,20 +148,6 @@ type DashboardViewResponse = {
   };
 };
 
-type ManualTransactionPayload = {
-  date: string;
-  merchant: string;
-  amount: number;
-  currency: SupportedCurrency;
-  original_amount: number;
-  original_currency: SupportedCurrency;
-  base_currency: SupportedCurrency;
-  exchange_rate: number | null;
-  exchange_rate_date: string | null;
-  category: string | null;
-  payment_method: string | null;
-};
-
 type AmountFilter = "all" | "spend" | "refunds";
 type SortOption = "amount_desc" | "amount_asc" | "merchant" | "date";
 type TimeRange =
@@ -192,31 +166,6 @@ const dashboardTimeRangeOptions = [
   "year",
   "all",
 ] as const satisfies readonly TimeRange[];
-
-const manualPaymentMethods = [
-  "Cash",
-  "PayPal",
-  "EasyCard (悠遊卡)",
-  "iCash",
-  "Bank transfer",
-  "Other",
-] as const;
-
-const manualCategories = [
-  "Auto",
-  "Dining",
-  "Groceries",
-  "Transport",
-  "Shopping",
-  "Bills & Utilities",
-  "Entertainment",
-  "Health & Wellness",
-  "Travel",
-  "Income & Transfers",
-  "Cash & Fees",
-  "Other Spending",
-  "Refunds & Credits",
-] as const;
 
 function sortOptionMessageKey(option: SortOption): MessageKey {
   switch (option) {
@@ -350,10 +299,6 @@ function parseIsoDate(dateValue: string) {
   );
 
   return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
-}
-
-function getTodayIsoDate() {
-  return new Date().toISOString().slice(0, 10);
 }
 
 function buildPieChartBackground(categories: CategoryBreakdown[]) {
@@ -581,87 +526,11 @@ const useStyles = makeStyles({
     fontSize: tokens.fontSizeBase500,
     fontWeight: tokens.fontWeightSemibold,
   },
-  uploadCard: {
-    backgroundColor: tokens.colorNeutralBackground1,
-  },
-  dropZone: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-    paddingTop: "16px",
-    paddingBottom: "16px",
-    paddingLeft: "16px",
-    paddingRight: "16px",
-    cursor: "pointer",
-    backgroundColor: tokens.colorNeutralBackground2,
-    boxShadow: "inset 0 0 0 1px rgba(50, 49, 48, 0.08)",
-    transitionDuration: "140ms",
-    transitionProperty: "box-shadow, background-color, transform",
-    transitionTimingFunction: "ease",
-    ...shorthands.border("1px", "dashed", tokens.colorNeutralStrokeAccessible),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
-    ":hover": {
-      transform: "translateY(-1px)",
-      backgroundColor: tokens.colorSubtleBackgroundHover,
-      boxShadow: "inset 0 0 0 1px rgba(50, 49, 48, 0.16)",
-    },
-  },
-  dropZoneActive: {
-    backgroundColor: "rgba(237, 242, 255, 0.9)",
-    ...shorthands.borderColor(tokens.colorBrandStroke1),
-  },
-  dropZoneTitle: {
-    fontWeight: tokens.fontWeightSemibold,
-  },
-  dropZoneHint: {
-    color: "#605e5c",
-  },
-  hiddenInput: {
-    display: "none",
-  },
   actions: {
     display: "flex",
     gap: "8px",
     flexWrap: "wrap",
     alignItems: "center",
-  },
-  helperRow: {
-    display: "flex",
-    gap: "8px",
-    flexWrap: "wrap",
-  },
-  uploadNextBar: {
-    marginTop: "4px",
-  },
-  processActions: {
-    display: "flex",
-    gap: "8px",
-    flexWrap: "wrap",
-    alignItems: "center",
-    marginTop: "8px",
-  },
-  processPrimaryButton: {
-    minWidth: "200px",
-    fontWeight: tokens.fontWeightSemibold,
-  },
-  manualForm: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-  },
-  manualInlineGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: "8px",
-    "@media (max-width: 900px)": {
-      gridTemplateColumns: "1fr",
-    },
-  },
-  amountInput: {
-    width: "100%",
-  },
-  manualButton: {
-    width: "100%",
   },
   selectControl: {
     width: "100%",
@@ -747,12 +616,6 @@ const useStyles = makeStyles({
   historyStatValue: {
     fontWeight: tokens.fontWeightSemibold,
   },
-  filterSummary: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    flexWrap: "wrap",
-  },
   metricGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
@@ -804,14 +667,6 @@ const useStyles = makeStyles({
     "@media (max-width: 1366px)": {
       gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     },
-    "@media (max-width: 959px)": {
-      gridTemplateColumns: "1fr",
-    },
-  },
-  visualsGrid: {
-    display: "grid",
-    gridTemplateColumns: "minmax(0, 1.15fr) minmax(320px, 0.85fr)",
-    gap: "12px",
     "@media (max-width: 959px)": {
       gridTemplateColumns: "1fr",
     },
@@ -974,111 +829,6 @@ const useStyles = makeStyles({
     fontWeight: tokens.fontWeightSemibold,
     color: "#323130",
   },
-  columnsCard: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-  },
-  columnChart: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(48px, 1fr))",
-    gap: "8px",
-    minHeight: "300px",
-    alignItems: "end",
-    "@media (min-width: 1280px)": {
-      minHeight: "340px",
-    },
-    "@media (max-width: 959px)": {
-      minHeight: "280px",
-    },
-  },
-  columnItem: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: "8px",
-    minWidth: 0,
-  },
-  columnTrack: {
-    width: "100%",
-    height: "220px",
-    display: "flex",
-    alignItems: "flex-end",
-    backgroundColor: tokens.colorNeutralBackground3,
-    paddingLeft: "4px",
-    paddingRight: "4px",
-    ...shorthands.borderRadius("6px"),
-    "@media (min-width: 1280px)": {
-      height: "250px",
-    },
-    "@media (max-width: 959px)": {
-      height: "200px",
-    },
-  },
-  columnBar: {
-    width: "100%",
-    backgroundColor: tokens.colorBrandBackground,
-    minHeight: "8px",
-    ...shorthands.borderRadius("4px 4px 0 0"),
-  },
-  columnBarNegative: {
-    backgroundColor: "#d13438",
-  },
-  columnLabel: {
-    fontSize: tokens.fontSizeBase200,
-    color: "#605e5c",
-  },
-  columnValue: {
-    fontSize: tokens.fontSizeBase200,
-    fontWeight: tokens.fontWeightSemibold,
-    color: "#323130",
-  },
-  insightsList: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: "8px",
-    "@media (max-width: 520px)": {
-      gridTemplateColumns: "1fr",
-    },
-  },
-  insightCell: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "6px",
-    paddingTop: "12px",
-    paddingBottom: "12px",
-    paddingLeft: "12px",
-    paddingRight: "12px",
-    backgroundColor: tokens.colorNeutralBackground2,
-    ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
-  },
-  insightLabel: {
-    color: "#605e5c",
-    fontSize: tokens.fontSizeBase200,
-    textTransform: "uppercase",
-    letterSpacing: "0.07em",
-  },
-  insightValue: {
-    fontWeight: tokens.fontWeightSemibold,
-    wordBreak: "break-word",
-  },
-  coverageBlock: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-  },
-  coverageTrack: {
-    height: "10px",
-    backgroundColor: tokens.colorNeutralBackground3,
-    overflow: "hidden",
-    ...shorthands.borderRadius("999px"),
-  },
-  coverageFill: {
-    height: "100%",
-    backgroundColor: tokens.colorBrandBackground2,
-    ...shorthands.borderRadius("999px"),
-  },
   tableCard: {
     display: "flex",
     flexDirection: "column",
@@ -1100,10 +850,6 @@ const useStyles = makeStyles({
   searchField: {
     minWidth: "240px",
     backgroundColor: "#ffffff",
-  },
-  filePath: {
-    color: "#605e5c",
-    wordBreak: "break-all",
   },
   tableWrap: {
     overflowX: "auto",
@@ -1589,11 +1335,6 @@ export default function HomePage() {
   const { locale, setLocale, intlLocale } = useLocale();
   const { refreshSession, status: authStatus, user } = useAuth();
   const fm = useMemo(() => createFormatters(intlLocale), [intlLocale]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [filePath, setFilePath] = useState("");
-  const [uploadedFileName, setUploadedFileName] = useState("");
   const [summary, setSummary] = useState<SummaryResponse>(emptySummary);
   const [recentUploads, setRecentUploads] = useState<RecentUpload[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1602,27 +1343,11 @@ export default function HomePage() {
   const [selectedMerchant, setSelectedMerchant] = useState<string | null>(null);
   const [amountFilter, setAmountFilter] = useState<AmountFilter>("all");
   const [sortOption, setSortOption] = useState<SortOption>("amount_desc");
-  const [pdfPassword, setPdfPassword] = useState("");
-  const [lastUploadParseReason, setLastUploadParseReason] = useState<
-    "empty_text" | "no_matching_lines" | null
-  >(null);
   const [error, setError] = useState("");
   const [dashboardError, setDashboardError] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
-  const [isDragging, setIsDragging] = useState(false);
-  const [manualDate, setManualDate] = useState(getTodayIsoDate);
-  const [manualMerchant, setManualMerchant] = useState("");
-  const [manualAmount, setManualAmount] = useState("");
-  const [manualCurrency, setManualCurrency] = useState<SupportedCurrency>("TWD");
-  const [manualExchangeRate, setManualExchangeRate] = useState("");
-  const [manualCategory, setManualCategory] = useState("Auto");
-  const [manualPaymentMethod, setManualPaymentMethod] = useState("Cash");
-  const [manualError, setManualError] = useState("");
-  const [isManualSaving, setIsManualSaving] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [pinnedSearch, setPinnedSearch] = useState<string | null>(null);
-  const [mutationRevision, setMutationRevision] = useState(0);
   const requestCoordinatorRef = useRef(new DashboardRequestCoordinator());
   const localeRef = useRef(locale);
   localeRef.current = locale;
@@ -1658,7 +1383,7 @@ export default function HomePage() {
     selectedMerchant,
     displayCurrency,
   };
-  const dashboardLoadToken = dashboardLoadKey(requestFilters, mutationRevision);
+  const dashboardLoadToken = dashboardLoadKey(requestFilters, 0);
   const [dashboardView, setDashboardView] = useState<DashboardViewResponse | null>(null);
   const sortedTransactions = dashboardView?.sorted_transactions ?? [];
   const merchantBreakdown = dashboardView?.merchant_breakdown ?? [];
@@ -1680,10 +1405,6 @@ export default function HomePage() {
   const activeCurrencyLabel = describeCurrency(activeCurrency);
   const visibleRowsCount = sortedTransactions.length;
   const metrics = dashboardView?.metrics;
-  const currentStatementLabel =
-    uploadedFileName ||
-    selectedFile?.name ||
-    translate(locale, "noStatementSelected");
   const latestUpload = recentUploads[0];
   const hasSortedTransactions = sortedTransactions.length > 0;
 
@@ -1746,7 +1467,6 @@ export default function HomePage() {
   useEffect(() => {
     if (authStatus !== "authenticated") {
       setDashboardView(null);
-      setTransactions([]);
       setRecentUploads([]);
       setSummary(emptySummary);
       setIsDashboardLoading(authStatus === "loading");
@@ -1793,7 +1513,6 @@ export default function HomePage() {
         if (snapshot.view.status === "ok") {
           setDashboardView(snapshot.view.value);
           setSummary(snapshot.view.value.summary);
-          setTransactions(snapshot.view.value.transactions);
           setError("");
         } else if (
           snapshot.view.error instanceof ApiError &&
@@ -1802,7 +1521,6 @@ export default function HomePage() {
           void refreshSession();
         } else {
           setDashboardView(null);
-          setTransactions([]);
           setError(
             snapshot.view.error instanceof Error
               ? snapshot.view.error.message
@@ -1820,7 +1538,6 @@ export default function HomePage() {
             ? loadError.message
             : translate(localeRef.current, "errRequestFailed");
         setDashboardView(null);
-        setTransactions([]);
         setError(message);
       },
       onSettled: () => {
@@ -1832,46 +1549,6 @@ export default function HomePage() {
       ticket.abort();
     };
   }, [authStatus, dashboardLoadToken, refreshSession, requestFilters]);
-
-  function handleNextFile(nextFile: File | null) {
-    if (!nextFile) {
-      return;
-    }
-
-    const isPdfFile =
-      nextFile.type === "application/pdf" ||
-      nextFile.name.toLowerCase().endsWith(".pdf");
-
-    if (!isPdfFile) {
-      setSelectedFile(null);
-      setError(translate(locale, "errOnlyPdf"));
-      return;
-    }
-
-    setSelectedFile(nextFile);
-    setError("");
-  }
-
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    handleNextFile(event.target.files?.[0] ?? null);
-  }
-
-  function openFilePicker() {
-    fileInputRef.current?.click();
-  }
-
-  function handleDrop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setIsDragging(false);
-    handleNextFile(event.dataTransfer.files?.[0] ?? null);
-  }
-
-  function handleDropZoneKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      openFilePicker();
-    }
-  }
 
   function applyClearedSlicers(filters: DashboardFilters) {
     const nextFilters = refreshAfterUpload(filters);
@@ -1885,149 +1562,6 @@ export default function HomePage() {
 
   function clearSlicers() {
     applyClearedSlicers(latestFiltersRef.current);
-  }
-
-  async function handleUpload() {
-    if (!selectedFile) {
-      setError(translate(locale, "errSelectPdf"));
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-    formData.append("password", pdfPassword);
-
-    setIsLoading(true);
-    setError("");
-    setLastUploadParseReason(null);
-
-    try {
-      const response = await apiFetch("/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = (await response.json()) as UploadResponse | { detail?: string };
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          await refreshSession();
-          return;
-        }
-        const detail =
-          "detail" in data && typeof data.detail === "string"
-            ? data.detail
-            : translate(locale, "errUploadFailed");
-        throw new Error(detail);
-      }
-
-      const uploadData = data as UploadResponse;
-
-      setFilePath(uploadData.file_path);
-      setUploadedFileName(uploadData.original_file_name);
-      const reason = uploadData.parse_reason;
-      setLastUploadParseReason(
-        reason === "empty_text" || reason === "no_matching_lines" ? reason : null
-      );
-      setSelectedFile(null);
-      setPdfPassword("");
-      applyClearedSlicers(latestFiltersRef.current);
-      setMutationRevision((current) => current + 1);
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    } catch (uploadError) {
-      setTransactions([]);
-      setFilePath("");
-      setUploadedFileName("");
-      setLastUploadParseReason(null);
-      setError(
-        uploadError instanceof Error
-          ? uploadError.message
-          : translate(locale, "errUnexpectedUpload")
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function handleAddManualTransaction() {
-    const merchant = manualMerchant.trim();
-    const amountValue = Number(manualAmount);
-    const exchangeRateValue =
-      manualCurrency === "TWD" || !manualExchangeRate.trim()
-        ? null
-        : Number(manualExchangeRate);
-    if (!merchant) {
-      setManualError(translate(locale, "errManualMerchantRequired"));
-      return;
-    }
-    if (!manualDate) {
-      setManualError(translate(locale, "errManualDateRequired"));
-      return;
-    }
-    if (!Number.isFinite(amountValue) || amountValue <= 0) {
-      setManualError(translate(locale, "errManualAmountInvalid"));
-      return;
-    }
-    if (
-      exchangeRateValue !== null &&
-      (!Number.isFinite(exchangeRateValue) || exchangeRateValue <= 0)
-    ) {
-      setManualError(translate(locale, "errManualExchangeRateInvalid"));
-      return;
-    }
-
-    const payload: ManualTransactionPayload = {
-      date: manualDate,
-      merchant,
-      amount: amountValue,
-      currency: manualCurrency,
-      original_amount: amountValue,
-      original_currency: manualCurrency,
-      base_currency: "TWD",
-      exchange_rate: exchangeRateValue,
-      exchange_rate_date: exchangeRateValue === null ? null : manualDate,
-      category: manualCategory === "Auto" ? null : manualCategory,
-      payment_method: manualPaymentMethod || null,
-    };
-
-    setIsManualSaving(true);
-    setManualError("");
-    try {
-      const response = await apiFetch("/transactions/manual", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-      const responseBody = (await response.json()) as { detail?: string };
-      if (!response.ok) {
-        if (response.status === 401) {
-          await refreshSession();
-          return;
-        }
-        throw new Error(responseBody.detail || translate(locale, "errUploadFailed"));
-      }
-      setManualMerchant("");
-      setManualAmount("");
-      setManualCurrency("TWD");
-      setManualExchangeRate("");
-      setManualCategory("Auto");
-      setManualPaymentMethod("Cash");
-      setManualDate(getTodayIsoDate());
-      setMutationRevision((current) => current + 1);
-    } catch (manualSaveError) {
-      setManualError(
-        manualSaveError instanceof Error
-          ? manualSaveError.message
-          : translate(locale, "errUnexpectedUpload")
-      );
-    } finally {
-      setIsManualSaving(false);
-    }
   }
 
   if (authStatus === "loading") {
@@ -2248,10 +1782,6 @@ export default function HomePage() {
                 {translate(locale, "appTitle")}
               </div>
               <div className={styles.headerMeta}>
-                <Badge appearance="outline" color="informative">
-                  {translate(locale, "badgeCurrentFilePrefix")}{" "}
-                  {currentStatementLabel}
-                </Badge>
                 <div className={styles.languageRow}>
                   <Body1 className={styles.languageOption}>
                     {translate(locale, "currencyUsd")}

@@ -110,35 +110,9 @@ const en = {
   errAddManualFailed: "Failed to add manual spending.",
   filtersPinnedHint: "Filters stay pinned in the left sidebar. Adjust them on the dashboard page.",
 
-  reportPaneEyebrow: "Report Pane",
   statementImportTitle: "Statement import",
-  statementImportBody:
-    "Treat this like the dataset refresh step in a BI report. Uploading a PDF refreshes the report canvas and the history panel together.",
   fieldStatementPdfLabel: "Statement PDF",
-  fieldStatementPdfHint:
-    "Drag in a PDF or browse. A successful upload updates the report immediately.",
   fieldPdfPasswordLabel: "PDF password (if the file is protected)",
-  fieldPdfPasswordHint:
-    "If the PDF opens with a password in Preview or Adobe, enter that password here.",
-  placeholderPdfPassword: "Document password",
-  dropZoneEmptyTitle: "Drop a PDF here or click to browse",
-  dropZoneReadyHint: "File selected — next: password if needed, then Process PDF.",
-  dropZoneIdleHint: "Click here or use Browse to choose a PDF.",
-  uploadNextStepTitle: "Process this statement",
-  uploadNextStepBody:
-    "If your PDF needs a password, enter it in the PDF password field below, then click Process PDF to upload and parse.",
-  btnProcessPdf: "Process PDF",
-  btnRefreshing: "Processing…",
-  btnBrowse: "Browse",
-  spinnerParsingLabel: "Parsing data",
-  badgeManualRefresh: "Manual refresh",
-  badgePdfSource: "PDF source",
-  badgePostgresModel: "PostgreSQL model",
-  msgRefreshFailedTitle: "Refresh failed",
-  manualEntryEyebrow: "Manual Entry",
-  manualEntryTitle: "Add spending manually",
-  manualEntryBody:
-    "Use this for cash, PayPal, EasyCard (悠遊卡), iCash, or any spending not in card statements.",
   manualDateLabel: "Date",
   manualAmountLabel: "Amount",
   manualCurrencyLabel: "Currency",
@@ -148,9 +122,6 @@ const en = {
   manualCategoryLabel: "Category",
   manualCategoryAuto: "Auto-detect",
   manualPaymentMethodLabel: "Payment method",
-  manualAddButton: "Add manual transaction",
-  manualAddSaving: "Saving…",
-
   slicersEyebrow: "Slicers",
   filtersTitle: "Filters",
   searchLabel: "Search",
@@ -179,7 +150,6 @@ const en = {
 
   historyEyebrow: "Refresh History",
   recentStatementsTitle: "Recent statements",
-  dashboardUnavailableTitle: "Dashboard data unavailable",
   loadingHistoryLabel: "Loading history",
   historyRowsWord: "rows",
   noUploadsYet: "No uploaded statements yet.",
@@ -188,7 +158,6 @@ const en = {
   recentUploadOriginalTotals: "Original totals",
 
   appTitle: "Personal Spending Tracker",
-  badgeCurrentFilePrefix: "Current file:",
   overviewEyebrow: "Overview Report",
   spendingOverviewTitle: "Spending Overview",
   reportLeadBody:
@@ -198,12 +167,6 @@ const en = {
   storedModelLabel: "Stored model",
   lastRefreshLabel: "Last refresh",
   waiting: "Waiting",
-
-  merchantSummaryPrefix: "Merchant:",
-  merchantAll: "All",
-  amountSummaryPrefix: "Amount:",
-  sortSummaryPrefix: "Sort:",
-  searchSummaryPrefix: "Search:",
 
   metricNetInView: "Net in view",
   metricNetInViewHint: "Current selection after slicers",
@@ -218,7 +181,6 @@ const en = {
   metricDisplayCurrencyHintTemplate: "Display currency: {{currency}}",
 
   merchantContributionTitle: "Merchant contribution",
-  badgeCrossFilter: "Click a merchant to cross-filter",
   emptyMerchantVisual: "Upload a statement to populate the merchant visual.",
   chartDisplayCurrencyHintTemplate: "Converted totals in {{currency}}",
 
@@ -228,30 +190,6 @@ const en = {
   shareOfVisibleSpend: "of visible spend",
   emptyCategoryVisual:
     "No positive spending is available for the current slicer state.",
-  categoryOther: "Other",
-
-  dailyNetTitle: "Daily net by date",
-  badgeBasedOnSelection: "Based on the current selection",
-  emptyDateBuckets: "No date buckets are available for the current slicer state.",
-
-  visual4Eyebrow: "Visual 4",
-  selectionDetailsTitle: "Selection details",
-  badgeReactiveSlicers: "Reactive to slicers",
-  insightCurrentStatement: "Current statement",
-  insightAvgTransaction: "Average transaction",
-  insightLargestAmount: "Largest absolute amount",
-  insightUploadNet: "Upload net total",
-  visibleShareTitle: "Visible share of uploaded rows",
-
-  modelContextEyebrow: "Model Context",
-  datasetSnapshotTitle: "Dataset snapshot",
-  badgeBackendAggregate: "Backend aggregate",
-  insightStatementsStored: "Statements stored",
-  insightRowsStored: "Rows stored",
-  insightAllTimeAvg: "All-time average",
-  insightMostRecentLoad: "Most recent load",
-  waitingForData: "Waiting for data",
-
   detailMatrixEyebrow: "Detail Matrix",
   transactionsTitle: "Transactions",
   dashboardTableCurrencyNoteTemplate:
@@ -270,7 +208,6 @@ const en = {
   transactionsYear: "Year",
   transactionsMonth: "Month",
   visibleSuffix: "visible",
-  storedFilePrefix: "Stored file:",
   tableAriaLabel: "Parsed transactions",
   colDate: "Date",
   colMerchant: "Merchant",
@@ -278,19 +215,8 @@ const en = {
   colAmount: "Amount",
   emptySlicerNoRows: "The current slicer combination returns no rows.",
   emptyNoUpload: "Upload a statement to populate the visuals and the detail matrix.",
-  parseWarningTitle: "No transactions loaded",
-  parseReasonEmptyText:
-    "No text was extracted from this PDF. Image-only (scanned) statements without selectable text are not supported yet — open the PDF, export or print to PDF again, then try that file.",
-  parseReasonNoMatchingLines:
-    "Text was extracted, but no lines matched the expected pattern (typically: date, merchant description, then amount like $12.34 per line). Your bank's PDF layout may differ — try exporting from your bank's website or save as text-friendly PDF.",
-  emptyParsedZeroRows:
-    "This upload finished, but there are no parsed transactions to display.",
-
-  errOnlyPdf: "Only PDF files are allowed.",
-  errSelectPdf: "Select a PDF file before uploading.",
   errUploadFailed: "Upload failed.",
   errRequestFailed: "Request failed.",
-  errUnexpectedUpload: "Unexpected upload error.",
   errDashboardUnavailable: "Dashboard data is unavailable.",
   errAiSettingsLoad: "Failed to load AI settings.",
   errAiSettingsSave: "Failed to save AI settings.",
@@ -300,8 +226,6 @@ const en = {
   errManualDateRequired: "Date is required.",
   errManualAmountInvalid: "Amount must be a positive number.",
   errManualExchangeRateInvalid: "Exchange rate must be a positive number.",
-  noStatementSelected: "No statement selected",
-
   languageLabel: "Language",
   languageEnglish: "English",
   languageTraditionalChinese: "Traditional Chinese",
@@ -417,34 +341,9 @@ const zhHant: Record<keyof typeof en, string> = {
   errAddManualFailed: "新增手動支出失敗。",
   filtersPinnedHint: "篩選器會固定在左側欄位；可在儀表板頁面進行調整。",
 
-  reportPaneEyebrow: "報表面板",
   statementImportTitle: "對帳單匯入",
-  statementImportBody:
-    "可將此視為 BI 報表中重新整理資料集的步驟。上傳 PDF 會同時更新報表畫布與歷程面板。",
   fieldStatementPdfLabel: "對帳單 PDF",
-  fieldStatementPdfHint: "拖曳 PDF 或瀏覽檔案。成功上傳後會立即更新報表。",
   fieldPdfPasswordLabel: "PDF 密碼（若檔案有保護）",
-  fieldPdfPasswordHint:
-    "若開啟 PDF 時需要密碼（如 Preview、Adobe），請在此輸入該密碼。",
-  placeholderPdfPassword: "文件密碼",
-  dropZoneEmptyTitle: "在此拖放 PDF，或點選瀏覽",
-  dropZoneReadyHint: "已選取檔案 — 必要時先填密碼，再按下方「處理 PDF」。",
-  dropZoneIdleHint: "點選此區或使用瀏覽來選擇 PDF。",
-  uploadNextStepTitle: "處理此對帳單",
-  uploadNextStepBody:
-    "若 PDF 需要密碼，請先在下方「PDF 密碼」欄位輸入，再按「處理 PDF」以上傳並解析交易。",
-  btnProcessPdf: "處理 PDF",
-  btnRefreshing: "處理中…",
-  btnBrowse: "瀏覽",
-  spinnerParsingLabel: "解析資料中",
-  badgeManualRefresh: "手動重新整理",
-  badgePdfSource: "PDF 來源",
-  badgePostgresModel: "PostgreSQL 模型",
-  msgRefreshFailedTitle: "重新整理失敗",
-  manualEntryEyebrow: "手動輸入",
-  manualEntryTitle: "手動新增支出",
-  manualEntryBody:
-    "可用於現金、PayPal、悠遊卡、iCash，或任何未出現在信用卡對帳單中的支出。",
   manualDateLabel: "日期",
   manualAmountLabel: "金額",
   manualCurrencyLabel: "幣別",
@@ -454,9 +353,6 @@ const zhHant: Record<keyof typeof en, string> = {
   manualCategoryLabel: "分類",
   manualCategoryAuto: "自動判斷",
   manualPaymentMethodLabel: "付款方式",
-  manualAddButton: "新增手動交易",
-  manualAddSaving: "儲存中…",
-
   slicersEyebrow: "交叉分析篩選",
   filtersTitle: "篩選",
   searchLabel: "搜尋",
@@ -485,7 +381,6 @@ const zhHant: Record<keyof typeof en, string> = {
 
   historyEyebrow: "重新整理紀錄",
   recentStatementsTitle: "最近對帳單",
-  dashboardUnavailableTitle: "無法載入儀表板資料",
   loadingHistoryLabel: "載入紀錄中",
   historyRowsWord: "筆",
   noUploadsYet: "尚無已上傳的對帳單。",
@@ -494,7 +389,6 @@ const zhHant: Record<keyof typeof en, string> = {
   recentUploadOriginalTotals: "原始總額（依幣別）",
 
   appTitle: "個人支出追蹤",
-  badgeCurrentFilePrefix: "目前檔案：",
   overviewEyebrow: "總覽報表",
   spendingOverviewTitle: "支出總覽",
   reportLeadBody:
@@ -504,12 +398,6 @@ const zhHant: Record<keyof typeof en, string> = {
   storedModelLabel: "已儲存模型",
   lastRefreshLabel: "上次重新整理",
   waiting: "等待中",
-
-  merchantSummaryPrefix: "商家：",
-  merchantAll: "全部",
-  amountSummaryPrefix: "金額：",
-  sortSummaryPrefix: "排序：",
-  searchSummaryPrefix: "搜尋：",
 
   metricNetInView: "檢視中淨額",
   metricNetInViewHint: "套用篩選後的目前選取結果",
@@ -524,7 +412,6 @@ const zhHant: Record<keyof typeof en, string> = {
   metricDisplayCurrencyHintTemplate: "顯示幣別：{{currency}}",
 
   merchantContributionTitle: "商家貢獻度",
-  badgeCrossFilter: "點選商家以交叉篩選",
   emptyMerchantVisual: "請上傳對帳單以填入商家視覺效果。",
   chartDisplayCurrencyHintTemplate: "已轉換為 {{currency}} 顯示",
 
@@ -533,30 +420,6 @@ const zhHant: Record<keyof typeof en, string> = {
   pieCenterSpendInView: "檢視中支出",
   shareOfVisibleSpend: "佔可見支出",
   emptyCategoryVisual: "目前篩選狀態下沒有可顯示的正向支出。",
-  categoryOther: "其他",
-
-  dailyNetTitle: "依日期每日淨額",
-  badgeBasedOnSelection: "依目前選取範圍",
-  emptyDateBuckets: "目前篩選狀態下沒有可顯示的日期區間。",
-
-  visual4Eyebrow: "視覺效果 4",
-  selectionDetailsTitle: "選取範圍詳情",
-  badgeReactiveSlicers: "隨篩選即時更新",
-  insightCurrentStatement: "目前對帳單",
-  insightAvgTransaction: "平均每筆交易",
-  insightLargestAmount: "絕對值最大金額",
-  insightUploadNet: "上傳淨額合計",
-  visibleShareTitle: "可見列佔上傳列數比例",
-
-  modelContextEyebrow: "模型內容",
-  datasetSnapshotTitle: "資料集快照",
-  badgeBackendAggregate: "後端彙總",
-  insightStatementsStored: "已儲存對帳單數",
-  insightRowsStored: "已儲存列數",
-  insightAllTimeAvg: "全期平均",
-  insightMostRecentLoad: "最近載入",
-  waitingForData: "等待資料",
-
   detailMatrixEyebrow: "明細表",
   transactionsTitle: "交易",
   dashboardTableCurrencyNoteTemplate:
@@ -575,7 +438,6 @@ const zhHant: Record<keyof typeof en, string> = {
   transactionsYear: "年份",
   transactionsMonth: "月份",
   visibleSuffix: "筆可見",
-  storedFilePrefix: "已儲存檔案：",
   tableAriaLabel: "已解析交易",
   colDate: "日期",
   colMerchant: "商家",
@@ -583,18 +445,8 @@ const zhHant: Record<keyof typeof en, string> = {
   colAmount: "金額",
   emptySlicerNoRows: "目前篩選組合沒有任何列。",
   emptyNoUpload: "請上傳對帳單以填入視覺效果與明細表。",
-  parseWarningTitle: "未能載入交易",
-  parseReasonEmptyText:
-    "無法從此 PDF 擷取文字。若為僅有影像的掃描檔且無法選取文字，目前不支援 — 請用 PDF 軟體另存或重新列印成 PDF 後再上傳。",
-  parseReasonNoMatchingLines:
-    "已擷取文字，但沒有任何一行符合預期格式（通常為一行：日期、商家說明、金額如 $12.34）。各家銀行 PDF 版面不同 — 可試著從網銀另存 PDF，或輸出為較接近純文字的版本。",
-  emptyParsedZeroRows: "上傳已完成，但目前沒有可顯示的已解析交易。",
-
-  errOnlyPdf: "僅允許 PDF 檔案。",
-  errSelectPdf: "請先選擇 PDF 再上傳。",
   errUploadFailed: "上傳失敗。",
   errRequestFailed: "請求失敗。",
-  errUnexpectedUpload: "發生未預期的上傳錯誤。",
   errDashboardUnavailable: "無法取得儀表板資料。",
   errAiSettingsLoad: "無法載入 AI 設定。",
   errAiSettingsSave: "無法儲存 AI 設定。",
@@ -604,8 +456,6 @@ const zhHant: Record<keyof typeof en, string> = {
   errManualDateRequired: "請選擇日期。",
   errManualAmountInvalid: "金額必須是正數。",
   errManualExchangeRateInvalid: "匯率必須是正數。",
-  noStatementSelected: "尚未選擇對帳單",
-
   languageLabel: "語言",
   languageEnglish: "English",
   languageTraditionalChinese: "繁體中文",
