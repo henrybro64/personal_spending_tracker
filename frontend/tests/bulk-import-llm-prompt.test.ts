@@ -29,10 +29,13 @@ test("CTBC prompt uses importer-compatible posted_date and card count validation
   assert.doesNotMatch(prompt, /^\s*"post_date"\s*:/m);
   assert.match(prompt, /"card_counts"/);
   assert.match(prompt, /ERROR_CARD_COUNT_MISMATCH/);
-  assert.match(prompt, /"0051"/);
-  assert.match(prompt, /"6232"/);
-  assert.match(prompt, /"6764"/);
-  assert.match(prompt, /"3037"/);
+  assert.match(prompt, /"1234"/);
+  assert.match(prompt, /"5678"/);
+  assert.match(prompt, /實際出現的所有卡號末四碼/);
+  assert.doesNotMatch(prompt, /"0051"/);
+  assert.doesNotMatch(prompt, /"6232"/);
+  assert.doesNotMatch(prompt, /"6764"/);
+  assert.doesNotMatch(prompt, /"3037"/);
 });
 
 test("CTBC prompt does not hard-code a PDF password", () => {
