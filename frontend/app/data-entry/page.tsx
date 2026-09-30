@@ -547,7 +547,14 @@ function BulkImportCard({
         </Field>
       </div>
       <div className={styles.stepTitle}>{translate(locale, "bulkImportLlmStepTitle")}</div>
-      <Body1>{translate(locale, "bulkImportLlmStepBody")}</Body1>
+      <Body1>
+        {translate(
+          locale,
+          bulkBank.trim().toUpperCase() === "CTBC"
+            ? "bulkImportLlmStepBodyCtbc"
+            : "bulkImportLlmStepBody"
+        )}
+      </Body1>
       <pre className={styles.exampleBlock}>{llmConversionPrompt}</pre>
       <Button
         appearance="secondary"
