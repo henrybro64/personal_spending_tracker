@@ -69,5 +69,62 @@ class BulkImportTests(unittest.TestCase):
         self.assertFalse(rows[0].needs_review)
 
 
+    def test_preserves_negative_refund_amount(self) -> None:
+        payload = [
+            {
+                "date": "2026-05-13",
+                "merchant": "MERCHANT REFUND",
+                "amount": -577,
+                "category": "Other Spending",
+            }
+        ]
+        rows = parse_import_content(json.dumps(payload))
+        self.assertEqual(rows[0].amount, -577.0)
+
+    def test_card_counts_match_transactions(self) -> None:
+        payload = {
+            "source": "ctbc-import",
+            "bank": "CTBC",
+            "currency": "TWD",
+            "card_counts": {"0051": 1, "6232": 1, "6764": 0, "3037": 0},
+            "transactions": [
+                {
+                    "date": "2026-05-13",
+                    "posted_date": "2026-05-15",
+                    "merchant": "Spotify",
+                    "amount": 198,
+                    "card_last4": "0051",
+                },
+                {
+                    "date": "2026-05-14",
+                    "posted_date": "2026-05-16",
+                    "merchant": "國外交易手續費",
+                    "amount": 3,
+                    "card_last4": "6232",
+                },
+            ],
+        }
+        rows = parse_import_content(json.dumps(payload))
+        self.assertEqual(len(rows), 2)
+
+    def test_card_count_mismatch_is_rejected(self) -> None:
+        payload = {
+            "source": "ctbc-import",
+            "bank": "CTBC",
+            "currency": "TWD",
+            "card_counts": {"0051": 2, "6232": 0, "6764": 0, "3037": 0},
+            "transactions": [
+                {
+                    "date": "2026-05-13",
+                    "merchant": "Spotify",
+                    "amount": 198,
+                    "card_last4": "0051",
+                }
+            ],
+        }
+        with self.assertRaisesRegex(BulkImportParseError, "ERROR_CARD_COUNT_MISMATCH"):
+            parse_import_content(json.dumps(payload))
+
+
 if __name__ == "__main__":
     unittest.main()
