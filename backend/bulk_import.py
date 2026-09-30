@@ -56,6 +56,8 @@ def parse_import_content(
             f"Too many rows ({len(raw_rows)}). Maximum is {_MAX_ROWS}."
         )
 
+    _validate_card_counts(raw_rows, defaults.get("card_counts"))
+
     engine = category_engine or CategoryEngine()
     default_bank = str(defaults.get("bank") or bank).strip() or "Manual"
     default_currency = str(defaults.get("currency") or currency).strip() or "TWD"
@@ -142,11 +144,42 @@ def _parse_json_payload(content: str) -> tuple[list[dict[str, Any]], dict[str, A
             )
         if not isinstance(rows, list):
             raise BulkImportParseError('"transactions" must be a JSON array.')
-        for key in ("source", "source_name", "bank", "currency"):
+        for key in ("source", "source_name", "bank", "currency", "card_counts"):
             if key in payload:
                 defaults[key] = payload[key]
         return [_coerce_row(item) for item in rows], defaults
     raise BulkImportParseError("JSON must be an object or array.")
+
+
+def _validate_card_counts(
+    raw_rows: list[dict[str, Any]],
+    card_counts: Any,
+) -> None:
+    if card_counts is None:
+        return
+    if not isinstance(card_counts, dict):
+        raise BulkImportParseError("card_counts must be a JSON object.")
+
+    normalized_counts: dict[str, int] = {}
+    for card_last4, raw_count in card_counts.items():
+        card = str(card_last4).strip()
+        if not re.fullmatch(r"\d{4}", card):
+            raise BulkImportParseError("card_counts keys must be four-digit card numbers.")
+        if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 0:
+            raise BulkImportParseError("card_counts values must be non-negative integers.")
+        normalized_counts[card] = raw_count
+
+    if sum(normalized_counts.values()) != len(raw_rows):
+        raise BulkImportParseError("ERROR_CARD_COUNT_MISMATCH")
+
+    actual_counts: dict[str, int] = {}
+    for row in raw_rows:
+        card = str(row.get("card_last4") or "").strip()
+        if card:
+            actual_counts[card] = actual_counts.get(card, 0) + 1
+
+    if actual_counts != {card: count for card, count in normalized_counts.items() if count > 0}:
+        raise BulkImportParseError("ERROR_CARD_COUNT_MISMATCH")
 
 
 def _coerce_row(item: Any) -> dict[str, Any]:
@@ -313,11 +346,12 @@ def _normalize_row(
         )
 
     absolute_amount = abs(amount)
-    normalized_amount = (
-        -absolute_amount
-        if transaction_type == "payment_or_credit"
-        else absolute_amount
-    )
+    if amount < 0:
+        normalized_amount = -absolute_amount
+    elif transaction_type == "payment_or_credit":
+        normalized_amount = -absolute_amount
+    else:
+        normalized_amount = absolute_amount
 
     return NormalizedTransaction(
         statement_file=statement_file,
