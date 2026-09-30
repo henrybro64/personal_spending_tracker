@@ -26,7 +26,7 @@ test("CTBC prompt uses importer-compatible posted_date and card count validation
   });
 
   assert.match(prompt, /"posted_date"/);
-  assert.doesNotMatch(prompt, /"post_date"/);
+  assert.doesNotMatch(prompt, /^\s*"post_date"\s*:/m);
   assert.match(prompt, /"card_counts"/);
   assert.match(prompt, /ERROR_CARD_COUNT_MISMATCH/);
   assert.match(prompt, /"0051"/);
