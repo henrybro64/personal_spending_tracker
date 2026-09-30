@@ -247,7 +247,7 @@ def test_oversized_upload_is_rejected_without_keeping_the_file(
 
     audit_context = api_main.get_audit_request_context(_upload_request())
     upload_stream = BytesIO(b"%PDF-1.4 too large")
-    with pytest.raises(HTTPException) as caught:
+    try:
         api_main._store_uploaded_pdf(
             upload_stream=upload_stream,
             original_name="statement.pdf",
@@ -256,8 +256,10 @@ def test_oversized_upload_is_rejected_without_keeping_the_file(
             user_id=1,
             audit_context=audit_context,
         )
-
-    assert caught.value.status_code == 413
+    except HTTPException as caught:
+        assert caught.status_code == 413
+    else:
+        raise AssertionError("expected the oversized upload to be rejected")
     upload_dir = api_main._get_upload_dir(1)
     assert list(upload_dir.glob("*")) == []
 
@@ -300,7 +302,7 @@ def test_duplicate_fingerprint_conflict_removes_the_saved_pdf(
 
     audit_context = api_main.get_audit_request_context(_upload_request())
     upload_stream = BytesIO(b"%PDF-1.4 synthetic")
-    with pytest.raises(HTTPException) as caught:
+    try:
         api_main._store_uploaded_pdf(
             upload_stream=upload_stream,
             original_name="Card.pdf",
@@ -309,9 +311,11 @@ def test_duplicate_fingerprint_conflict_removes_the_saved_pdf(
             user_id=1,
             audit_context=audit_context,
         )
-
-    assert caught.value.status_code == 409
-    assert "Card.pdf" in caught.value.detail
+    except HTTPException as caught:
+        assert caught.status_code == 409
+        assert "Card.pdf" in caught.detail
+    else:
+        raise AssertionError("expected the duplicate upload to be rejected")
     upload_dir = api_main._get_upload_dir(1)
     assert list(upload_dir.glob("*")) == []
 
