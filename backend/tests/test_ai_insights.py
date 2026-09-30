@@ -175,17 +175,18 @@ def test_insight_snapshot_uses_twd_base_and_counts_unconverted_jpy() -> None:
 
 
 def test_insight_snapshot_rejects_rows_that_cannot_convert() -> None:
+    eur_only = [
+        _transaction(
+            transaction_id=1,
+            date="2026-04-01",
+            merchant="EUR CAFE",
+            amount=8.0,
+            currency="EUR",
+        )
+    ]
     with pytest.raises(ValueError, match="USD or TWD"):
         build_spending_insight_snapshot(
-            [
-                _transaction(
-                    transaction_id=1,
-                    date="2026-04-01",
-                    merchant="EUR CAFE",
-                    amount=8.0,
-                    currency="EUR",
-                )
-            ],
+            eur_only,
             range_key="month",
             language="en",
         )

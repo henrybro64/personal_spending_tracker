@@ -57,6 +57,7 @@ import {
 } from "./currency";
 import { useLocale } from "./locale-provider";
 import { translate, type MessageKey } from "./messages";
+import { UnconvertedTransactionsNotice } from "./unconverted-notice";
 
 
 type Transaction = {
@@ -1432,7 +1433,7 @@ export default function HomePage() {
         unconvertedTransactions.map((item) => item.original_currency)
       ),
     ]
-      .sort()
+      .sort((left, right) => left.localeCompare(right))
       .join(", ") ||
     translate(locale, "unconvertedTransactionsCurrencyFallback");
 
@@ -1805,16 +1806,10 @@ export default function HomePage() {
             </MessageBar>
           ) : null}
           {unconvertedCount > 0 ? (
-            <div data-testid="unconverted-transactions-warning">
-              <MessageBar intent="warning">
-                <MessageBarBody>
-                  {translate(locale, "unconvertedTransactionsWarning", {
-                    n: fm.formatCount(unconvertedCount),
-                    currencies: unconvertedCurrencies,
-                  })}
-                </MessageBarBody>
-              </MessageBar>
-            </div>
+            <UnconvertedTransactionsNotice
+              countLabel={fm.formatCount(unconvertedCount)}
+              currencies={unconvertedCurrencies}
+            />
           ) : null}
           <Card className={mergeClasses(styles.panel, styles.reportHeader)}>
             <div className={styles.reportHeaderTop}>

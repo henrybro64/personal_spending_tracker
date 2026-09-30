@@ -1383,13 +1383,15 @@ def count_statement_uploads(
 ) -> int:
     """All statement uploads for this user, including rows with no transactions."""
     resolved_database_url = _resolve_database_url(database_url)
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT COUNT(*) FROM statement_uploads WHERE user_id = %s",
-                (user_id,),
-            )
-            row = cursor.fetchone()
+    with (
+        psycopg.connect(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            "SELECT COUNT(*) FROM statement_uploads WHERE user_id = %s",
+            (user_id,),
+        )
+        row = cursor.fetchone()
     return int(row[0]) if row is not None else 0
 
 

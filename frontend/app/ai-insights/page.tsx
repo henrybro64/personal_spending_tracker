@@ -33,6 +33,7 @@ import { describeCurrency, formatCurrencyAmount } from "../currency";
 import { useLocale } from "../locale-provider";
 import { useAppShellStyles } from "../app-shell-styles";
 import { translate } from "../messages";
+import { UnconvertedTransactionsNotice } from "../unconverted-notice";
 
 type InsightRange = "month" | "quarter" | "6months" | "year";
 
@@ -154,6 +155,25 @@ function rangeLabel(
     default:
       return translate(locale, "rangeQuarter");
   }
+}
+
+function unconvertedInsightNotice(
+  insight: AiInsightResponse,
+  locale: ReturnType<typeof useLocale>["locale"]
+) {
+  const count = insight.snapshot.totals.unconverted_transaction_count ?? 0;
+  if (count <= 0) {
+    return null;
+  }
+  const currencies =
+    insight.snapshot.totals.unconverted_currencies?.join(", ") ||
+    translate(locale, "unconvertedTransactionsCurrencyFallback");
+  return (
+    <UnconvertedTransactionsNotice
+      countLabel={String(count)}
+      currencies={currencies}
+    />
+  );
 }
 
 export default function AiInsightsPage() {
@@ -390,20 +410,7 @@ export default function AiInsightsPage() {
               <Card className={styles.card}>
                 <div className={styles.sectionEyebrow}>{translate(locale, "aiInsightsSnapshotTitle")}</div>
                 <Title2>{translate(locale, "aiInsightsSnapshotTitle")}</Title2>
-                {(insight.snapshot.totals.unconverted_transaction_count ?? 0) > 0 ? (
-                  <div data-testid="unconverted-transactions-warning">
-                    <MessageBar intent="warning">
-                      <MessageBarBody>
-                        {translate(locale, "unconvertedTransactionsWarning", {
-                          n: String(insight.snapshot.totals.unconverted_transaction_count),
-                          currencies:
-                            insight.snapshot.totals.unconverted_currencies?.join(", ") ||
-                            translate(locale, "unconvertedTransactionsCurrencyFallback"),
-                        })}
-                      </MessageBarBody>
-                    </MessageBar>
-                  </div>
-                ) : null}
+                {unconvertedInsightNotice(insight, locale)}
                 <div className={styles.snapshotGrid}>
                   <Card className={styles.card}>
                     <Body1>{translate(locale, "snapshotTransactions")}</Body1>

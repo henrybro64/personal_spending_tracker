@@ -9,7 +9,12 @@ import httpx
 
 from backend.currency import DisplayCurrency
 from backend.database import StoredTransaction, TimeRange
-from backend.spending import convertible_home_amount, partition_spending_transactions
+from backend.spending import (
+    DisplayTransaction,
+    UnconvertedTransaction,
+    convertible_home_amount,
+    partition_spending_transactions,
+)
 
 AiProvider = Literal["openai", "perplexity"]
 InsightLanguage = Literal["en", "zh-Hant"]
@@ -88,40 +93,39 @@ def _choose_insight_display_currency(
             continue
         currency, amount = home
         totals[currency] += abs(amount)
-    if totals["USD"] == 0.0 and totals["TWD"] == 0.0:
+    if not totals["USD"] and not totals["TWD"]:
         return None
     if totals["TWD"] > totals["USD"]:
         return "TWD"
     return "USD"
 
 
-def build_spending_insight_snapshot(
-    transactions: list[StoredTransaction],
-    *,
-    range_key: TimeRange,
-    language: InsightLanguage,
-) -> SpendingInsightSnapshot:
-    if not transactions:
-        raise ValueError("No transactions are available for the selected period.")
+_NO_CONVERTIBLE_SPENDING = (
+    "No spending transactions can be shown in USD or TWD for the selected period."
+)
 
+
+def _insight_population(
+    transactions: list[StoredTransaction],
+) -> tuple[DisplayCurrency, list[DisplayTransaction], list[UnconvertedTransaction]]:
     display_currency = _choose_insight_display_currency(transactions)
     if display_currency is None:
-        raise ValueError(
-            "No spending transactions can be shown in USD or TWD for the selected period."
-        )
+        raise ValueError(_NO_CONVERTIBLE_SPENDING)
     model_rows, unconverted = partition_spending_transactions(
         transactions,
         display_currency,
     )
     if not model_rows:
-        raise ValueError(
-            "No spending transactions can be shown in USD or TWD for the selected period."
-        )
+        raise ValueError(_NO_CONVERTIBLE_SPENDING)
+    return display_currency, model_rows, unconverted
 
+
+def _prepare_insight_rows(
+    model_rows: list[DisplayTransaction],
+) -> tuple[list[dict[str, object]], dict[str, float], list[str]]:
     prepared_rows: list[dict[str, object]] = []
     abs_totals_by_currency: dict[str, float] = defaultdict(float)
     valid_dates: list[str] = []
-
     for transaction in model_rows:
         original_amount = float(transaction["original_amount"])
         original_currency = str(transaction["original_currency"])
@@ -141,6 +145,22 @@ def build_spending_insight_snapshot(
                 "month": month_key,
             }
         )
+    return prepared_rows, abs_totals_by_currency, valid_dates
+
+
+def build_spending_insight_snapshot(
+    transactions: list[StoredTransaction],
+    *,
+    range_key: TimeRange,
+    language: InsightLanguage,
+) -> SpendingInsightSnapshot:
+    if not transactions:
+        raise ValueError("No transactions are available for the selected period.")
+
+    display_currency, model_rows, unconverted = _insight_population(transactions)
+    prepared_rows, abs_totals_by_currency, valid_dates = _prepare_insight_rows(
+        model_rows
+    )
 
     monthly_totals: dict[str, MonthlyInsightItem] = {}
     category_totals: dict[str, float] = defaultdict(float)
