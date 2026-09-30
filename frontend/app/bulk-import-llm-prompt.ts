@@ -163,7 +163,7 @@ JSON Schema
       "posted_date": "2024-06-03",
       "merchant": "Spotify P2CA51F9B3",
       "amount": 198,
-      "card_last4": "0051",
+      "card_last4": "1234",
       "country": "SE"
     }
   ]
