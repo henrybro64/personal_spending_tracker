@@ -287,9 +287,11 @@ Sync is idempotent per batch row via a `postgres_synced` flag in the batch SQLit
 `GET /summary`
 
 `number_of_statements` is an all-time count of this user's statement uploads,
-including uploads that parsed zero transactions. `unconverted_transaction_count`
-is how many in-range spending rows were left out of `total_spending` because
-they are not USD or TWD and have no exchange rate into TWD.
+including uploads that parsed zero transactions. `unconverted_transaction_count` is how many in-range spending rows were left
+out of `total_spending` because they are not USD or TWD and have no exchange
+rate into TWD. `unconverted_currencies` lists those original currencies.
+The dashboard `limit` shortens the returned row samples and does not change
+these totals.
 
 ```json
 {
@@ -298,6 +300,7 @@ they are not USD or TWD and have no exchange rate into TWD.
   "average_transaction_amount": 17.64,
   "number_of_statements": 2,
   "unconverted_transaction_count": 0,
+  "unconverted_currencies": [],
   "statement_count_scope": "all_time"
 }
 ```

@@ -174,6 +174,37 @@ def test_insight_snapshot_uses_twd_base_and_counts_unconverted_jpy() -> None:
     ]
 
 
+def test_zero_amount_convertible_rows_still_choose_a_display_currency() -> None:
+    transactions = [
+        _transaction(
+            transaction_id=1,
+            date="2026-04-01",
+            merchant="ZERO USD",
+            amount=0.0,
+            currency="USD",
+        ),
+        _transaction(
+            transaction_id=2,
+            date="2026-04-02",
+            merchant="ZERO BASE JPY",
+            amount=1000.0,
+            currency="JPY",
+            base_amount=0.0,
+            base_currency="TWD",
+        ),
+    ]
+
+    snapshot = build_spending_insight_snapshot(
+        transactions,
+        range_key="month",
+        language="en",
+    )
+
+    assert snapshot["display_currency"] == "TWD"
+    assert snapshot["transaction_count"] == 2
+    assert snapshot["totals"]["net"] == pytest.approx(0.0)
+
+
 def test_insight_snapshot_rejects_rows_that_cannot_convert() -> None:
     eur_only = [
         _transaction(

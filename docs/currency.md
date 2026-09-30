@@ -35,24 +35,30 @@ original currencies, not extra display currencies.
   and `metrics.model_total_in_active_currency` all use this set. Inside one
   `/dashboard/view` response those totals match.
 - **Selection.** The model after search, amount-direction, and merchant
-  slicers. `metrics.selection_*`, charts, and category/merchant/date
-  breakdowns use the selection. Slicers do not change the model total.
+  filters. `metrics.selection_*`, charts, and category/merchant/date
+  breakdowns use the selection. Those filters do not change the model total.
+  The requested date range does: both the model and the selection are built
+  from rows inside that range.
 - **Unconverted.** Spending rows that are not USD or TWD and have no USD or
-  TWD base amount. They are returned in `unconverted_transactions` with
-  reason `unsupported_display_conversion`, counted in
-  `summary.unconverted_transaction_count`, and left out of the money totals.
-  They are not dropped silently. The dashboard shows a warning for them.
+  TWD base amount. They are counted in
+  `summary.unconverted_transaction_count`, and their original currencies are
+  listed in `summary.unconverted_currencies`. A sample is returned in
+  `unconverted_transactions` with reason `unsupported_display_conversion`.
+  They are left out of the money totals. They are not dropped silently. The
+  dashboard shows a warning for them.
 
 USD and TWD always convert, using the static rate below when the row has no
 stored base amount. A stored USD or TWD `base_amount` is converted instead
 of re-applying that rate to the original amount, so a user-supplied rate is
 kept. Other declared currencies join the model only through that base.
 
-`/summary` and `/dashboard/view` both load every row in the date range before
-building the model. The dashboard `limit` (default 5000) only shortens
-`transactions` and `sorted_transactions`. Totals, metrics, charts, and the
-unconverted warning still use the full model, so a small limit cannot drop a
-spending row or hide an unconverted one.
+`/summary` and `/dashboard/view` scan every row in the date range so the
+model total stays complete. The scan streams one row at a time and keeps the
+bill-payment rule in Python. The dashboard `limit` (default 5000) caps
+`transactions`, `sorted_transactions`, and the `unconverted_transactions`
+sample. Totals, metrics, charts, `unconverted_transaction_count`, and
+`unconverted_currencies` still use the full scan, so a small limit cannot
+drop a spending row or hide that an unconverted currency exists.
 
 The transactions page is the original-currency ledger. It still lists bill
 payments. Those payments stay out of the dashboard and summary spending totals.

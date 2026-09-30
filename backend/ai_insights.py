@@ -87,17 +87,21 @@ def _choose_insight_display_currency(
     transactions: list[StoredTransaction],
 ) -> DisplayCurrency | None:
     totals = {"USD": 0.0, "TWD": 0.0}
+    seen: set[DisplayCurrency] = set()
     for transaction in transactions:
         home = convertible_home_amount(transaction)
         if home is None:
             continue
         currency, amount = home
         totals[currency] += abs(amount)
-    if not totals["USD"] and not totals["TWD"]:
+        seen.add(currency)
+    if not seen:
         return None
     if totals["TWD"] > totals["USD"]:
         return "TWD"
-    return "USD"
+    if totals["USD"] > totals["TWD"] or "TWD" not in seen:
+        return "USD"
+    return "TWD"
 
 
 _NO_CONVERTIBLE_SPENDING = (

@@ -178,7 +178,7 @@ const en = {
   metricRowsHintTemplate: "{{pct}} of this upload visible",
   metricModelTotal: "Model total",
   metricModelTotalHintTemplate:
-    "{{n}} statements stored (all time). This total ignores slicers.",
+    "{{n}} statements stored (all time). This total ignores search, merchant, and amount filters. It still follows the date range.",
   unconvertedTransactionsWarning:
     "{{n}} transactions are not in these totals because they are not USD or TWD and have no exchange rate into TWD ({{currencies}}).",
   unconvertedTransactionsCurrencyFallback: "unknown currency",
@@ -413,7 +413,7 @@ const zhHant: Record<keyof typeof en, string> = {
   metricRowsHintTemplate: "佔此上傳的 {{pct}}",
   metricModelTotal: "模型總計",
   metricModelTotalHintTemplate:
-    "已儲存 {{n}} 份對帳單（不限期間）。此總額不受篩選影響。",
+    "已儲存 {{n}} 份對帳單（不限期間）。此總額不受搜尋、商家與金額篩選影響，但仍跟隨日期範圍。",
   unconvertedTransactionsWarning:
     "有 {{n}} 筆交易未計入這些總額，因為它們不是 USD 或 TWD，而且沒有換成 TWD 的匯率（{{currencies}}）。",
   unconvertedTransactionsCurrencyFallback: "未知幣別",

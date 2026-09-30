@@ -160,6 +160,61 @@ def test_dashboard_limit_does_not_shrink_the_model_total(
     assert [item["category"] for item in payload["category_breakdown"]] == ["Dining"]
 
 
+def test_dashboard_limit_caps_unconverted_rows_and_keeps_the_full_count(
+    client: TestClient,
+    database_url: str,
+) -> None:
+    user = _register_user(client, "unconverted-limit-user")
+    _store_upload(
+        database_url,
+        user["id"],
+        name="unconverted-limit",
+        transactions=[
+            {
+                "date": "2025-04-22",
+                "merchant": "JPY CAFE",
+                "amount": 500.0,
+                "category": "Dining",
+                "currency": "JPY",
+            },
+            {
+                "date": "2025-04-21",
+                "merchant": "EUR BOOKS",
+                "amount": 8.0,
+                "category": "Shopping",
+                "currency": "EUR",
+            },
+            {
+                "date": "2025-04-20",
+                "merchant": "GBP RAIL",
+                "amount": 12.0,
+                "category": "Transit",
+                "currency": "GBP",
+            },
+            {
+                "date": "2025-04-19",
+                "merchant": "TWD LUNCH",
+                "amount": 100.0,
+                "category": "Dining",
+                "currency": "TWD",
+            },
+        ],
+    )
+
+    dashboard = client.get("/dashboard/view?currency=TWD&limit=1")
+    summary = client.get("/summary?currency=TWD")
+    assert dashboard.status_code == 200
+    assert summary.status_code == 200
+    payload = dashboard.json()
+    assert payload["summary"]["total_spending"] == pytest.approx(100.0)
+    assert payload["summary"]["unconverted_transaction_count"] == 3
+    assert payload["summary"]["unconverted_currencies"] == ["EUR", "GBP", "JPY"]
+    assert len(payload["unconverted_transactions"]) == 1
+    assert payload["unconverted_transactions"][0]["original_currency"] == "JPY"
+    assert summary.json()["unconverted_transaction_count"] == 3
+    assert summary.json()["unconverted_currencies"] == ["EUR", "GBP", "JPY"]
+
+
 def test_statement_count_is_all_time_and_includes_zero_row_uploads(
     client: TestClient,
     database_url: str,

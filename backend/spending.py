@@ -47,12 +47,11 @@ class UnconvertedTransaction(TypedDict):
     reason: Literal["unsupported_display_conversion"]
 
 
-def partition_spending_transactions(
-    transactions: list[StoredTransaction],
+def iter_spending_partition(
+    transactions,
     display_currency: DisplayCurrency,
-) -> tuple[list[DisplayTransaction], list[UnconvertedTransaction]]:
-    model_rows: list[DisplayTransaction] = []
-    unconverted: list[UnconvertedTransaction] = []
+):
+    """Yield model rows and unconverted rows without storing the whole scan."""
     for transaction in transactions:
         if should_exclude_from_spending(
             transaction["merchant"],
@@ -62,7 +61,8 @@ def partition_spending_transactions(
         projected = project_display_transaction(transaction, display_currency)
         if projected is None:
             original_amount, original_currency = _original_money(transaction)
-            unconverted.append(
+            yield (
+                "unconverted",
                 {
                     "id": transaction["id"],
                     "date": transaction["date"],
@@ -70,10 +70,23 @@ def partition_spending_transactions(
                     "original_amount": original_amount,
                     "original_currency": original_currency,
                     "reason": UNCONVERTED_REASON,
-                }
+                },
             )
             continue
-        model_rows.append(projected)
+        yield "model", projected
+
+
+def partition_spending_transactions(
+    transactions: list[StoredTransaction],
+    display_currency: DisplayCurrency,
+) -> tuple[list[DisplayTransaction], list[UnconvertedTransaction]]:
+    model_rows: list[DisplayTransaction] = []
+    unconverted: list[UnconvertedTransaction] = []
+    for kind, row in iter_spending_partition(transactions, display_currency):
+        if kind == "model":
+            model_rows.append(cast(DisplayTransaction, row))
+        else:
+            unconverted.append(cast(UnconvertedTransaction, row))
     return model_rows, unconverted
 
 
@@ -127,14 +140,14 @@ def project_display_transaction(
     return cast(DisplayTransaction, projected)
 
 
-def build_spending_summary(
-    model_rows: list[DisplayTransaction],
+def summary_from_totals(
     *,
+    total_spending: float,
+    transaction_count: int,
     statement_count: int,
     unconverted_count: int,
+    unconverted_currencies: list[str],
 ) -> TransactionsSummary:
-    total_spending = sum(float(row["amount"]) for row in model_rows)
-    transaction_count = len(model_rows)
     average_amount = (
         total_spending / transaction_count if transaction_count else 0.0
     )
@@ -144,8 +157,25 @@ def build_spending_summary(
         "average_transaction_amount": float(average_amount),
         "number_of_statements": statement_count,
         "unconverted_transaction_count": unconverted_count,
+        "unconverted_currencies": unconverted_currencies,
         "statement_count_scope": STATEMENT_COUNT_SCOPE,
     }
+
+
+def build_spending_summary(
+    model_rows: list[DisplayTransaction],
+    *,
+    statement_count: int,
+    unconverted_count: int,
+    unconverted_currencies: list[str] | None = None,
+) -> TransactionsSummary:
+    return summary_from_totals(
+        total_spending=sum(float(row["amount"]) for row in model_rows),
+        transaction_count=len(model_rows),
+        statement_count=statement_count,
+        unconverted_count=unconverted_count,
+        unconverted_currencies=unconverted_currencies or [],
+    )
 
 
 def _original_money(transaction: StoredTransaction) -> tuple[float, str]:

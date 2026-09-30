@@ -83,6 +83,7 @@ type SummaryResponse = {
   average_transaction_amount: number;
   number_of_statements: number;
   unconverted_transaction_count?: number;
+  unconverted_currencies?: string[];
   statement_count_scope?: "all_time";
 };
 
@@ -238,6 +239,7 @@ const emptySummary: SummaryResponse = {
   average_transaction_amount: 0,
   number_of_statements: 0,
   unconverted_transaction_count: 0,
+  unconverted_currencies: [],
   statement_count_scope: "all_time",
 };
 
@@ -1423,16 +1425,19 @@ export default function HomePage() {
   const latestUpload = recentUploads[0];
   const hasSortedTransactions = sortedTransactions.length > 0;
   const unconvertedTransactions = dashboardView?.unconverted_transactions ?? [];
-  const unconvertedCount = Math.max(
-    summary.unconverted_transaction_count ?? 0,
-    unconvertedTransactions.length
-  );
+  const unconvertedCount = dashboardView
+    ? (summary.unconverted_transaction_count ?? 0)
+    : 0;
+  const listedCurrencies = dashboardView
+    ? (summary.unconverted_currencies ??
+      [
+        ...new Set(
+          unconvertedTransactions.map((item) => item.original_currency)
+        ),
+      ])
+    : [];
   const unconvertedCurrencies =
-    [
-      ...new Set(
-        unconvertedTransactions.map((item) => item.original_currency)
-      ),
-    ]
+    [...listedCurrencies]
       .sort((left, right) => left.localeCompare(right))
       .join(", ") ||
     translate(locale, "unconvertedTransactionsCurrencyFallback");
@@ -1550,6 +1555,7 @@ export default function HomePage() {
           void refreshSession();
         } else {
           setDashboardView(null);
+          setSummary(emptySummary);
           setError(
             snapshot.view.error instanceof Error
               ? snapshot.view.error.message
@@ -1567,6 +1573,7 @@ export default function HomePage() {
             ? loadError.message
             : translate(localeRef.current, "errRequestFailed");
         setDashboardView(null);
+        setSummary(emptySummary);
         setError(message);
       },
       onSettled: () => {

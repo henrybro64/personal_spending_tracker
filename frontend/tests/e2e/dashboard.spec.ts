@@ -523,7 +523,9 @@ test("dashboard warns when transactions cannot be converted", async ({ page }) =
     "2 transactions are not in these totals because they are not USD or TWD and have no exchange rate into TWD (EUR, JPY)."
   );
   await expect(
-    page.getByText("2 statements stored (all time). This total ignores slicers.")
+    page.getByText(
+      "2 statements stored (all time). This total ignores search, merchant, and amount filters. It still follows the date range."
+    )
   ).toBeVisible();
 });
 
