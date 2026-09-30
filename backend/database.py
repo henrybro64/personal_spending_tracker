@@ -34,6 +34,8 @@ class TransactionsSummary(TypedDict):
     number_of_transactions: int
     average_transaction_amount: float
     number_of_statements: int
+    unconverted_transaction_count: int
+    statement_count_scope: Literal["all_time"]
 
 
 class RecentUploadCurrencyTotal(TypedDict):
@@ -1374,6 +1376,23 @@ def _build_user_date_filter_clause(
     )
 
 
+def count_statement_uploads(
+    *,
+    user_id: int,
+    database_url: str | None = None,
+) -> int:
+    """All statement uploads for this user, including rows with no transactions."""
+    resolved_database_url = _resolve_database_url(database_url)
+    with psycopg.connect(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM statement_uploads WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 def get_transactions_summary(
     *,
     user_id: int,
@@ -1381,66 +1400,30 @@ def get_transactions_summary(
     display_currency: str | None = None,
     database_url: str | None = None,
 ) -> TransactionsSummary:
-    from backend.currency import convert_amount
+    from backend.spending import build_spending_summary, partition_spending_transactions
 
-    resolved_database_url = _resolve_database_url(database_url)
-    date_filter_clause, query_params = _build_user_date_filter_clause(user_id, range_key)
-    summary_query = f"""
-        SELECT
-            COALESCE(original_amount, amount) AS original_amount,
-            COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
-                AS original_currency,
-            base_amount,
-            COALESCE(NULLIF(base_currency, ''), 'TWD') AS base_currency
-        FROM transactions
-        {date_filter_clause}
-        """
-    statement_count_query = f"""
-        SELECT COUNT(DISTINCT statement_upload_id)
-        FROM transactions
-        {date_filter_clause}
-        """
-
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(summary_query, query_params)
-            rows = cursor.fetchall()
-            cursor.execute(statement_count_query, query_params)
-            statement_count = int(cursor.fetchone()[0])
-
-    transaction_count = len(rows)
-    if display_currency:
-        target_currency = display_currency.strip().upper()
-        display_amounts: list[float] = []
-        for original_amount, original_currency, base_amount, base_currency in rows:
-            normalized_original_currency = str(original_currency).upper()
-            normalized_base_currency = str(base_currency).upper()
-            if base_amount is not None:
-                display_amounts.append(
-                    convert_amount(
-                        float(base_amount),
-                        normalized_base_currency,
-                        target_currency,  # type: ignore[arg-type]
-                    )
-                )
-            elif normalized_original_currency == target_currency:
-                display_amounts.append(float(original_amount))
-        total_spending = sum(display_amounts)
-        average_count = len(display_amounts)
-    else:
-        total_spending = sum(float(row[0]) for row in rows)
-        average_count = transaction_count
-
-    average_amount = (
-        total_spending / average_count if average_count > 0 else 0.0
+    requested = (display_currency or "USD").strip().upper()
+    target_currency: Literal["USD", "TWD"] = (
+        "TWD" if requested == "TWD" else "USD"
     )
-
-    return {
-        "total_spending": float(total_spending),
-        "number_of_transactions": int(transaction_count),
-        "average_transaction_amount": float(average_amount),
-        "number_of_statements": int(statement_count),
-    }
+    stored_rows = get_transactions(
+        user_id=user_id,
+        range_key=range_key,
+        limit=None,
+        database_url=database_url,
+    )
+    model_rows, unconverted = partition_spending_transactions(
+        stored_rows,
+        target_currency,
+    )
+    return build_spending_summary(
+        model_rows,
+        statement_count=count_statement_uploads(
+            user_id=user_id,
+            database_url=database_url,
+        ),
+        unconverted_count=len(unconverted),
+    )
 
 
 def get_recent_uploads(

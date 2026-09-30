@@ -12,6 +12,8 @@ export type SupportedCurrency =
   | "KRW"
   | "GBP";
 
+// Original currencies for manual entry and imports. Dashboard totals convert
+// USD and TWD only; other codes are included when the row has a USD or TWD base.
 export const supportedCurrencies: SupportedCurrency[] = [
   "TWD",
   "USD",

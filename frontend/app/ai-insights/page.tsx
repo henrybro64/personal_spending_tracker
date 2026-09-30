@@ -390,6 +390,20 @@ export default function AiInsightsPage() {
               <Card className={styles.card}>
                 <div className={styles.sectionEyebrow}>{translate(locale, "aiInsightsSnapshotTitle")}</div>
                 <Title2>{translate(locale, "aiInsightsSnapshotTitle")}</Title2>
+                {(insight.snapshot.totals.unconverted_transaction_count ?? 0) > 0 ? (
+                  <div data-testid="unconverted-transactions-warning">
+                    <MessageBar intent="warning">
+                      <MessageBarBody>
+                        {translate(locale, "unconvertedTransactionsWarning", {
+                          n: String(insight.snapshot.totals.unconverted_transaction_count),
+                          currencies:
+                            insight.snapshot.totals.unconverted_currencies?.join(", ") ||
+                            translate(locale, "unconvertedTransactionsCurrencyFallback"),
+                        })}
+                      </MessageBarBody>
+                    </MessageBar>
+                  </div>
+                ) : null}
                 <div className={styles.snapshotGrid}>
                   <Card className={styles.card}>
                     <Body1>{translate(locale, "snapshotTransactions")}</Body1>

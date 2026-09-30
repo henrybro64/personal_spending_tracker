@@ -56,17 +56,16 @@ from backend.ai_insights import (  # noqa: E402
     default_model_for_provider,
     generate_spending_insights,
 )
-from backend.transaction_exclusions import should_exclude_from_spending
 from backend.database import (  # noqa: E402
     ExistingUpload,
     UserAiProviderSettingRecord,
     RecentUpload,
     StoredTransaction,
     TimeRange,
-    TransactionsSummary,
     UserRecord,
     DuplicateStatementUploadError,
     DuplicateUsernameError,
+    count_statement_uploads,
     create_session,
     create_statement_upload,
     delete_user_ai_provider_setting,
@@ -116,12 +115,16 @@ from backend.currency import (  # noqa: E402
     DisplayCurrency,
     SupportedCurrency,
     SUPPORTED_CURRENCY_CODES,
-    convert_amount,
     derive_base_money_fields,
     exchange_rate_metadata,
     normalize_supported_currency_code,
 )
 from backend.parser import Transaction  # noqa: E402
+from backend.spending import (  # noqa: E402
+    UnconvertedTransaction,
+    build_spending_summary,
+    partition_spending_transactions,
+)
 from backend.pdf_utils import (  # noqa: E402
     PdfDecryptError,
     PdfPasswordProtectedError,
@@ -147,6 +150,8 @@ class SummaryResponse(TypedDict):
     number_of_transactions: int
     average_transaction_amount: float
     number_of_statements: int
+    unconverted_transaction_count: int
+    statement_count_scope: Literal["all_time"]
 
 
 class RecentUploadsResponse(TypedDict):
@@ -261,6 +266,7 @@ class DashboardViewResponse(TypedDict):
     summary: SummaryResponse
     transactions: list[DashboardTransaction]
     sorted_transactions: list[DashboardTransaction]
+    unconverted_transactions: list[UnconvertedTransaction]
     merchant_breakdown: list[MerchantBreakdownItem]
     category_breakdown: list[CategoryBreakdownItem]
     date_breakdown: list[DateBreakdownItem]
@@ -607,41 +613,6 @@ def _sort_transactions(
     else:
         sorted_transactions.sort(key=lambda item: item["amount"], reverse=True)
     return sorted_transactions
-
-
-def _dashboard_transaction_for_currency(
-    transaction: StoredTransaction,
-    display_currency: DisplayCurrency,
-) -> DashboardTransaction | None:
-    original_amount = float(transaction.get("original_amount", transaction["amount"]))
-    original_currency = transaction.get(
-        "original_currency",
-        transaction.get("currency", DEFAULT_BASE_CURRENCY),
-    ).upper()
-    base_amount = transaction.get("base_amount")
-    base_currency = transaction.get("base_currency", DEFAULT_BASE_CURRENCY).upper()
-
-    if base_amount is not None:
-        display_amount = convert_amount(
-            float(base_amount),
-            base_currency,
-            display_currency,
-        )
-    elif original_currency == display_currency:
-        display_amount = original_amount
-    else:
-        return None
-
-    return {
-        **transaction,
-        "amount": display_amount,
-        "currency": display_currency,
-        "original_amount": original_amount,
-        "original_currency": original_currency,
-        "display_amount": display_amount,
-        "display_currency": display_currency,
-        "is_converted": original_currency != display_currency,
-    }
 
 
 def _transaction_matches_dashboard_filters(
@@ -1223,29 +1194,25 @@ def _load_ai_insight_inputs(
             detail="Configure an AI provider in Settings before requesting insights.",
         )
 
-    transactions = [
-        transaction
-        for transaction in get_transactions(
-            user_id=user_id,
-            range_key=resolved_range,
-            limit=None,
-        )
-        if not should_exclude_from_spending(
-            transaction["merchant"],
-            category=transaction.get("category"),
-        )
-    ]
+    transactions = get_transactions(
+        user_id=user_id,
+        range_key=resolved_range,
+        limit=None,
+    )
     if not transactions:
         raise HTTPException(
             status_code=400,
             detail="No spending transactions are available for the selected period.",
         )
 
-    snapshot = build_spending_insight_snapshot(
-        transactions,
-        range_key=resolved_range,
-        language=language,
-    )
+    try:
+        snapshot = build_spending_insight_snapshot(
+            transactions,
+            range_key=resolved_range,
+            language=language,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return configured_provider, transactions, snapshot
 
 
@@ -1305,7 +1272,7 @@ async def ai_insights(
             "provider": insight_result["provider"],
             "model": insight_result["model"],
             "range": resolved_range,
-            "transaction_count": len(transactions),
+            "transaction_count": snapshot["transaction_count"],
             "display_currency": snapshot["display_currency"],
         },
     )
@@ -1427,52 +1394,43 @@ def dashboard_view(
     resolved_sort_option = _resolve_sort_option(sort)
     resolved_currency = _resolve_display_currency(currency)
 
-    all_transactions = [
-        transaction
-        for transaction in get_transactions(
+    # Totals use every in-range row. `limit` only shortens the row arrays below.
+    model_rows, unconverted_transactions = partition_spending_transactions(
+        get_transactions(
             user_id=current_user["id"],
             range_key=resolved_range,
-            limit=limit,
-        )
-        if not should_exclude_from_spending(
-            transaction["merchant"],
-            category=transaction.get("category"),
-        )
-    ]
-    converted_transactions = [
-        dashboard_transaction
-        for transaction in all_transactions
-        if (
-            dashboard_transaction := _dashboard_transaction_for_currency(
-                transaction,
-                resolved_currency,
-            )
-        )
-        is not None
-    ]
+            limit=None,
+        ),
+        resolved_currency,
+    )
+    converted_transactions = cast(list[DashboardTransaction], model_rows)
     base_filtered, filtered_transactions = _filter_dashboard_transactions(
         converted_transactions,
         search=search,
         amount_filter=resolved_amount_filter,
         selected_merchant=selected_merchant,
     )
-    sorted_transactions = _sort_transactions(filtered_transactions, resolved_sort_option)
+    sorted_transactions = _sort_transactions(
+        filtered_transactions,
+        resolved_sort_option,
+    )
     merchant_breakdown, category_breakdown, date_breakdown = _build_dashboard_breakdowns(
         base_filtered,
         filtered_transactions,
     )
     metrics = _build_dashboard_metrics(filtered_transactions, converted_transactions)
-    summary_data: TransactionsSummary = get_transactions_summary(
-        user_id=current_user["id"],
-        range_key=resolved_range,
-        display_currency=resolved_currency,
+    summary_data = build_spending_summary(
+        model_rows,
+        statement_count=count_statement_uploads(user_id=current_user["id"]),
+        unconverted_count=len(unconverted_transactions),
     )
     return {
         "active_currency": resolved_currency,
         "exchange_rate": exchange_rate_metadata(),
         "summary": summary_data,
-        "transactions": converted_transactions,
-        "sorted_transactions": sorted_transactions,
+        "transactions": converted_transactions[:limit],
+        "sorted_transactions": sorted_transactions[:limit],
+        "unconverted_transactions": unconverted_transactions,
         "merchant_breakdown": merchant_breakdown,
         "category_breakdown": category_breakdown,
         "date_breakdown": date_breakdown,

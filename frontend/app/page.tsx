@@ -81,6 +81,17 @@ type SummaryResponse = {
   number_of_transactions: number;
   average_transaction_amount: number;
   number_of_statements: number;
+  unconverted_transaction_count?: number;
+  statement_count_scope?: "all_time";
+};
+
+type UnconvertedTransaction = {
+  id: number;
+  date: string;
+  merchant: string;
+  original_amount: number;
+  original_currency: string;
+  reason: string;
 };
 
 type RecentUploadCurrencyTotal = {
@@ -136,6 +147,7 @@ type DashboardViewResponse = {
     share: number;
   }>;
   date_breakdown: DateBreakdown[];
+  unconverted_transactions?: UnconvertedTransaction[];
   metrics: {
     selection_net: number;
     selection_spend: number;
@@ -224,6 +236,8 @@ const emptySummary: SummaryResponse = {
   number_of_transactions: 0,
   average_transaction_amount: 0,
   number_of_statements: 0,
+  unconverted_transaction_count: 0,
+  statement_count_scope: "all_time",
 };
 
 const categoryPalette = ["#6b7dd6", "#2f8f95", "#9a85d1", "#5f95d6", "#5ca87a", "#b38c5a", "#a776b8"];
@@ -1407,6 +1421,20 @@ export default function HomePage() {
   const metrics = dashboardView?.metrics;
   const latestUpload = recentUploads[0];
   const hasSortedTransactions = sortedTransactions.length > 0;
+  const unconvertedTransactions = dashboardView?.unconverted_transactions ?? [];
+  const unconvertedCount = Math.max(
+    summary.unconverted_transaction_count ?? 0,
+    unconvertedTransactions.length
+  );
+  const unconvertedCurrencies =
+    [
+      ...new Set(
+        unconvertedTransactions.map((item) => item.original_currency)
+      ),
+    ]
+      .sort()
+      .join(", ") ||
+    translate(locale, "unconvertedTransactionsCurrencyFallback");
 
   const metricCards: MetricCard[] = useMemo(
     () => [
@@ -1776,6 +1804,18 @@ export default function HomePage() {
               <MessageBarBody>{dashboardError}</MessageBarBody>
             </MessageBar>
           ) : null}
+          {unconvertedCount > 0 ? (
+            <div data-testid="unconverted-transactions-warning">
+              <MessageBar intent="warning">
+                <MessageBarBody>
+                  {translate(locale, "unconvertedTransactionsWarning", {
+                    n: fm.formatCount(unconvertedCount),
+                    currencies: unconvertedCurrencies,
+                  })}
+                </MessageBarBody>
+              </MessageBar>
+            </div>
+          ) : null}
           <Card className={mergeClasses(styles.panel, styles.reportHeader)}>
             <div className={styles.reportHeaderTop}>
               <div className={styles.reportHeaderTitle}>
@@ -1831,6 +1871,11 @@ export default function HomePage() {
                 <Body1 className={styles.currencyContextNote}>
                   {translate(locale, "dashboardConvertedTotalsNoteTemplate", {
                     currency: activeCurrencyLabel,
+                  })}
+                </Body1>
+                <Body1 className={styles.currencyContextNote}>
+                  {translate(locale, "metricModelTotalHintTemplate", {
+                    n: fm.formatCount(summary.number_of_statements),
                   })}
                 </Body1>
               </div>

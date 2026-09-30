@@ -1,6 +1,9 @@
 import pytest
 
-from backend.ai_insights import build_spending_insight_snapshot
+from backend.ai_insights import (
+    build_spending_insight_snapshot,
+    generate_spending_insights,
+)
 from backend.database import StoredTransaction
 
 
@@ -12,6 +15,8 @@ def _transaction(
     amount: float,
     category: str = "Dining / Food",
     currency: str = "USD",
+    base_amount: float | None = None,
+    base_currency: str = "TWD",
 ) -> StoredTransaction:
     return {
         "id": transaction_id,
@@ -20,6 +25,12 @@ def _transaction(
         "amount": amount,
         "category": category,
         "currency": currency,
+        "original_amount": amount,
+        "original_currency": currency,
+        "base_amount": base_amount,
+        "base_currency": base_currency,
+        "exchange_rate": None,
+        "exchange_rate_date": None,
         "payment_method": None,
         "file_name": "manual-entry",
         "original_file_name": "manual-entry",
@@ -108,6 +119,101 @@ def test_build_spending_insight_snapshot_uses_dominant_currency() -> None:
         {"currency": "TWD", "absolute_total": 1200.0},
         {"currency": "USD", "absolute_total": 12.0},
     ]
+
+
+def test_insight_snapshot_uses_twd_base_and_counts_unconverted_jpy() -> None:
+    snapshot = build_spending_insight_snapshot(
+        [
+            _transaction(
+                transaction_id=1,
+                date="2026-04-01",
+                merchant="JPY WITH RATE",
+                amount=1000.0,
+                currency="JPY",
+                base_amount=200.0,
+            ),
+            _transaction(
+                transaction_id=2,
+                date="2026-04-02",
+                merchant="JPY WITHOUT RATE",
+                amount=500.0,
+                currency="JPY",
+            ),
+            _transaction(
+                transaction_id=3,
+                date="2026-04-03",
+                merchant="TWD LUNCH",
+                amount=100.0,
+                currency="TWD",
+            ),
+            _transaction(
+                transaction_id=4,
+                date="2026-04-04",
+                merchant="信用卡繳款",
+                amount=9000.0,
+                category="Payment / Credit",
+                currency="TWD",
+            ),
+        ],
+        range_key="month",
+        language="en",
+    )
+
+    assert snapshot["display_currency"] == "TWD"
+    assert snapshot["transaction_count"] == 2
+    assert snapshot["totals"]["net"] == pytest.approx(300.0)
+    assert snapshot["totals"]["unconverted_transaction_count"] == 1
+    assert snapshot["totals"]["unconverted_currencies"] == ["JPY"]
+    assert snapshot["totals"]["by_original_currency"] == [
+        {"currency": "JPY", "absolute_total": 1000.0},
+        {"currency": "TWD", "absolute_total": 100.0},
+    ]
+    assert [item["merchant"] for item in snapshot["largest_expenses"]] == [
+        "JPY WITH RATE",
+        "TWD LUNCH",
+    ]
+
+
+def test_insight_snapshot_rejects_rows_that_cannot_convert() -> None:
+    with pytest.raises(ValueError, match="USD or TWD"):
+        build_spending_insight_snapshot(
+            [
+                _transaction(
+                    transaction_id=1,
+                    date="2026-04-01",
+                    merchant="EUR CAFE",
+                    amount=8.0,
+                    currency="EUR",
+                )
+            ],
+            range_key="month",
+            language="en",
+        )
+
+
+@pytest.mark.anyio
+async def test_generate_spending_insights_does_not_call_a_live_provider() -> None:
+    snapshot = build_spending_insight_snapshot(
+        [
+            _transaction(
+                transaction_id=1,
+                date="2026-04-03",
+                merchant="TWD LUNCH",
+                amount=100.0,
+                currency="TWD",
+            )
+        ],
+        range_key="month",
+        language="en",
+    )
+
+    with pytest.raises(RuntimeError, match="must not call OpenAI or Perplexity"):
+        await generate_spending_insights(
+            provider="openai",
+            api_key="sk-this-must-not-be-sent",
+            model="gpt-4.1",
+            snapshot=snapshot,
+        )
 
 
 def test_build_spending_insight_snapshot_rejects_empty_input() -> None:
