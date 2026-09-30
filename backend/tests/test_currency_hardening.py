@@ -70,7 +70,7 @@ def test_summary_converts_mixed_currency_totals(
     assert payload["summary"]["total_spending"] == 1245.0
 
 
-def test_dashboard_excludes_unconverted_cross_currency_from_base_totals(
+def test_dashboard_converts_usd_without_stored_rate_using_static_rate(
     client: TestClient,
     database_url: str,
 ) -> None:
@@ -111,13 +111,19 @@ def test_dashboard_excludes_unconverted_cross_currency_from_base_totals(
     dashboard = client.get("/dashboard/view?currency=TWD&limit=10")
     assert dashboard.status_code == 200
     payload = dashboard.json()
-    assert payload["summary"]["total_spending"] == pytest.approx(605.0)
+    assert payload["summary"]["total_spending"] == pytest.approx(1245.0)
+    assert payload["metrics"]["model_total_in_active_currency"] == pytest.approx(
+        1245.0
+    )
+    assert payload["summary"]["unconverted_transaction_count"] == 0
+    assert payload["unconverted_transactions"] == []
     assert [row["merchant"] for row in payload["sorted_transactions"]] == [
-        "TWD LUNCH"
+        "USD WITHOUT RATE",
+        "TWD LUNCH",
     ]
 
 
-def test_summary_excludes_unconverted_cross_currency_from_display_totals(
+def test_summary_converts_usd_without_stored_rate_using_static_rate(
     client: TestClient,
     database_url: str,
 ) -> None:
@@ -158,9 +164,11 @@ def test_summary_excludes_unconverted_cross_currency_from_display_totals(
     summary = client.get("/summary?currency=TWD")
     assert summary.status_code == 200
     payload = summary.json()
-    assert payload["total_spending"] == pytest.approx(605.0)
+    assert payload["total_spending"] == pytest.approx(1245.0)
     assert payload["number_of_transactions"] == 2
-    assert payload["average_transaction_amount"] == pytest.approx(605.0)
+    assert payload["average_transaction_amount"] == pytest.approx(622.5)
+    assert payload["unconverted_transaction_count"] == 0
+    assert payload["statement_count_scope"] == "all_time"
 
 
 def test_migrations_apply_on_empty_database(database_url: str) -> None:

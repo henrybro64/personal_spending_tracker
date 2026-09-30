@@ -53,6 +53,11 @@ def get_usd_twd_exchange_rate() -> float:
 
 
 def normalize_currency_code(currency_code: str | None) -> DisplayCurrency:
+    """Collapse a code to the USD/TWD pair used by AI insight bucketing.
+
+    Anything other than TWD becomes USD. Dashboard totals must not use this:
+    they convert only real USD and TWD amounts.
+    """
     return "TWD" if currency_code and currency_code.upper() == "TWD" else "USD"
 
 
@@ -118,16 +123,19 @@ def convert_amount(
     *,
     exchange_rate: float | None = None,
 ) -> float:
-    normalized_source = normalize_currency_code(source_currency)
+    normalized_source = (source_currency or "").strip().upper()
+    if normalized_source not in ("USD", "TWD"):
+        raise ValueError(
+            "Display conversion only supports USD and TWD. "
+            f"Got {normalized_source or 'empty'}."
+        )
     if normalized_source == target_currency:
         return amount
 
     rate = exchange_rate if exchange_rate is not None else get_usd_twd_exchange_rate()
     if normalized_source == "USD" and target_currency == "TWD":
         return amount * rate
-    if normalized_source == "TWD" and target_currency == "USD":
-        return amount / rate
-    return amount
+    return amount / rate
 
 
 def exchange_rate_metadata() -> dict[str, str | float]:

@@ -42,6 +42,8 @@ export type AiInsightResponse = {
         currency: string;
         absolute_total: number;
       }>;
+      unconverted_transaction_count?: number;
+      unconverted_currencies?: string[];
     };
     top_categories: Array<{
       label: string;

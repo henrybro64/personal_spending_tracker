@@ -34,6 +34,9 @@ class TransactionsSummary(TypedDict):
     number_of_transactions: int
     average_transaction_amount: float
     number_of_statements: int
+    unconverted_transaction_count: int
+    unconverted_currencies: list[str]
+    statement_count_scope: Literal["all_time"]
 
 
 class RecentUploadCurrencyTotal(TypedDict):
@@ -1374,6 +1377,25 @@ def _build_user_date_filter_clause(
     )
 
 
+def count_statement_uploads(
+    *,
+    user_id: int,
+    database_url: str | None = None,
+) -> int:
+    """All statement uploads for this user, including rows with no transactions."""
+    resolved_database_url = _resolve_database_url(database_url)
+    with (
+        psycopg.connect(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            "SELECT COUNT(*) FROM statement_uploads WHERE user_id = %s",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 def get_transactions_summary(
     *,
     user_id: int,
@@ -1381,66 +1403,40 @@ def get_transactions_summary(
     display_currency: str | None = None,
     database_url: str | None = None,
 ) -> TransactionsSummary:
-    from backend.currency import convert_amount
+    from backend.spending import iter_spending_partition, summary_from_totals
 
-    resolved_database_url = _resolve_database_url(database_url)
-    date_filter_clause, query_params = _build_user_date_filter_clause(user_id, range_key)
-    summary_query = f"""
-        SELECT
-            COALESCE(original_amount, amount) AS original_amount,
-            COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
-                AS original_currency,
-            base_amount,
-            COALESCE(NULLIF(base_currency, ''), 'TWD') AS base_currency
-        FROM transactions
-        {date_filter_clause}
-        """
-    statement_count_query = f"""
-        SELECT COUNT(DISTINCT statement_upload_id)
-        FROM transactions
-        {date_filter_clause}
-        """
-
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(summary_query, query_params)
-            rows = cursor.fetchall()
-            cursor.execute(statement_count_query, query_params)
-            statement_count = int(cursor.fetchone()[0])
-
-    transaction_count = len(rows)
-    if display_currency:
-        target_currency = display_currency.strip().upper()
-        display_amounts: list[float] = []
-        for original_amount, original_currency, base_amount, base_currency in rows:
-            normalized_original_currency = str(original_currency).upper()
-            normalized_base_currency = str(base_currency).upper()
-            if base_amount is not None:
-                display_amounts.append(
-                    convert_amount(
-                        float(base_amount),
-                        normalized_base_currency,
-                        target_currency,  # type: ignore[arg-type]
-                    )
-                )
-            elif normalized_original_currency == target_currency:
-                display_amounts.append(float(original_amount))
-        total_spending = sum(display_amounts)
-        average_count = len(display_amounts)
-    else:
-        total_spending = sum(float(row[0]) for row in rows)
-        average_count = transaction_count
-
-    average_amount = (
-        total_spending / average_count if average_count > 0 else 0.0
+    requested = (display_currency or "USD").strip().upper()
+    target_currency: Literal["USD", "TWD"] = (
+        "TWD" if requested == "TWD" else "USD"
     )
-
-    return {
-        "total_spending": float(total_spending),
-        "number_of_transactions": int(transaction_count),
-        "average_transaction_amount": float(average_amount),
-        "number_of_statements": int(statement_count),
-    }
+    total_spending = 0.0
+    transaction_count = 0
+    unconverted_count = 0
+    unconverted_currencies: set[str] = set()
+    for kind, row in iter_spending_partition(
+        iter_transactions(
+            user_id=user_id,
+            range_key=range_key,
+            database_url=database_url,
+        ),
+        target_currency,
+    ):
+        if kind == "model":
+            total_spending += float(row["amount"])
+            transaction_count += 1
+        else:
+            unconverted_count += 1
+            unconverted_currencies.add(str(row["original_currency"]))
+    return summary_from_totals(
+        total_spending=total_spending,
+        transaction_count=transaction_count,
+        statement_count=count_statement_uploads(
+            user_id=user_id,
+            database_url=database_url,
+        ),
+        unconverted_count=unconverted_count,
+        unconverted_currencies=sorted(unconverted_currencies),
+    )
 
 
 def get_recent_uploads(
@@ -1535,14 +1531,12 @@ def get_recent_uploads(
     ]
 
 
-def get_transactions(
+def _transactions_query(
     *,
     user_id: int,
-    range_key: TimeRange = "all",
-    limit: int | None = 5000,
-    database_url: str | None = None,
-) -> list[StoredTransaction]:
-    resolved_database_url = _resolve_database_url(database_url)
+    range_key: TimeRange,
+    limit: int | None,
+) -> tuple[str, tuple[object, ...]]:
     date_filter_clause, range_params = _build_user_date_filter_clause(user_id, range_key)
     transaction_query = f"""
         SELECT
@@ -1561,11 +1555,54 @@ def get_transactions(
     if limit is not None:
         transaction_query += "\n        LIMIT %s"
         query_params = (*range_params, limit)
+    return transaction_query, query_params
 
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(transaction_query, query_params)
-            rows = cursor.fetchall()
+
+def iter_transactions(
+    *,
+    user_id: int,
+    range_key: TimeRange = "all",
+    limit: int | None = None,
+    database_url: str | None = None,
+):
+    """Stream rows. A named cursor keeps the result out of one Python list."""
+    resolved_database_url = _resolve_database_url(database_url)
+    transaction_query, query_params = _transactions_query(
+        user_id=user_id,
+        range_key=range_key,
+        limit=limit,
+    )
+    connection = psycopg.connect(resolved_database_url)
+    cursor = connection.cursor(name="transaction_scan")
+    cursor.itersize = 200
+    try:
+        cursor.execute(transaction_query, query_params)
+        for row in cursor:
+            yield _stored_transaction_from_row(row)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_transactions(
+    *,
+    user_id: int,
+    range_key: TimeRange = "all",
+    limit: int | None = 5000,
+    database_url: str | None = None,
+) -> list[StoredTransaction]:
+    resolved_database_url = _resolve_database_url(database_url)
+    transaction_query, query_params = _transactions_query(
+        user_id=user_id,
+        range_key=range_key,
+        limit=limit,
+    )
+    with (
+        psycopg.connect(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(transaction_query, query_params)
+        rows = cursor.fetchall()
 
     return [_stored_transaction_from_row(row) for row in rows]
 

@@ -7,8 +7,14 @@ from typing import Literal, TypedDict
 
 import httpx
 
-from backend.currency import convert_amount, normalize_currency_code
+from backend.currency import DisplayCurrency
 from backend.database import StoredTransaction, TimeRange
+from backend.spending import (
+    DisplayTransaction,
+    UnconvertedTransaction,
+    convertible_home_amount,
+    partition_spending_transactions,
+)
 
 AiProvider = Literal["openai", "perplexity"]
 InsightLanguage = Literal["en", "zh-Hant"]
@@ -77,6 +83,75 @@ def default_model_for_provider(provider: AiProvider) -> str:
     return DEFAULT_PROVIDER_MODELS[provider]
 
 
+def _choose_insight_display_currency(
+    transactions: list[StoredTransaction],
+) -> DisplayCurrency | None:
+    totals = {"USD": 0.0, "TWD": 0.0}
+    seen: set[DisplayCurrency] = set()
+    for transaction in transactions:
+        home = convertible_home_amount(transaction)
+        if home is None:
+            continue
+        currency, amount = home
+        totals[currency] += abs(amount)
+        seen.add(currency)
+    if not seen:
+        return None
+    if totals["TWD"] > totals["USD"]:
+        return "TWD"
+    if totals["USD"] > totals["TWD"] or "TWD" not in seen:
+        return "USD"
+    return "TWD"
+
+
+_NO_CONVERTIBLE_SPENDING = (
+    "No spending transactions can be shown in USD or TWD for the selected period."
+)
+
+
+def _insight_population(
+    transactions: list[StoredTransaction],
+) -> tuple[DisplayCurrency, list[DisplayTransaction], list[UnconvertedTransaction]]:
+    display_currency = _choose_insight_display_currency(transactions)
+    if display_currency is None:
+        raise ValueError(_NO_CONVERTIBLE_SPENDING)
+    model_rows, unconverted = partition_spending_transactions(
+        transactions,
+        display_currency,
+    )
+    if not model_rows:
+        raise ValueError(_NO_CONVERTIBLE_SPENDING)
+    return display_currency, model_rows, unconverted
+
+
+def _prepare_insight_rows(
+    model_rows: list[DisplayTransaction],
+) -> tuple[list[dict[str, object]], dict[str, float], list[str]]:
+    prepared_rows: list[dict[str, object]] = []
+    abs_totals_by_currency: dict[str, float] = defaultdict(float)
+    valid_dates: list[str] = []
+    for transaction in model_rows:
+        original_amount = float(transaction["original_amount"])
+        original_currency = str(transaction["original_currency"])
+        abs_totals_by_currency[original_currency] += abs(original_amount)
+        transaction_date = str(transaction["date"])
+        if _looks_like_iso_date(transaction_date):
+            valid_dates.append(transaction_date)
+            month_key = transaction_date[:7]
+        else:
+            month_key = "unknown"
+        prepared_rows.append(
+            {
+                "amount": float(transaction["display_amount"]),
+                "category": str(transaction["category"]),
+                "date": transaction_date,
+                "merchant": str(transaction["merchant"]),
+                "month": month_key,
+            }
+        )
+    return prepared_rows, abs_totals_by_currency, valid_dates
+
+
 def build_spending_insight_snapshot(
     transactions: list[StoredTransaction],
     *,
@@ -86,35 +161,10 @@ def build_spending_insight_snapshot(
     if not transactions:
         raise ValueError("No transactions are available for the selected period.")
 
-    prepared_rows: list[dict[str, object]] = []
-    abs_totals_by_currency: dict[str, float] = defaultdict(float)
-    valid_dates: list[str] = []
-
-    for transaction in transactions:
-        currency = normalize_currency_code(transaction.get("currency") or "USD")
-        amount = float(transaction["amount"])
-        abs_totals_by_currency[currency] += abs(amount)
-        transaction_date = str(transaction["date"])
-        if _looks_like_iso_date(transaction_date):
-            valid_dates.append(transaction_date)
-            month_key = transaction_date[:7]
-        else:
-            month_key = "unknown"
-        prepared_rows.append(
-            {
-                "amount": amount,
-                "category": str(transaction["category"]),
-                "currency": currency,
-                "date": transaction_date,
-                "merchant": str(transaction["merchant"]),
-                "month": month_key,
-            }
-        )
-
-    display_currency = max(
-        abs_totals_by_currency.items(),
-        key=lambda item: item[1],
-    )[0]
+    display_currency, model_rows, unconverted = _insight_population(transactions)
+    prepared_rows, abs_totals_by_currency, valid_dates = _prepare_insight_rows(
+        model_rows
+    )
 
     monthly_totals: dict[str, MonthlyInsightItem] = {}
     category_totals: dict[str, float] = defaultdict(float)
@@ -127,14 +177,7 @@ def build_spending_insight_snapshot(
     refund_total = 0.0
 
     for row in prepared_rows:
-        display_amount = round(
-            convert_amount(
-                float(row["amount"]),
-                str(row["currency"]),
-                normalize_currency_code(display_currency),
-            ),
-            2,
-        )
+        display_amount = round(float(row["amount"]), 2)
         month_key = str(row["month"])
         if month_key not in monthly_totals:
             monthly_totals[month_key] = {
@@ -231,6 +274,10 @@ def build_spending_insight_snapshot(
             "spend": spend_total,
             "refunds": refund_total,
             "by_original_currency": by_original_currency,
+            "unconverted_transaction_count": len(unconverted),
+            "unconverted_currencies": sorted(
+                {item["original_currency"] for item in unconverted}
+            ),
         },
         "top_categories": top_categories,
         "top_merchants": top_merchants,

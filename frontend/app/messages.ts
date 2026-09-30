@@ -165,7 +165,7 @@ const en = {
   reportLeadBody:
     "This canvas is now structured more like a BI report: slicers on the side, KPI tiles across the top, focused visuals in the body, and a denser detail matrix underneath.",
   dashboardConvertedTotalsNoteTemplate:
-    "Dashboard cards and charts use {{currency}} as the display currency. Mixed USD/TWD source data is converted here for comparison.",
+    "Dashboard cards and charts use {{currency}} as the display currency. USD and TWD are converted for comparison. Other currencies need an exchange rate into TWD before they join these totals.",
   storedModelLabel: "Stored model",
   lastRefreshLabel: "Last refresh",
   waiting: "Waiting",
@@ -179,7 +179,11 @@ const en = {
   metricRowsInView: "Rows in view",
   metricRowsHintTemplate: "{{pct}} of this upload visible",
   metricModelTotal: "Model total",
-  metricModelTotalHintTemplate: "{{n}} statements stored",
+  metricModelTotalHintTemplate:
+    "{{n}} statements stored (all time). This total ignores search, merchant, and amount filters. It still follows the date range.",
+  unconvertedTransactionsWarning:
+    "{{n}} transactions are not in these totals because they are not USD or TWD and have no exchange rate into TWD ({{currencies}}).",
+  unconvertedTransactionsCurrencyFallback: "unknown currency",
   metricDisplayCurrencyHintTemplate: "Display currency: {{currency}}",
 
   merchantContributionTitle: "Merchant contribution",
@@ -398,7 +402,7 @@ const zhHant: Record<keyof typeof en, string> = {
   reportLeadBody:
     "此畫布結構更接近 BI 報表：側邊為篩選、上方為 KPI 磚、主視覺集中於內文，下方為較細的交易明細表。",
   dashboardConvertedTotalsNoteTemplate:
-    "儀表板卡片與圖表會以 {{currency}} 作為顯示幣別。若來源資料混合 USD 與 TWD，這裡會先轉為顯示幣別再比較。",
+    "儀表板卡片與圖表會以 {{currency}} 作為顯示幣別。USD 與 TWD 會先轉換再比較。其他幣別要有換成 TWD 的匯率，才會計入這些總額。",
   storedModelLabel: "已儲存模型",
   lastRefreshLabel: "上次重新整理",
   waiting: "等待中",
@@ -412,7 +416,11 @@ const zhHant: Record<keyof typeof en, string> = {
   metricRowsInView: "檢視中列數",
   metricRowsHintTemplate: "佔此上傳的 {{pct}}",
   metricModelTotal: "模型總計",
-  metricModelTotalHintTemplate: "已儲存 {{n}} 份對帳單",
+  metricModelTotalHintTemplate:
+    "已儲存 {{n}} 份對帳單（不限期間）。此總額不受搜尋、商家與金額篩選影響，但仍跟隨日期範圍。",
+  unconvertedTransactionsWarning:
+    "有 {{n}} 筆交易未計入這些總額，因為它們不是 USD 或 TWD，而且沒有換成 TWD 的匯率（{{currencies}}）。",
+  unconvertedTransactionsCurrencyFallback: "未知幣別",
   metricDisplayCurrencyHintTemplate: "顯示幣別：{{currency}}",
 
   merchantContributionTitle: "商家貢獻度",

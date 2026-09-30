@@ -294,6 +294,21 @@ def api_main(
     return api_main
 
 
+@pytest.fixture(autouse=True)
+def block_live_ai_provider_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI stores no provider token. Tests fake the insight response instead."""
+    import backend.ai_insights as ai_insights
+
+    async def blocked(*args: object, **kwargs: object) -> tuple[str, list[str]]:
+        raise RuntimeError(
+            "Tests must not call OpenAI or Perplexity. "
+            "Patch generate_spending_insights with a fake response."
+        )
+
+    monkeypatch.setattr(ai_insights, "_request_openai_insights", blocked)
+    monkeypatch.setattr(ai_insights, "_request_perplexity_insights", blocked)
+
+
 @pytest.fixture
 def client(api_main) -> TestClient:
     with TestClient(api_main.app) as test_client:

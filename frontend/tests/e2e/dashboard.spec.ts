@@ -45,7 +45,17 @@ function buildDashboardView(currency: DisplayCurrency) {
       number_of_transactions: 4,
       average_transaction_amount: isTwd ? 5864.2 : 183.1,
       number_of_statements: 2,
+      unconverted_transaction_count: 0,
+      statement_count_scope: "all_time" as const,
     },
+    unconverted_transactions: [] as Array<{
+      id: number;
+      date: string;
+      merchant: string;
+      original_amount: number;
+      original_currency: string;
+      reason: string;
+    }>,
     transactions: [
       {
         date: "2025-04-19",
@@ -285,7 +295,7 @@ test("dashboard renders with mocked API data and survives a currency toggle", as
   await expect(page.getByText("US$4,321.09").first()).toBeVisible();
   await expect(
     page.getByText(
-      "Dashboard cards and charts use US$ (USD) as the display currency. Mixed USD/TWD source data is converted here for comparison."
+      "Dashboard cards and charts use US$ (USD) as the display currency. USD and TWD are converted for comparison. Other currencies need an exchange rate into TWD before they join these totals."
     )
   ).toBeVisible();
   await expect(page.getByText("Display currency: US$ (USD)").first()).toBeVisible();
@@ -306,7 +316,7 @@ test("dashboard renders with mocked API data and survives a currency toggle", as
   await expect(page.getByText("Personal Spending Tracker")).toBeVisible();
   await expect(
     page.getByText(
-      "Dashboard cards and charts use NT$ (TWD) as the display currency. Mixed USD/TWD source data is converted here for comparison."
+      "Dashboard cards and charts use NT$ (TWD) as the display currency. USD and TWD are converted for comparison. Other currencies need an exchange rate into TWD before they join these totals."
     )
   ).toBeVisible();
   await expect(page.getByText("Display currency: NT$ (TWD)").first()).toBeVisible();
@@ -465,6 +475,58 @@ test("clearing slicers requests the reset filters once and drops the previous se
   const requestsAfterClear = queries.slice(requestCountBeforeClear);
   expect(requestsAfterClear.length).toBeGreaterThan(0);
   expect(requestsAfterClear.every(isClearedMonthQuery)).toBe(true);
+});
+
+test("dashboard warns when transactions cannot be converted", async ({ page }) => {
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ uploads: [] }),
+    });
+  });
+  await page.route("**/api/dashboard/view**", async (route) => {
+    const view = buildDashboardView("USD");
+    view.summary = {
+      ...view.summary,
+      unconverted_transaction_count: 2,
+      statement_count_scope: "all_time",
+    };
+    view.unconverted_transactions = [
+      {
+        id: 9,
+        date: "2025-04-18",
+        merchant: "JPY CAFE",
+        original_amount: 500,
+        original_currency: "JPY",
+        reason: "unsupported_display_conversion",
+      },
+      {
+        id: 10,
+        date: "2025-04-17",
+        merchant: "EUR BOOKS",
+        original_amount: 8,
+        original_currency: "EUR",
+        reason: "unsupported_display_conversion",
+      },
+    ];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(view),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByTestId("unconverted-transactions-warning")).toContainText(
+    "2 transactions are not in these totals because they are not USD or TWD and have no exchange rate into TWD (EUR, JPY)."
+  );
+  await expect(
+    page.getByText(
+      "2 statements stored (all time). This total ignores search, merchant, and amount filters. It still follows the date range."
+    )
+  ).toBeVisible();
 });
 
 function isClearedMonthQuery(query: DashboardQuery): boolean {

@@ -1,4 +1,5 @@
 import asyncio
+import heapq
 import logging
 import os
 import sys
@@ -56,17 +57,16 @@ from backend.ai_insights import (  # noqa: E402
     default_model_for_provider,
     generate_spending_insights,
 )
-from backend.transaction_exclusions import should_exclude_from_spending
 from backend.database import (  # noqa: E402
     ExistingUpload,
     UserAiProviderSettingRecord,
     RecentUpload,
     StoredTransaction,
     TimeRange,
-    TransactionsSummary,
     UserRecord,
     DuplicateStatementUploadError,
     DuplicateUsernameError,
+    count_statement_uploads,
     create_session,
     create_statement_upload,
     delete_user_ai_provider_setting,
@@ -74,6 +74,7 @@ from backend.database import (  # noqa: E402
     get_recent_uploads,
     get_transactions,
     get_transactions_summary,
+    iter_transactions,
     get_user_ai_provider_secret,
     get_user_auth_by_email,
     init_db,
@@ -116,12 +117,16 @@ from backend.currency import (  # noqa: E402
     DisplayCurrency,
     SupportedCurrency,
     SUPPORTED_CURRENCY_CODES,
-    convert_amount,
     derive_base_money_fields,
     exchange_rate_metadata,
     normalize_supported_currency_code,
 )
 from backend.parser import Transaction  # noqa: E402
+from backend.spending import (  # noqa: E402
+    UnconvertedTransaction,
+    iter_spending_partition,
+    summary_from_totals,
+)
 from backend.pdf_utils import (  # noqa: E402
     PdfDecryptError,
     PdfPasswordProtectedError,
@@ -147,6 +152,9 @@ class SummaryResponse(TypedDict):
     number_of_transactions: int
     average_transaction_amount: float
     number_of_statements: int
+    unconverted_transaction_count: int
+    unconverted_currencies: list[str]
+    statement_count_scope: Literal["all_time"]
 
 
 class RecentUploadsResponse(TypedDict):
@@ -261,6 +269,7 @@ class DashboardViewResponse(TypedDict):
     summary: SummaryResponse
     transactions: list[DashboardTransaction]
     sorted_transactions: list[DashboardTransaction]
+    unconverted_transactions: list[UnconvertedTransaction]
     merchant_breakdown: list[MerchantBreakdownItem]
     category_breakdown: list[CategoryBreakdownItem]
     date_breakdown: list[DateBreakdownItem]
@@ -609,41 +618,6 @@ def _sort_transactions(
     return sorted_transactions
 
 
-def _dashboard_transaction_for_currency(
-    transaction: StoredTransaction,
-    display_currency: DisplayCurrency,
-) -> DashboardTransaction | None:
-    original_amount = float(transaction.get("original_amount", transaction["amount"]))
-    original_currency = transaction.get(
-        "original_currency",
-        transaction.get("currency", DEFAULT_BASE_CURRENCY),
-    ).upper()
-    base_amount = transaction.get("base_amount")
-    base_currency = transaction.get("base_currency", DEFAULT_BASE_CURRENCY).upper()
-
-    if base_amount is not None:
-        display_amount = convert_amount(
-            float(base_amount),
-            base_currency,
-            display_currency,
-        )
-    elif original_currency == display_currency:
-        display_amount = original_amount
-    else:
-        return None
-
-    return {
-        **transaction,
-        "amount": display_amount,
-        "currency": display_currency,
-        "original_amount": original_amount,
-        "original_currency": original_currency,
-        "display_amount": display_amount,
-        "display_currency": display_currency,
-        "is_converted": original_currency != display_currency,
-    }
-
-
 def _transaction_matches_dashboard_filters(
     transaction: DashboardTransaction,
     *,
@@ -664,132 +638,6 @@ def _transaction_matches_dashboard_filters(
     else:
         matches_amount_filter = transaction["amount"] < 0
     return matches_search and matches_amount_filter
-
-
-def _filter_dashboard_transactions(
-    transactions: list[DashboardTransaction],
-    *,
-    search: str,
-    amount_filter: AmountFilter,
-    selected_merchant: str,
-) -> tuple[list[DashboardTransaction], list[DashboardTransaction]]:
-    normalized_search = search.strip().lower()
-    base_filtered = [
-        transaction
-        for transaction in transactions
-        if _transaction_matches_dashboard_filters(
-            transaction,
-            normalized_search=normalized_search,
-            amount_filter=amount_filter,
-        )
-    ]
-    normalized_selected_merchant = selected_merchant.strip()
-    if not normalized_selected_merchant:
-        return base_filtered, base_filtered
-    filtered_transactions = [
-        transaction
-        for transaction in base_filtered
-        if transaction["merchant"] == normalized_selected_merchant
-    ]
-    return base_filtered, filtered_transactions
-
-
-def _build_dashboard_breakdowns(
-    base_filtered: list[DashboardTransaction],
-    filtered_transactions: list[DashboardTransaction],
-) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
-    merchant_totals: dict[str, float] = {}
-    for transaction in base_filtered:
-        merchant = transaction["merchant"]
-        merchant_totals[merchant] = merchant_totals.get(merchant, 0.0) + transaction["amount"]
-    merchant_breakdown = sorted(
-        [
-            {
-                "merchant": merchant,
-                "total": total,
-                "abs_total": abs(total),
-            }
-            for merchant, total in merchant_totals.items()
-        ],
-        key=lambda item: item["abs_total"],
-        reverse=True,
-    )[:7]
-
-    category_totals: dict[str, float] = {}
-    for transaction in filtered_transactions:
-        if transaction["amount"] <= 0:
-            continue
-        category = transaction["category"]
-        category_totals[category] = category_totals.get(category, 0.0) + transaction["amount"]
-    category_total_spend = sum(category_totals.values())
-    category_breakdown = [
-        {
-            "category": category,
-            "total": total,
-            "share": (total / category_total_spend) if category_total_spend > 0 else 0.0,
-        }
-        for category, total in sorted(
-            category_totals.items(), key=lambda item: item[1], reverse=True
-        )
-    ]
-
-    date_totals: dict[str, float] = {}
-    for transaction in filtered_transactions:
-        date_key = transaction["date"]
-        date_totals[date_key] = date_totals.get(date_key, 0.0) + transaction["amount"]
-    date_breakdown = [
-        {
-            "date": date_key,
-            "total": total,
-            "abs_total": abs(total),
-        }
-        for date_key, total in sorted(date_totals.items(), key=lambda item: item[0])[-10:]
-    ]
-    return merchant_breakdown, category_breakdown, date_breakdown
-
-
-def _build_dashboard_metrics(
-    filtered_transactions: list[DashboardTransaction],
-    converted_transactions: list[DashboardTransaction],
-) -> dict[str, float]:
-    selection_net = sum(transaction["amount"] for transaction in filtered_transactions)
-    selection_spend = sum(
-        transaction["amount"]
-        for transaction in filtered_transactions
-        if transaction["amount"] > 0
-    )
-    selection_refunds = sum(
-        abs(transaction["amount"])
-        for transaction in filtered_transactions
-        if transaction["amount"] < 0
-    )
-    selection_average = (
-        selection_net / len(filtered_transactions) if filtered_transactions else 0.0
-    )
-    upload_net = sum(transaction["amount"] for transaction in converted_transactions)
-    largest_transaction_amount = (
-        max(abs(transaction["amount"]) for transaction in filtered_transactions)
-        if filtered_transactions
-        else 0.0
-    )
-    selection_coverage = (
-        (len(filtered_transactions) / len(converted_transactions))
-        if converted_transactions
-        else 0.0
-    )
-    model_total_in_active_currency = sum(
-        transaction["amount"] for transaction in converted_transactions
-    )
-    return {
-        "selection_net": selection_net,
-        "selection_spend": selection_spend,
-        "selection_refunds": selection_refunds,
-        "selection_average": selection_average,
-        "upload_net": upload_net,
-        "largest_transaction_amount": largest_transaction_amount,
-        "selection_coverage": selection_coverage,
-        "model_total_in_active_currency": model_total_in_active_currency,
-    }
 
 
 def _parse_manual_transaction_fields(
@@ -1223,29 +1071,25 @@ def _load_ai_insight_inputs(
             detail="Configure an AI provider in Settings before requesting insights.",
         )
 
-    transactions = [
-        transaction
-        for transaction in get_transactions(
-            user_id=user_id,
-            range_key=resolved_range,
-            limit=None,
-        )
-        if not should_exclude_from_spending(
-            transaction["merchant"],
-            category=transaction.get("category"),
-        )
-    ]
+    transactions = get_transactions(
+        user_id=user_id,
+        range_key=resolved_range,
+        limit=None,
+    )
     if not transactions:
         raise HTTPException(
             status_code=400,
             detail="No spending transactions are available for the selected period.",
         )
 
-    snapshot = build_spending_insight_snapshot(
-        transactions,
-        range_key=resolved_range,
-        language=language,
-    )
+    try:
+        snapshot = build_spending_insight_snapshot(
+            transactions,
+            range_key=resolved_range,
+            language=language,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return configured_provider, transactions, snapshot
 
 
@@ -1305,7 +1149,7 @@ async def ai_insights(
             "provider": insight_result["provider"],
             "model": insight_result["model"],
             "range": resolved_range,
-            "transaction_count": len(transactions),
+            "transaction_count": snapshot["transaction_count"],
             "display_currency": snapshot["display_currency"],
         },
     )
@@ -1411,6 +1255,227 @@ def transactions(
     }
 
 
+class _WorstFirst:
+    __slots__ = ("key",)
+
+    def __init__(self, key: tuple[object, ...]) -> None:
+        self.key = key
+
+    def __lt__(self, other: "_WorstFirst") -> bool:
+        return self.key > other.key
+
+
+def _desired_sort_key(
+    transaction: DashboardTransaction,
+    sort_option: SortOption,
+    sequence: int,
+) -> tuple[object, ...]:
+    if sort_option == "amount_asc":
+        primary: object = transaction["amount"]
+    elif sort_option == "merchant":
+        primary = transaction["merchant"].lower()
+    elif sort_option == "date":
+        primary = transaction["date"]
+    else:
+        primary = -transaction["amount"]
+    return (primary, sequence)
+
+
+def _keep_limited_row(rows: list, row: object, limit: int) -> None:
+    if len(rows) < limit:
+        rows.append(row)
+
+
+def _keep_sorted_row(
+    heap: list[tuple[_WorstFirst, int, DashboardTransaction]],
+    transaction: DashboardTransaction,
+    sort_option: SortOption,
+    limit: int,
+    sequence: int,
+) -> None:
+    desired = _desired_sort_key(transaction, sort_option, sequence)
+    entry = (_WorstFirst(desired), sequence, transaction)
+    if len(heap) < limit:
+        heapq.heappush(heap, entry)
+    elif desired < heap[0][0].key:
+        heapq.heapreplace(heap, entry)
+
+
+def _format_dashboard_breakdowns(
+    merchant_totals: dict[str, float],
+    category_totals: dict[str, float],
+    date_totals: dict[str, float],
+) -> tuple[
+    list[MerchantBreakdownItem],
+    list[CategoryBreakdownItem],
+    list[DateBreakdownItem],
+]:
+    merchant_breakdown: list[MerchantBreakdownItem] = sorted(
+        [
+            {
+                "merchant": merchant,
+                "total": total,
+                "abs_total": abs(total),
+            }
+            for merchant, total in merchant_totals.items()
+        ],
+        key=lambda item: item["abs_total"],
+        reverse=True,
+    )[:7]
+    category_total_spend = sum(category_totals.values())
+    category_breakdown: list[CategoryBreakdownItem] = [
+        {
+            "category": category,
+            "total": total,
+            "share": (total / category_total_spend) if category_total_spend > 0 else 0.0,
+        }
+        for category, total in sorted(
+            category_totals.items(), key=lambda item: item[1], reverse=True
+        )
+    ]
+    date_breakdown: list[DateBreakdownItem] = [
+        {
+            "date": date_key,
+            "total": total,
+            "abs_total": abs(total),
+        }
+        for date_key, total in sorted(date_totals.items(), key=lambda item: item[0])[-10:]
+    ]
+    return merchant_breakdown, category_breakdown, date_breakdown
+
+
+def _dashboard_metrics(
+    *,
+    model_total: float,
+    model_count: int,
+    selection_net: float,
+    selection_spend: float,
+    selection_refunds: float,
+    selection_count: int,
+    largest_amount: float,
+) -> DashboardMetrics:
+    return {
+        "selection_net": selection_net,
+        "selection_spend": selection_spend,
+        "selection_refunds": selection_refunds,
+        "selection_average": (
+            selection_net / selection_count if selection_count else 0.0
+        ),
+        "upload_net": model_total,
+        "largest_transaction_amount": largest_amount,
+        "selection_coverage": (
+            selection_count / model_count if model_count else 0.0
+        ),
+        "model_total_in_active_currency": model_total,
+    }
+
+
+def _collect_limited_dashboard(
+    *,
+    user_id: int,
+    range_key: TimeRange,
+    search: str,
+    amount_filter: AmountFilter,
+    selected_merchant: str,
+    sort_option: SortOption,
+    limit: int,
+    currency: DisplayCurrency,
+) -> DashboardViewResponse:
+    normalized_search = search.strip().lower()
+    merchant_filter = selected_merchant.strip()
+    model_rows: list[DashboardTransaction] = []
+    unconverted_rows: list[UnconvertedTransaction] = []
+    unconverted_currencies: set[str] = set()
+    merchant_totals: dict[str, float] = {}
+    category_totals: dict[str, float] = {}
+    date_totals: dict[str, float] = {}
+    sorted_heap: list[tuple[_WorstFirst, int, DashboardTransaction]] = []
+    model_total = 0.0
+    model_count = 0
+    selection_net = 0.0
+    selection_spend = 0.0
+    selection_refunds = 0.0
+    selection_count = 0
+    largest_amount = 0.0
+    unconverted_count = 0
+    sequence = 0
+
+    for kind, row in iter_spending_partition(
+        iter_transactions(user_id=user_id, range_key=range_key, limit=None),
+        currency,
+    ):
+        if kind == "unconverted":
+            unconverted = cast(UnconvertedTransaction, row)
+            unconverted_count += 1
+            unconverted_currencies.add(unconverted["original_currency"])
+            _keep_limited_row(unconverted_rows, unconverted, limit)
+            continue
+        transaction = cast(DashboardTransaction, row)
+        amount_value = float(transaction["amount"])
+        model_total += amount_value
+        model_count += 1
+        _keep_limited_row(model_rows, transaction, limit)
+        if not _transaction_matches_dashboard_filters(
+            transaction,
+            normalized_search=normalized_search,
+            amount_filter=amount_filter,
+        ):
+            continue
+        merchant_totals[transaction["merchant"]] = (
+            merchant_totals.get(transaction["merchant"], 0.0) + amount_value
+        )
+        if merchant_filter and transaction["merchant"] != merchant_filter:
+            continue
+        selection_net += amount_value
+        selection_count += 1
+        if amount_value > 0:
+            selection_spend += amount_value
+            category_totals[transaction["category"]] = (
+                category_totals.get(transaction["category"], 0.0) + amount_value
+            )
+        elif amount_value < 0:
+            selection_refunds += abs(amount_value)
+        largest_amount = max(largest_amount, abs(amount_value))
+        date_totals[transaction["date"]] = (
+            date_totals.get(transaction["date"], 0.0) + amount_value
+        )
+        _keep_sorted_row(sorted_heap, transaction, sort_option, limit, sequence)
+        sequence += 1
+
+    merchant_breakdown, category_breakdown, date_breakdown = (
+        _format_dashboard_breakdowns(merchant_totals, category_totals, date_totals)
+    )
+    kept_rows = [
+        item[2] for item in sorted(sorted_heap, key=lambda item: item[1])
+    ]
+    return {
+        "active_currency": currency,
+        "exchange_rate": exchange_rate_metadata(),
+        "summary": summary_from_totals(
+            total_spending=model_total,
+            transaction_count=model_count,
+            statement_count=count_statement_uploads(user_id=user_id),
+            unconverted_count=unconverted_count,
+            unconverted_currencies=sorted(unconverted_currencies),
+        ),
+        "transactions": model_rows,
+        "sorted_transactions": _sort_transactions(kept_rows, sort_option),
+        "unconverted_transactions": unconverted_rows,
+        "merchant_breakdown": merchant_breakdown,
+        "category_breakdown": category_breakdown,
+        "date_breakdown": date_breakdown,
+        "metrics": _dashboard_metrics(
+            model_total=model_total,
+            model_count=model_count,
+            selection_net=selection_net,
+            selection_spend=selection_spend,
+            selection_refunds=selection_refunds,
+            selection_count=selection_count,
+            largest_amount=largest_amount,
+        ),
+    }
+
+
 @app.get("/dashboard/view")
 def dashboard_view(
     range: str = Query(default="all"),
@@ -1422,62 +1487,16 @@ def dashboard_view(
     limit: int = Query(default=5000, ge=1, le=20000),
     current_user: UserRecord = Depends(require_current_user),
 ) -> DashboardViewResponse:
-    resolved_range = _resolve_time_range(range)
-    resolved_amount_filter = _resolve_amount_filter(amount_filter)
-    resolved_sort_option = _resolve_sort_option(sort)
-    resolved_currency = _resolve_display_currency(currency)
-
-    all_transactions = [
-        transaction
-        for transaction in get_transactions(
-            user_id=current_user["id"],
-            range_key=resolved_range,
-            limit=limit,
-        )
-        if not should_exclude_from_spending(
-            transaction["merchant"],
-            category=transaction.get("category"),
-        )
-    ]
-    converted_transactions = [
-        dashboard_transaction
-        for transaction in all_transactions
-        if (
-            dashboard_transaction := _dashboard_transaction_for_currency(
-                transaction,
-                resolved_currency,
-            )
-        )
-        is not None
-    ]
-    base_filtered, filtered_transactions = _filter_dashboard_transactions(
-        converted_transactions,
-        search=search,
-        amount_filter=resolved_amount_filter,
-        selected_merchant=selected_merchant,
-    )
-    sorted_transactions = _sort_transactions(filtered_transactions, resolved_sort_option)
-    merchant_breakdown, category_breakdown, date_breakdown = _build_dashboard_breakdowns(
-        base_filtered,
-        filtered_transactions,
-    )
-    metrics = _build_dashboard_metrics(filtered_transactions, converted_transactions)
-    summary_data: TransactionsSummary = get_transactions_summary(
+    return _collect_limited_dashboard(
         user_id=current_user["id"],
-        range_key=resolved_range,
-        display_currency=resolved_currency,
+        range_key=_resolve_time_range(range),
+        search=search,
+        amount_filter=_resolve_amount_filter(amount_filter),
+        selected_merchant=selected_merchant,
+        sort_option=_resolve_sort_option(sort),
+        limit=limit,
+        currency=_resolve_display_currency(currency),
     )
-    return {
-        "active_currency": resolved_currency,
-        "exchange_rate": exchange_rate_metadata(),
-        "summary": summary_data,
-        "transactions": converted_transactions,
-        "sorted_transactions": sorted_transactions,
-        "merchant_breakdown": merchant_breakdown,
-        "category_breakdown": category_breakdown,
-        "date_breakdown": date_breakdown,
-        "metrics": metrics,
-    }
 
 
 @app.post(

@@ -42,6 +42,8 @@ jobs:
         env:
           CI: true
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/personal_spending_tracker_test
+        # Insight tests fake the provider response. Do not add an OpenAI or
+        # Perplexity token; the suite blocks those network calls.
         run: pytest
 
   frontend:
