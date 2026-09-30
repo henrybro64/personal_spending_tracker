@@ -101,6 +101,8 @@ const en = {
   bulkImportLlmStepTitle: "Step 1 — Prompt for your LLM",
   bulkImportLlmStepBody:
     "Copy the prompt below into ChatGPT, Claude, or similar. Paste your statement PDF text after the marker line, then paste the model's JSON reply into Step 2.",
+  bulkImportLlmStepBodyCtbc:
+    "Copy the prompt below into ChatGPT, Claude, or similar. Attach the original CTBC statement PDF to the LLM, provide the PDF password separately if needed, then paste the model's JSON reply into Step 2.",
   bulkImportCopyPrompt: "Copy prompt",
   bulkImportCopiedPrompt: "Copied",
   bulkImportPasteStepTitle: "Step 2 — Paste LLM JSON here",
@@ -332,6 +334,8 @@ const zhHant: Record<keyof typeof en, string> = {
   bulkImportLlmStepTitle: "步驟 1 — 給 LLM 的提示詞",
   bulkImportLlmStepBody:
     "將下方提示詞複製到 ChatGPT、Claude 等。在標記行後貼上帳單文字，再把模型回傳的 JSON 貼到步驟 2。",
+  bulkImportLlmStepBodyCtbc:
+    "將下方提示詞複製到 ChatGPT、Claude 等，並直接附上原始 CTBC 信用卡 PDF 帳單；若 PDF 有密碼，請在 LLM 對話中另外提供。之後將模型回傳的 JSON 貼到步驟 2。",
   bulkImportCopyPrompt: "複製提示詞",
   bulkImportCopiedPrompt: "已複製",
   bulkImportPasteStepTitle: "步驟 2 — 貼上 LLM 回傳的 JSON",
