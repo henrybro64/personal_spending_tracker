@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { ApiError } from "../app/api";
 import {
   type DashboardFilters,
   DashboardRequestCoordinator,
@@ -8,6 +9,7 @@ import {
   dashboardLoadKey,
   effectiveSearchQuery,
   loadDashboardSnapshot,
+  reduceDashboardLoad,
   refreshAfterUpload,
   runGuardedDashboardLoad,
   shouldReleaseSearchPin,
@@ -387,4 +389,87 @@ test("upload, manual entry, and a later filter change keep the newest snapshot",
   assert.equal(dirtyDecision, "ignored");
   assert.equal(displayed, "cleared-TWD");
   assert.deepEqual(errors, []);
+});
+
+const failureCopy = {
+  staleData: "Refresh failed. Showing the last successfully loaded data.",
+  unableToRefresh: "Unable to refresh data. Check your connection and try again.",
+};
+
+const loadedView = { summary: { total_spending: 40 } };
+
+test("a failed refresh keeps the last dashboard snapshot", () => {
+  const next = reduceDashboardLoad(
+    { view: loadedView, uploads: [{ id: 1 }] },
+    {
+      view: { status: "error", error: new TypeError("Failed to fetch") },
+      uploads: { status: "ok", value: { uploads: [{ id: 1 }] } },
+    },
+    failureCopy
+  );
+
+  assert.equal(next.stale, true);
+  assert.equal(next.view, loadedView);
+  assert.equal(next.error, failureCopy.staleData);
+  assert.equal(next.error.includes("Failed to fetch"), false);
+});
+
+test("the first failed load has no snapshot to preserve", () => {
+  const next = reduceDashboardLoad(
+    { view: null, uploads: [] },
+    {
+      view: { status: "error", error: new TypeError("Failed to fetch") },
+      uploads: { status: "ok", value: { uploads: [] } },
+    },
+    failureCopy
+  );
+
+  assert.equal(next.view, null);
+  assert.equal(next.stale, false);
+  assert.equal(next.error, failureCopy.unableToRefresh);
+});
+
+test("the next successful refresh replaces stale data and clears the warning", () => {
+  const recovered = { summary: { total_spending: 80 } };
+  const next = reduceDashboardLoad(
+    { view: loadedView, uploads: [] },
+    {
+      view: { status: "ok", value: recovered },
+      uploads: { status: "ok", value: { uploads: [] } },
+    },
+    failureCopy
+  );
+
+  assert.equal(next.view, recovered);
+  assert.equal(next.stale, false);
+  assert.equal(next.error, "");
+});
+
+test("a 401 keeps the snapshot and leaves session handling to the caller", () => {
+  const next = reduceDashboardLoad(
+    { view: loadedView, uploads: [] },
+    {
+      view: { status: "error", error: new ApiError("unauthorized", 401) },
+      uploads: { status: "ok", value: { uploads: [] } },
+    },
+    failureCopy
+  );
+
+  assert.equal(next.unauthorized, true);
+  assert.equal(next.stale, false);
+  assert.equal(next.error, "");
+  assert.equal(next.view, loadedView);
+});
+
+test("an HTTP error keeps the API detail", () => {
+  const next = reduceDashboardLoad(
+    { view: null, uploads: [] },
+    {
+      view: { status: "error", error: new ApiError("database down", 500) },
+      uploads: { status: "ok", value: { uploads: [] } },
+    },
+    failureCopy
+  );
+
+  assert.equal(next.error, "database down");
 });

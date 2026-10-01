@@ -35,17 +35,21 @@ import {
   tokens,
 } from "@fluentui/react-components";
 
-import { apiFetch, apiFetchJson, ApiError } from "./api";
+import { apiFetchJson } from "./api";
 import {
   DashboardRequestCoordinator,
   type DashboardFilters,
+  dashboardFailureMessage,
   dashboardLoadKey,
   effectiveSearchQuery,
+  isAbortError,
   loadDashboardSnapshot,
+  reduceDashboardLoad,
   refreshAfterUpload,
   runGuardedDashboardLoad,
   shouldReleaseSearchPin,
 } from "./dashboard-refresh";
+import { useSpendingRevision } from "./server-state";
 import { AuthPage, AuthPanel, SessionCard } from "./auth-card";
 import { useAuth } from "./auth-provider";
 import {
@@ -1352,7 +1356,6 @@ export default function HomePage() {
   const { locale, setLocale, intlLocale } = useLocale();
   const { refreshSession, status: authStatus, user } = useAuth();
   const fm = useMemo(() => createFormatters(intlLocale), [intlLocale]);
-  const [summary, setSummary] = useState<SummaryResponse>(emptySummary);
   const [recentUploads, setRecentUploads] = useState<RecentUpload[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("year");
@@ -1362,6 +1365,7 @@ export default function HomePage() {
   const [sortOption, setSortOption] = useState<SortOption>("amount_desc");
   const [error, setError] = useState("");
   const [dashboardError, setDashboardError] = useState("");
+  const [dashboardStale, setDashboardStale] = useState(false);
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [pinnedSearch, setPinnedSearch] = useState<string | null>(null);
@@ -1400,8 +1404,16 @@ export default function HomePage() {
     selectedMerchant,
     displayCurrency,
   };
-  const dashboardLoadToken = dashboardLoadKey(requestFilters, 0);
+  const spendingRevision = useSpendingRevision();
+  const dashboardLoadToken = dashboardLoadKey(requestFilters, spendingRevision);
   const [dashboardView, setDashboardView] = useState<DashboardViewResponse | null>(null);
+  const dashboardViewRef = useRef(dashboardView);
+  dashboardViewRef.current = dashboardView;
+  const recentUploadsRef = useRef(recentUploads);
+  recentUploadsRef.current = recentUploads;
+  // Summary and charts come from this dashboard response. Recent uploads stay
+  // separate because they are loaded from /uploads/recent.
+  const summary = dashboardView?.summary ?? emptySummary;
   const sortedTransactions = dashboardView?.sorted_transactions ?? [];
   const merchantBreakdown = dashboardView?.merchant_breakdown ?? [];
   const categoryBreakdown = useMemo(
@@ -1502,7 +1514,9 @@ export default function HomePage() {
     if (authStatus !== "authenticated") {
       setDashboardView(null);
       setRecentUploads([]);
-      setSummary(emptySummary);
+      setError("");
+      setDashboardError("");
+      setDashboardStale(false);
       setIsDashboardLoading(authStatus === "loading");
       return;
     }
@@ -1528,53 +1542,41 @@ export default function HomePage() {
             ),
         }),
       apply: (snapshot) => {
-        if (snapshot.uploads.status === "ok") {
-          setRecentUploads(snapshot.uploads.value.uploads);
-          setDashboardError("");
-        } else if (
-          snapshot.uploads.error instanceof ApiError &&
-          snapshot.uploads.error.status === 401
-        ) {
+        const next = reduceDashboardLoad(
+          {
+            view: dashboardViewRef.current,
+            uploads: recentUploadsRef.current,
+          },
+          snapshot,
+          {
+            staleData: translate(localeRef.current, "dashboardStaleData"),
+            unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
+          }
+        );
+        if (next.unauthorized) {
           void refreshSession();
-        } else {
-          setDashboardError(
-            snapshot.uploads.error instanceof Error
-              ? snapshot.uploads.error.message
-              : translate(localeRef.current, "errDashboardUnavailable")
-          );
         }
-
-        if (snapshot.view.status === "ok") {
-          setDashboardView(snapshot.view.value);
-          setSummary(snapshot.view.value.summary);
-          setError("");
-        } else if (
-          snapshot.view.error instanceof ApiError &&
-          snapshot.view.error.status === 401
-        ) {
-          void refreshSession();
-        } else {
-          setDashboardView(null);
-          setSummary(emptySummary);
-          setError(
-            snapshot.view.error instanceof Error
-              ? snapshot.view.error.message
-              : translate(localeRef.current, "errRequestFailed")
-          );
-        }
+        setDashboardView(next.view);
+        setRecentUploads(next.uploads);
+        setError(next.error);
+        setDashboardError(next.uploadsError);
+        setDashboardStale(next.stale);
       },
       onError: (loadError) => {
-        if (loadError instanceof ApiError && loadError.status === 401) {
+        if (isAbortError(loadError)) {
+          return;
+        }
+        const hasView = dashboardViewRef.current !== null;
+        const message = dashboardFailureMessage(loadError, hasView, {
+          staleData: translate(localeRef.current, "dashboardStaleData"),
+          unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
+        });
+        if (!message) {
           void refreshSession();
           return;
         }
-        const message =
-          loadError instanceof Error
-            ? loadError.message
-            : translate(localeRef.current, "errRequestFailed");
-        setDashboardView(null);
-        setSummary(emptySummary);
         setError(message);
+        setDashboardStale(hasView);
       },
       onSettled: () => {
         setIsDashboardLoading(false);
@@ -1802,7 +1804,14 @@ export default function HomePage() {
         </aside>
 
         <section className={styles.reportArea}>
-          {error ? (
+          {dashboardStale && error ? (
+            <div data-testid="dashboard-stale-warning">
+              <MessageBar intent="warning">
+                <MessageBarBody>{error}</MessageBarBody>
+              </MessageBar>
+            </div>
+          ) : null}
+          {!dashboardStale && error ? (
             <MessageBar intent="error">
               <MessageBarBody>{error}</MessageBarBody>
             </MessageBar>

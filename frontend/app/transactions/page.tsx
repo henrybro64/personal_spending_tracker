@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -25,6 +25,11 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import { apiFetch, apiFetchJson, ApiError } from "../api";
+import {
+  dashboardFailureMessage,
+  isAbortError,
+} from "../dashboard-refresh";
+import { invalidateSpendingData, useSpendingRevision } from "../server-state";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
 import {
@@ -445,7 +450,12 @@ export default function TransactionsPage() {
   const { locale, intlLocale } = useLocale();
   const { refreshSession, status, user } = useAuth();
   const pathname = usePathname();
+  const spendingRevision = useSpendingRevision();
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const transactionsRef = useRef(transactions);
+  transactionsRef.current = transactions;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -463,21 +473,35 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     async function loadTransactions() {
-      setLoading(true);
+      const hasCurrent = transactionsRef.current.length > 0;
+      if (!hasCurrent) {
+        setLoading(true);
+      }
       setError("");
       setMessage("");
       try {
         const payload = await apiFetchJson<TransactionsResponse>(
           "/transactions?range=all&limit=5000",
-          "Failed to load transactions."
+          translate(localeRef.current, "errRequestFailed")
         );
         setTransactions(payload.transactions);
       } catch (loadError) {
-        if (loadError instanceof ApiError && loadError.status === 401) {
+        if (isAbortError(loadError)) {
+          return;
+        }
+        const message = dashboardFailureMessage(
+          loadError,
+          transactionsRef.current.length > 0,
+          {
+            staleData: translate(localeRef.current, "dashboardStaleData"),
+            unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
+          }
+        );
+        if (!message) {
           await refreshSession();
           return;
         }
-        setError(loadError instanceof Error ? loadError.message : "Failed to load transactions.");
+        setError(message);
       } finally {
         setLoading(false);
       }
@@ -490,7 +514,7 @@ export default function TransactionsPage() {
 
     setTransactions([]);
     setLoading(status === "loading");
-  }, [refreshSession, status]);
+  }, [refreshSession, spendingRevision, status]);
 
   const merchantCandidates = useMemo(() => {
     const deduped = Array.from(
@@ -643,6 +667,7 @@ export default function TransactionsPage() {
             : "Failed to delete transaction."
         );
       }
+      invalidateSpendingData();
       setTransactions((current) =>
         current.filter((item) => item.id !== transaction.id)
       );
@@ -712,6 +737,7 @@ export default function TransactionsPage() {
         );
       }
       const updated = (payload as TransactionUpdateResponse).transaction;
+      invalidateSpendingData();
       setTransactions((current) =>
         current.map((item) => (item.id === updated.id ? updated : item))
       );
@@ -924,11 +950,12 @@ export default function TransactionsPage() {
           </div>
 
           <Card className={styles.card}>
-            {loading ? (
+            {error ? (
+              <Body1 data-testid="transactions-load-warning">{error}</Body1>
+            ) : null}
+            {loading && transactions.length === 0 ? (
               <Spinner label="Loading transactions..." />
-            ) : error ? (
-              <Body1>{error}</Body1>
-            ) : (
+            ) : error && transactions.length === 0 ? null : (
               <div className={styles.tableWrap}>
                 <div className={styles.drilldownPanel}>
                   <div className={styles.drilldownLabel}>

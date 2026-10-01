@@ -3,7 +3,12 @@ import { NextRequest, NextResponse } from "next/server";
 const BACKEND =
   process.env.API_PROXY_TARGET?.replace(/\/$/, "") ?? "http://localhost:8000";
 
-/** Batch PDF import can run many minutes; default Node fetch timeouts are too short. */
+/**
+ * Transport and timeout only. Safe GET/HEAD retries live in the browser API
+ * client. Outbound AI provider retries live in the backend. This proxy does
+ * not retry, so one user action cannot be retried in more than one layer.
+ * Batch PDF import can run many minutes; default Node fetch timeouts are too short.
+ */
 const BATCH_IMPORT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 

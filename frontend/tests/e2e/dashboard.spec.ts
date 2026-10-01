@@ -529,6 +529,59 @@ test("dashboard warns when transactions cannot be converted", async ({ page }) =
   ).toBeVisible();
 });
 
+test("a failed refresh keeps the last dashboard numbers and can recover", async ({
+  page,
+}) => {
+  let phase: "ok" | "fail" | "recovered" = "ok";
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ uploads: [] }),
+    });
+  });
+  await page.route("**/api/dashboard/view**", async (route) => {
+    if (phase === "fail") {
+      await route.abort("failed");
+      return;
+    }
+    const currency =
+      new URL(route.request().url()).searchParams.get("currency") === "TWD"
+        ? "TWD"
+        : "USD";
+    const view = buildDashboardView(currency);
+    if (phase === "recovered") {
+      view.metrics.model_total_in_active_currency = 222.22;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(view),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+
+  phase = "fail";
+  await page.getByRole("switch", { name: "Display currency" }).click();
+  await expect(page.getByTestId("dashboard-stale-warning")).toContainText(
+    "Refresh failed. Showing the last successfully loaded data.",
+    { timeout: 15_000 }
+  );
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  await expect(page.getByText("Failed to fetch")).toHaveCount(0);
+
+  phase = "recovered";
+  await page.getByRole("switch", { name: "Display currency" }).click();
+  await expect(page.getByText("US$222.22").first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByTestId("dashboard-stale-warning")).toHaveCount(0);
+});
+
 function isClearedMonthQuery(query: DashboardQuery): boolean {
   return (
     query.range === "month" &&

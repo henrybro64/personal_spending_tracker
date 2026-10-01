@@ -28,6 +28,7 @@ import {
 } from "@fluentui/react-components";
 
 import { apiFetch, ApiError, apiFetchJson } from "../api";
+import { invalidateSpendingData } from "../server-state";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
 import { useLocale } from "../locale-provider";
@@ -659,6 +660,7 @@ export default function BatchReviewPage() {
         );
       }
 
+      invalidateSpendingData();
       const mergePayload = payload as { merged_count: number; skipped_count: number };
       setMessage(
         `Synced ${mergePayload.merged_count} transaction(s) to the dashboard.`

@@ -22,6 +22,7 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import { apiFetch } from "../api";
+import { invalidateSpendingData } from "../server-state";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { supportedCurrencies, type SupportedCurrency } from "../currency";
 import { useAuth } from "../auth-provider";
@@ -357,6 +358,7 @@ function StatementUploadCard({
         );
       }
       const uploadData = payload as UploadResponse;
+      invalidateSpendingData();
       setUploadMessage(
         translate(locale, "uploadDoneMessageTemplate", {
           name: uploadData.original_file_name,
@@ -517,6 +519,9 @@ function BulkImportCard({
         throw new Error(payload.detail ?? translate(locale, "errBulkImportFailed"));
       }
       const count = payload.imported_count ?? 0;
+      if (payload.destination === "dashboard") {
+        invalidateSpendingData();
+      }
       setBulkMessage(
         payload.destination === "dashboard"
           ? translate(locale, "bulkImportSuccessDashboard", { count: String(count) })
@@ -713,6 +718,7 @@ function ManualSpendingCard({
         }
         throw new Error(payload.detail ?? translate(locale, "errAddManualFailed"));
       }
+      invalidateSpendingData();
       setManualMessage(translate(locale, "dataEntryManualSuccess"));
       setManualMerchant("");
       setManualAmount("");
