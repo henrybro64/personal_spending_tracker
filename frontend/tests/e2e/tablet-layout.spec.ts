@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { countGridColumns } from "./support/layout";
+import { countGridColumns, expectGridColumns } from "./support/layout";
 import { mockAuthenticatedSession } from "./support/session";
 
 async function mockDashboardData(page: Page) {
@@ -303,13 +303,12 @@ test("dashboard keeps the desktop shell on common iPad landscape widths", async 
     await page.goto("/");
 
     const shell = page.getByTestId("dashboard-shell");
-    await expect(shell).toBeVisible();
     await expect(page.getByText("Spending by category")).toBeVisible();
-    expect(await countGridColumns(shell)).toBe(2);
+    await expectGridColumns(shell, 2);
 
     const metricGrid = page.getByTestId("dashboard-metric-grid");
     await expect(metricGrid).toBeVisible();
-    expect(await countGridColumns(metricGrid)).toBeGreaterThanOrEqual(2);
+    await expect.poll(async () => countGridColumns(metricGrid)).toBeGreaterThanOrEqual(2);
   }
 });
 
@@ -319,9 +318,7 @@ test("dashboard stacks the shell on iPad portrait widths", async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 1024 });
   await page.goto("/");
 
-  const shell = page.getByTestId("dashboard-shell");
-  await expect(shell).toBeVisible();
-  expect(await countGridColumns(shell)).toBe(1);
+  await expectGridColumns(page.getByTestId("dashboard-shell"), 1);
 });
 
 test("data-entry keeps a two-column manual form on iPad landscape", async ({ page }) => {
@@ -333,10 +330,9 @@ test("data-entry keeps a two-column manual form on iPad landscape", async ({ pag
   const shell = page.getByTestId("data-entry-shell");
   const manualGrid = page.getByTestId("manual-entry-primary-grid");
 
-  await expect(shell).toBeVisible();
   await expect(page.getByRole("button", { name: "Add spending" })).toBeVisible();
-  expect(await countGridColumns(shell)).toBe(2);
-  expect(await countGridColumns(manualGrid)).toBe(2);
+  await expectGridColumns(shell, 2);
+  await expectGridColumns(manualGrid, 2);
 });
 
 test("transactions and batch review remain readable on 1024px tablet landscape", async ({
@@ -348,14 +344,12 @@ test("transactions and batch review remain readable on 1024px tablet landscape",
   await page.setViewportSize({ width: 1024, height: 768 });
 
   await page.goto("/transactions");
-  await expect(page.getByTestId("transactions-shell")).toBeVisible();
   await expect(page.getByText("Original amount")).toBeVisible();
-  expect(await countGridColumns(page.getByTestId("transactions-shell"))).toBe(2);
+  await expectGridColumns(page.getByTestId("transactions-shell"), 2);
 
   await page.goto("/batch-review");
-  await expect(page.getByTestId("batch-review-shell")).toBeVisible();
   await expect(page.getByRole("table", { name: "Batch import review queue" })).toBeVisible();
-  expect(await countGridColumns(page.getByTestId("batch-review-shell"))).toBe(2);
+  await expectGridColumns(page.getByTestId("batch-review-shell"), 2);
 });
 
 test("settings and ai insights keep the tablet landscape shell", async ({ page }) => {
@@ -364,10 +358,8 @@ test("settings and ai insights keep the tablet landscape shell", async ({ page }
   await page.setViewportSize({ width: 1024, height: 768 });
 
   await page.goto("/settings");
-  await expect(page.getByTestId("settings-shell")).toBeVisible();
-  expect(await countGridColumns(page.getByTestId("settings-shell"))).toBe(2);
+  await expectGridColumns(page.getByTestId("settings-shell"), 2);
 
   await page.goto("/ai-insights");
-  await expect(page.getByTestId("ai-insights-shell")).toBeVisible();
-  expect(await countGridColumns(page.getByTestId("ai-insights-shell"))).toBe(2);
+  await expectGridColumns(page.getByTestId("ai-insights-shell"), 2);
 });
