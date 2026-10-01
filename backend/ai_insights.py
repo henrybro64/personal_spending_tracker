@@ -8,7 +8,7 @@ from typing import Literal, TypedDict
 import httpx
 
 from backend.currency import DisplayCurrency
-from backend.http_retry import request_with_retry
+from backend.http_retry import ATTEMPT_TIMEOUT_SECONDS, request_with_retry
 from backend.database import StoredTransaction, TimeRange
 from backend.spending import (
     DisplayTransaction,
@@ -78,6 +78,16 @@ class GeneratedInsightResult(TypedDict):
     generated_at: str
     insight_text: str
     citations: list[str]
+
+
+def _provider_http_timeout() -> httpx.Timeout:
+    """Read budget matches one retry attempt. Connect failures stay short."""
+    return httpx.Timeout(
+        connect=10.0,
+        read=ATTEMPT_TIMEOUT_SECONDS,
+        write=20.0,
+        pool=10.0,
+    )
 
 
 def default_model_for_provider(provider: AiProvider) -> str:
@@ -431,7 +441,7 @@ async def _request_openai_insights(
     system_prompt: str,
     user_prompt: str,
 ) -> tuple[str, list[str]]:
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with httpx.AsyncClient(timeout=_provider_http_timeout()) as client:
         response = await _post_openai(
             client,
             api_key=api_key,
@@ -519,7 +529,7 @@ async def _request_perplexity_insights(
     user_prompt: str,
     language: InsightLanguage,
 ) -> tuple[str, list[str]]:
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with httpx.AsyncClient(timeout=_provider_http_timeout()) as client:
         response = await _post_perplexity(
             client,
             api_key=api_key,

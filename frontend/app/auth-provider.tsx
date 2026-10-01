@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -56,6 +57,8 @@ function toSessionState(session: SessionResponse) {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthContextValue["status"]>("loading");
+  const statusRef = useRef(status);
+  statusRef.current = status;
   const [user, setUser] = useState<SessionUser | null>(null);
   const [claimedLegacyTransactions, setClaimedLegacyTransactions] = useState(0);
   const [claimedLegacyUploads, setClaimedLegacyUploads] = useState(0);
@@ -77,6 +80,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       applySession(session);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
+        applySession({
+          authenticated: false,
+          user: null,
+          claimed_legacy_transactions: 0,
+          claimed_legacy_uploads: 0,
+        });
+        return;
+      }
+      if (statusRef.current === "loading") {
         applySession({
           authenticated: false,
           user: null,

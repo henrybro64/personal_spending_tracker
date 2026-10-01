@@ -8,6 +8,7 @@ const BACKEND =
  * client. Outbound AI provider retries live in the backend. This proxy does
  * not retry, so one user action cannot be retried in more than one layer.
  * Batch PDF import can run many minutes; default Node fetch timeouts are too short.
+ * Provider retries in the backend must finish inside this non-batch limit.
  */
 const BATCH_IMPORT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;

@@ -116,6 +116,45 @@ async def test_provider_does_not_retry_auth_or_request_errors() -> None:
 
 
 @pytest.mark.anyio
+async def test_provider_does_not_replay_a_read_timeout() -> None:
+    scripted = ScriptedSend([httpx.ReadTimeout("response dropped")])
+    with pytest.raises(httpx.ReadTimeout):
+        await request_with_retry(
+            scripted,
+            provider="OpenAI",
+            sleep=_no_sleep,
+            random_value=lambda: 0.0,
+        )
+    assert scripted.calls == 1
+
+
+@pytest.mark.anyio
+async def test_provider_skips_an_attempt_that_would_miss_the_proxy_deadline() -> None:
+    scripted = ScriptedSend(
+        [httpx.Response(503, text="slow"), httpx.Response(200)]
+    )
+    samples = iter((0.0, 0.0, 60.0))
+
+    def clock() -> float:
+        try:
+            return next(samples)
+        except StopIteration:
+            return 60.0
+
+    response = await request_with_retry(
+        scripted,
+        provider="OpenAI",
+        sleep=_no_sleep,
+        random_value=lambda: 0.0,
+        clock=clock,
+        deadline_seconds=100.0,
+        attempt_timeout=45.0,
+    )
+    assert response.status_code == 503
+    assert scripted.calls == 1
+
+
+@pytest.mark.anyio
 async def test_provider_stops_after_the_attempt_limit() -> None:
     scripted = ScriptedSend(
         [

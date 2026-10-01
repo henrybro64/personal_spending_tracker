@@ -171,6 +171,40 @@ test("retry stops after the attempt limit and returns the last response", async 
   }
 });
 
+test("a hung request stops at the retry deadline instead of stacking attempts", async () => {
+  let calls = 0;
+  const restore = installFetch((_input, init) => {
+    calls += 1;
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (signal == null) {
+        return;
+      }
+      const fail = () => {
+        reject(signal.reason);
+      };
+      if (signal.aborted) {
+        fail();
+        return;
+      }
+      signal.addEventListener("abort", fail, { once: true });
+    });
+  });
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    await assert.rejects(
+      apiFetch("/auth/session", {
+        retry: { deadlineMs: 40, sleep: noWait, random: () => 0 },
+      }),
+      (error: unknown) => error instanceof Error && error.name === "TimeoutError"
+    );
+    assert.equal(calls, 1);
+  } finally {
+    clearInterval(keepAlive);
+    restore();
+  }
+});
+
 test("a mutation is not retried", async () => {
   let calls = 0;
   const restore = installFetch(async () => {

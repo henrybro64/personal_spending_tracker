@@ -26,6 +26,7 @@ import {
 } from "@fluentui/react-components";
 import { apiFetch, apiFetchJson, ApiError } from "../api";
 import {
+  DashboardRequestCoordinator,
   dashboardFailureMessage,
   isAbortError,
 } from "../dashboard-refresh";
@@ -470,26 +471,44 @@ export default function TransactionsPage() {
   const [deletingTransactionId, setDeletingTransactionId] = useState<number | null>(null);
   const [categoryDrafts, setCategoryDrafts] = useState<Record<number, string>>({});
   const [merchantDrafts, setMerchantDrafts] = useState<Record<number, string>>({});
+  const requestCoordinatorRef = useRef(new DashboardRequestCoordinator());
 
   useEffect(() => {
-    async function loadTransactions() {
-      const hasCurrent = transactionsRef.current.length > 0;
-      if (!hasCurrent) {
-        setLoading(true);
-      }
-      setError("");
-      setMessage("");
+    if (status !== "authenticated") {
+      setTransactions([]);
+      setLoading(status === "loading");
+      return;
+    }
+
+    const coordinator = requestCoordinatorRef.current;
+    const ticket = coordinator.start();
+    const hasCurrent = transactionsRef.current.length > 0;
+    if (!hasCurrent) {
+      setLoading(true);
+    }
+    setError("");
+    setMessage("");
+
+    void (async () => {
       try {
         const payload = await apiFetchJson<TransactionsResponse>(
           "/transactions?range=all&limit=5000",
-          translate(localeRef.current, "errRequestFailed")
+          translate(localeRef.current, "errRequestFailed"),
+          { signal: ticket.signal }
         );
-        setTransactions(payload.transactions);
-      } catch (loadError) {
-        if (isAbortError(loadError)) {
+        if (!coordinator.isLatest(ticket.generation) || ticket.signal.aborted) {
           return;
         }
-        const message = dashboardFailureMessage(
+        setTransactions(payload.transactions);
+      } catch (loadError) {
+        if (
+          isAbortError(loadError) ||
+          ticket.signal.aborted ||
+          !coordinator.isLatest(ticket.generation)
+        ) {
+          return;
+        }
+        const failureMessage = dashboardFailureMessage(
           loadError,
           transactionsRef.current.length > 0,
           {
@@ -497,23 +516,21 @@ export default function TransactionsPage() {
             unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
           }
         );
-        if (!message) {
+        if (!failureMessage) {
           await refreshSession();
           return;
         }
-        setError(message);
+        setError(failureMessage);
       } finally {
-        setLoading(false);
+        if (coordinator.isLatest(ticket.generation) && !ticket.signal.aborted) {
+          setLoading(false);
+        }
       }
-    }
+    })();
 
-    if (status === "authenticated") {
-      void loadTransactions();
-      return;
-    }
-
-    setTransactions([]);
-    setLoading(status === "loading");
+    return () => {
+      ticket.abort();
+    };
   }, [refreshSession, spendingRevision, status]);
 
   const merchantCandidates = useMemo(() => {

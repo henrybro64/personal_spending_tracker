@@ -53,9 +53,36 @@ export function retryDelayMs(timing: RetryTiming): number {
   return Math.min(timing.maxDelayMs, Math.max(0, jittered));
 }
 
+export function abortReason(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) {
+    return signal.reason;
+  }
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+/** One signal that aborts when any input aborts, keeping that abort's reason. */
+export function anyAbortSignal(signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController();
+  const onAbort = () => {
+    if (controller.signal.aborted) {
+      return;
+    }
+    const reason = signals.find((signal) => signal.aborted)?.reason;
+    controller.abort(reason);
+  };
+  for (const signal of signals) {
+    if (signal.aborted) {
+      onAbort();
+      return controller.signal;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+  return controller.signal;
+}
+
 export async function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
-    throw new DOMException("The operation was aborted.", "AbortError");
+    throw abortReason(signal);
   }
   if (ms <= 0) {
     return;
@@ -67,7 +94,7 @@ export async function delay(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);
-      reject(new DOMException("The operation was aborted.", "AbortError"));
+      reject(signal ? abortReason(signal) : new DOMException("The operation was aborted.", "AbortError"));
     };
     signal?.addEventListener("abort", onAbort, { once: true });
   });

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  anyAbortSignal,
   isRetryableMethod,
   parseRetryAfter,
   runWithRetry,
@@ -9,10 +10,16 @@ import {
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
+/**
+ * The Next.js proxy waits up to 120s and then returns 502. This budget aborts
+ * the in-flight GET so three hung attempts cannot stack into several minutes.
+ * Fast 502/503 responses still retry inside the budget.
+ */
 const DEFAULT_RETRY = {
   maxAttempts: 3,
   baseDelayMs: 500,
   maxDelayMs: 4_000,
+  deadlineMs: 20_000,
 } as const;
 
 export class ApiError extends Error {
@@ -29,6 +36,7 @@ export type RetryOptions = {
   maxAttempts?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
+  deadlineMs?: number;
   random?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 };
@@ -41,25 +49,34 @@ export async function apiFetch(path: string, init?: ApiFetchInit): Promise<Respo
   const { retry, ...fetchInit } = init ?? {};
   const method = fetchInit.method ?? "GET";
   const requestUrl = `${apiBaseUrl}${path}`;
+  const retryEnabled =
+    retry !== false && (retry != null || isRetryableMethod(method));
+  const policy = typeof retry === "object" && retry ? retry : {};
+  const signal = retryEnabled
+    ? anyAbortSignal(
+        [
+          AbortSignal.timeout(policy.deadlineMs ?? DEFAULT_RETRY.deadlineMs),
+          fetchInit.signal ?? undefined,
+        ].filter((item): item is AbortSignal => item != null)
+      )
+    : fetchInit.signal ?? undefined;
   const send = () =>
     fetch(requestUrl, {
       cache: "no-store",
       credentials: "include",
       ...fetchInit,
+      signal,
     });
 
-  const retryEnabled =
-    retry !== false && (retry != null || isRetryableMethod(method));
   if (!retryEnabled) {
     return send();
   }
 
-  const policy = typeof retry === "object" && retry ? retry : {};
   return runWithRetry({
     maxAttempts: policy.maxAttempts ?? DEFAULT_RETRY.maxAttempts,
     baseDelayMs: policy.baseDelayMs ?? DEFAULT_RETRY.baseDelayMs,
     maxDelayMs: policy.maxDelayMs ?? DEFAULT_RETRY.maxDelayMs,
-    signal: fetchInit.signal ?? undefined,
+    signal,
     random: policy.random,
     sleep: policy.sleep,
     run: send,
