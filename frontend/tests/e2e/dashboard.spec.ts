@@ -568,7 +568,7 @@ test("a failed refresh keeps the last dashboard numbers and can recover", async 
   phase = "fail";
   await page.getByRole("switch", { name: "Display currency" }).click();
   await expect(page.getByTestId("dashboard-stale-warning")).toContainText(
-    "Refresh failed. Showing the last successfully loaded data.",
+    "Refresh failed. Retrying automatically. Showing the last successfully loaded data.",
     { timeout: 15_000 }
   );
   await expect(page.getByText("US$4,321.09").first()).toBeVisible();
@@ -577,6 +577,103 @@ test("a failed refresh keeps the last dashboard numbers and can recover", async 
   phase = "recovered";
   await page.getByRole("switch", { name: "Display currency" }).click();
   await expect(page.getByText("US$222.22").first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByTestId("dashboard-stale-warning")).toHaveCount(0);
+});
+
+test("dashboard data appears on its own after the first load fails", async ({
+  page,
+}) => {
+  let open = false;
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    if (!open) {
+      await route.abort("failed");
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ uploads: [] }),
+    });
+  });
+  await page.route("**/api/dashboard/view**", async (route) => {
+    if (!open) {
+      await route.abort("failed");
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(buildDashboardView("USD")),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByTestId("dashboard-initial-recovery")).toContainText(
+    "Unable to load data right now. Retrying automatically…",
+    { timeout: 15_000 }
+  );
+  await expect(page.getByRole("button", { name: "Retry now" })).toBeVisible();
+  await expect(page.getByText("US$0.00")).toHaveCount(0);
+  await expect(page.getByText("No uploaded statements yet.")).toHaveCount(0);
+  await expect(
+    page.getByText("Upload a statement to activate merchant slicers.")
+  ).toHaveCount(0);
+  open = true;
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByTestId("dashboard-initial-recovery")).toHaveCount(0);
+});
+
+test("a loaded dashboard recovers automatically after an outage", async ({
+  page,
+}) => {
+  let phase: "ok" | "fail" | "recovered" = "ok";
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ uploads: [] }),
+    });
+  });
+  await page.route("**/api/dashboard/view**", async (route) => {
+    if (phase === "fail") {
+      await route.abort("failed");
+      return;
+    }
+    const currency =
+      new URL(route.request().url()).searchParams.get("currency") === "TWD"
+        ? "TWD"
+        : "USD";
+    const view = buildDashboardView(currency);
+    if (phase === "recovered") {
+      view.metrics.model_total_in_active_currency = 7777;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(view),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+
+  phase = "fail";
+  await page.getByRole("switch", { name: "Display currency" }).click();
+  await expect(page.getByTestId("dashboard-stale-warning")).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+
+  phase = "recovered";
+  await expect(page.getByText("NT$7,777.00").first()).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByTestId("dashboard-stale-warning")).toHaveCount(0);

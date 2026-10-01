@@ -1,6 +1,7 @@
 import asyncio
 import os
 import threading
+from contextlib import contextmanager
 from io import BytesIO
 
 import psycopg
@@ -54,8 +55,6 @@ async def test_batch_import_leaves_health_and_reads_responsive(
     release = threading.Event()
     worker_threads: list[int] = []
     database_threads: list[int] = []
-    original_connect = psycopg.connect
-
     def slow_import(self) -> BatchImportResult:
         del self
         worker_threads.append(threading.get_ident())
@@ -66,12 +65,18 @@ async def test_batch_import_leaves_health_and_reads_responsive(
             raise TimeoutError("batch import was not released")
         return _import_result()
 
-    def tracking_connect(*args, **kwargs):
+    import backend.database as database
+
+    original_connection = database.db_connection
+
+    @contextmanager
+    def tracking_connection(*args, **kwargs):
         database_threads.append(threading.get_ident())
-        return original_connect(*args, **kwargs)
+        with original_connection(*args, **kwargs) as connection:
+            yield connection
 
     monkeypatch.setattr(api_main.StatementImporter, "import_transactions", slow_import)
-    monkeypatch.setattr(psycopg, "connect", tracking_connect)
+    monkeypatch.setattr(database, "db_connection", tracking_connection)
 
     transport = ASGITransport(app=api_main.app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

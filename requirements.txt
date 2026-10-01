@@ -2,6 +2,7 @@ fastapi
 httpx
 pdfplumber
 psycopg[binary]
+psycopg-pool
 pytest
 python-multipart
 uvicorn[standard]

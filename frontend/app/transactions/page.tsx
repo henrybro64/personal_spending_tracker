@@ -24,12 +24,12 @@ import {
   shorthands,
   tokens,
 } from "@fluentui/react-components";
-import { apiFetch, apiFetchJson, ApiError } from "../api";
+import { apiFetch, apiFetchJson } from "../api";
 import {
   DashboardRequestCoordinator,
-  dashboardFailureMessage,
-  isAbortError,
+  recoverableReadFailure,
 } from "../dashboard-refresh";
+import { useReadRecovery } from "../read-recovery";
 import { invalidateSpendingData, useSpendingRevision } from "../server-state";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
@@ -457,6 +457,15 @@ export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const transactionsRef = useRef(transactions);
   transactionsRef.current = transactions;
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const hasLoadedRef = useRef(false);
+  const [failureId, setFailureId] = useState(0);
+  const [recoveryTick, setRecoveryTick] = useState(0);
+  const { retryNow, resetCycle } = useReadRecovery(
+    status === "authenticated",
+    failureId,
+    () => setRecoveryTick((tick) => tick + 1)
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -474,19 +483,25 @@ export default function TransactionsPage() {
   const requestCoordinatorRef = useRef(new DashboardRequestCoordinator());
 
   useEffect(() => {
+    resetCycle();
+  }, [resetCycle, spendingRevision, status]);
+
+  useEffect(() => {
     if (status !== "authenticated") {
+      hasLoadedRef.current = false;
+      setHasLoaded(false);
       setTransactions([]);
+      setFailureId(0);
+      setError("");
       setLoading(status === "loading");
       return;
     }
 
     const coordinator = requestCoordinatorRef.current;
     const ticket = coordinator.start();
-    const hasCurrent = transactionsRef.current.length > 0;
-    if (!hasCurrent) {
+    if (!hasLoadedRef.current) {
       setLoading(true);
     }
-    setError("");
     setMessage("");
 
     void (async () => {
@@ -499,28 +514,34 @@ export default function TransactionsPage() {
         if (!coordinator.isLatest(ticket.generation) || ticket.signal.aborted) {
           return;
         }
+        hasLoadedRef.current = true;
+        setHasLoaded(true);
         setTransactions(payload.transactions);
+        setError("");
+        setFailureId(0);
       } catch (loadError) {
-        if (
-          isAbortError(loadError) ||
-          ticket.signal.aborted ||
-          !coordinator.isLatest(ticket.generation)
-        ) {
-          return;
-        }
-        const failureMessage = dashboardFailureMessage(
+        const outcome = recoverableReadFailure(
           loadError,
-          transactionsRef.current.length > 0,
+          hasLoadedRef.current,
           {
             staleData: translate(localeRef.current, "dashboardStaleData"),
             unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
+          },
+          {
+            aborted: ticket.signal.aborted,
+            latest: coordinator.isLatest(ticket.generation),
           }
         );
-        if (!failureMessage) {
+        if (outcome.action === "ignore") {
+          return;
+        }
+        if (outcome.action === "unauthorized") {
+          setFailureId(0);
           await refreshSession();
           return;
         }
-        setError(failureMessage);
+        setError(outcome.message);
+        setFailureId((id) => id + 1);
       } finally {
         if (coordinator.isLatest(ticket.generation) && !ticket.signal.aborted) {
           setLoading(false);
@@ -531,7 +552,7 @@ export default function TransactionsPage() {
     return () => {
       ticket.abort();
     };
-  }, [refreshSession, spendingRevision, status]);
+  }, [recoveryTick, refreshSession, spendingRevision, status]);
 
   const merchantCandidates = useMemo(() => {
     const deduped = Array.from(
@@ -927,11 +948,11 @@ export default function TransactionsPage() {
                     </Button>
                   ))}
                 </div>
-              ) : (
+              ) : hasLoaded ? (
                 <Body1 className={styles.emptySlicerState}>
                   {translate(locale, "merchantSlicerEmpty")}
                 </Body1>
-              )}
+              ) : null}
             </div>
             <div className={styles.actions}>
               <Button
@@ -946,9 +967,11 @@ export default function TransactionsPage() {
               >
                 {translate(locale, "clearSlicers")}
               </Button>
-              <Badge appearance="outline" color="brand">
-                {filteredTransactions.length} {translate(locale, "rowsInViewSuffix")}
-              </Badge>
+              {hasLoaded ? (
+                <Badge appearance="outline" color="brand">
+                  {filteredTransactions.length} {translate(locale, "rowsInViewSuffix")}
+                </Badge>
+              ) : null}
             </div>
           </Card>
         </aside>
@@ -956,10 +979,12 @@ export default function TransactionsPage() {
         <section className={styles.reportArea}>
           <div className={styles.header}>
             <Title1>{translate(locale, "transactionsTitle")}</Title1>
-            <Body1>
-              {filteredTransactions.length} {translate(locale, "transactionsRecordsSuffix")} |{" "}
-              {netTotalLabel}: {totalAmountSummary}
-            </Body1>
+            {hasLoaded ? (
+              <Body1>
+                {filteredTransactions.length} {translate(locale, "transactionsRecordsSuffix")} |{" "}
+                {netTotalLabel}: {totalAmountSummary}
+              </Body1>
+            ) : null}
             <Body1 className={styles.headerNote}>
               {translate(locale, "transactionsCurrencyNote")}
             </Body1>
@@ -967,12 +992,24 @@ export default function TransactionsPage() {
           </div>
 
           <Card className={styles.card}>
-            {error ? (
-              <Body1 data-testid="transactions-load-warning">{error}</Body1>
+            {hasLoaded && error ? (
+              <div data-testid="transactions-load-warning">
+                <Body1>{error}</Body1>
+                <Button appearance="secondary" onClick={retryNow} size="small">
+                  {translate(locale, "retryNow")}
+                </Button>
+              </div>
             ) : null}
-            {loading && transactions.length === 0 ? (
+            {!hasLoaded && error ? (
+              <div data-testid="transactions-initial-recovery">
+                <Body1>{translate(locale, "initialRecovery")}</Body1>
+                <Button appearance="primary" onClick={retryNow} size="small">
+                  {translate(locale, "retryNow")}
+                </Button>
+              </div>
+            ) : loading && !hasLoaded ? (
               <Spinner label="Loading transactions..." />
-            ) : error && transactions.length === 0 ? null : (
+            ) : (
               <div className={styles.tableWrap}>
                 <div className={styles.drilldownPanel}>
                   <div className={styles.drilldownLabel}>

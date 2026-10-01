@@ -88,3 +88,48 @@ test("transactions page keeps mixed-currency totals grouped by original currency
     page.getByText("Original statement currency: NT$ (TWD)")
   ).toBeVisible();
 });
+
+test("transactions retry automatically and do not show a false zero balance", async ({
+  page,
+}) => {
+  let open = false;
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/transactions?range=all&limit=5000", async (route) => {
+    if (!open) {
+      await route.abort("failed");
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        transactions: [
+          {
+            id: 1,
+            date: "2025-04-21",
+            merchant: "RECOVERED CAFE",
+            amount: 18,
+            category: "Dining",
+            currency: "USD",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/transactions");
+  await expect(page.getByTestId("transactions-initial-recovery")).toContainText(
+    "Unable to load data right now. Retrying automatically…",
+    { timeout: 15_000 }
+  );
+  await expect(page.getByText("US$0.00")).toHaveCount(0);
+  await expect(page.getByText(/0 records/)).toHaveCount(0);
+  await expect(
+    page.getByText("Upload a statement to activate merchant slicers.")
+  ).toHaveCount(0);
+  open = true;
+  await expect(
+    page.getByRole("textbox", { name: "Merchant for transaction 1" })
+  ).toHaveValue("RECOVERED CAFE", { timeout: 15_000 });
+  await expect(page.getByTestId("transactions-initial-recovery")).toHaveCount(0);
+});

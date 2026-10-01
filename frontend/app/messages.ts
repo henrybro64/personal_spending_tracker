@@ -225,7 +225,10 @@ const en = {
   errRequestFailed: "Request failed.",
   errDashboardUnavailable: "Dashboard data is unavailable.",
   errUnableToRefresh: "Unable to refresh data. Check your connection and try again.",
-  dashboardStaleData: "Refresh failed. Showing the last successfully loaded data.",
+  dashboardStaleData:
+    "Refresh failed. Retrying automatically. Showing the last successfully loaded data.",
+  initialRecovery: "Unable to load data right now. Retrying automatically…",
+  retryNow: "Retry now",
   errAiSettingsLoad: "Failed to load AI settings.",
   errAiSettingsSave: "Failed to save AI settings.",
   errAiSettingsDelete: "Failed to remove the saved key.",
@@ -463,7 +466,10 @@ const zhHant: Record<keyof typeof en, string> = {
   errRequestFailed: "請求失敗。",
   errDashboardUnavailable: "無法取得儀表板資料。",
   errUnableToRefresh: "無法更新資料，請檢查連線後再試。",
-  dashboardStaleData: "資料更新失敗，目前顯示上次成功載入的資料。",
+  dashboardStaleData:
+    "資料更新失敗，正在自動重試。目前顯示上次成功載入的資料。",
+  initialRecovery: "暫時無法載入資料，正在自動重試…",
+  retryNow: "立即重試",
   errAiSettingsLoad: "無法載入 AI 設定。",
   errAiSettingsSave: "無法儲存 AI 設定。",
   errAiSettingsDelete: "無法移除儲存的金鑰。",

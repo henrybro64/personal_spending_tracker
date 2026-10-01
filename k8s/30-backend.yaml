@@ -170,12 +170,13 @@ spec:
               mountPath: /app/batch
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 10
-            failureThreshold: 6
+            timeoutSeconds: 8
+            # Three misses, 10s apart, take the pod out of rotation.
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
@@ -183,9 +184,8 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 30
             timeoutSeconds: 10
-            # /health stays on the event loop, so a saturated worker pool does
-            # not fail this probe. Three misses restart a process whose loop is
-            # actually stuck.
+            # Three misses restart a stuck event loop. This probe does not
+            # query Postgres.
             failureThreshold: 3
       volumes:
         - name: uploads-data

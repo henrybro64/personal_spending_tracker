@@ -126,6 +126,30 @@ export function dashboardFailureMessage(
   return copy.unableToRefresh;
 }
 
+export type RecoverableReadFailure =
+  | { action: "ignore" }
+  | { action: "unauthorized" }
+  | { action: "show"; message: string };
+
+/** Classify a finished read. Abort and a stale response do not schedule another try. */
+export function recoverableReadFailure(
+  error: unknown,
+  hasData: boolean,
+  copy: DashboardFailureCopy,
+  request: { aborted: boolean; latest: boolean }
+): RecoverableReadFailure {
+  if (isAbortError(error) || request.aborted || !request.latest) {
+    return { action: "ignore" };
+  }
+  if (isUnauthorizedError(error)) {
+    return { action: "unauthorized" };
+  }
+  return {
+    action: "show",
+    message: dashboardFailureMessage(error, hasData, copy) || copy.unableToRefresh,
+  };
+}
+
 export function reduceDashboardLoad<TView, TUploads>(
   current: { view: TView | null; uploads: TUploads[] },
   snapshot: {

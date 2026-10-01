@@ -3,6 +3,7 @@ import heapq
 import logging
 import os
 import sys
+import threading
 from datetime import date
 from contextlib import asynccontextmanager
 from hashlib import sha256
@@ -31,6 +32,7 @@ from fastapi import (  # noqa: E402
 )
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
+import psycopg  # noqa: E402
 
 from backend.auth import (  # noqa: E402
     attach_session_cookie,
@@ -133,11 +135,52 @@ from backend.pdf_utils import (  # noqa: E402
     read_statement_pdf,
 )
 from backend.process_pool import shutdown_process_pool  # noqa: E402
+from backend.db import (  # noqa: E402
+    bind_request_context,
+    clear_request_context,
+    close_all_pools,
+    failure_category,
+    ping_database,
+    pool_stats,
+)
 
 
 DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
 LOCAL_FRONTEND_ORIGINS = ("http://localhost:3000",)
 logger = logging.getLogger(__name__)
+_schema_ready = False
+_schema_lock = threading.Lock()
+
+
+def ensure_schema() -> None:
+    """Apply migrations once. Later calls are a flag check."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        init_db()
+        _schema_ready = True
+
+
+def prepare_schema_on_startup() -> None:
+    """Try migrations, but keep the process up when Postgres is unreachable.
+
+    ``/ready`` calls :func:`ensure_schema` again, so a database that was down
+    at boot becomes ready without restarting this process.
+    """
+    try:
+        ensure_schema()
+    except RuntimeError as exc:
+        if "DATABASE_URL environment variable is required" not in str(exc):
+            raise
+    except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
+        logger.warning(
+            "database schema setup deferred category=%s error_type=%s",
+            failure_category(exc),
+            type(exc).__name__,
+        )
 
 
 class UploadResponse(TypedDict):
@@ -722,16 +765,15 @@ def _get_batch_import_store(
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    try:
-        # Schema setup talks to Postgres. Keep it off the event loop.
-        await asyncio.to_thread(init_db)
-    except RuntimeError as exc:
-        if "DATABASE_URL environment variable is required" not in str(exc):
-            raise
+    # Schema setup talks to Postgres. Keep it off the event loop.
+    # A down database must not kill the process: /health stays up and
+    # /ready retries migrations.
+    await asyncio.to_thread(prepare_schema_on_startup)
     try:
         yield
     finally:
         shutdown_process_pool()
+        close_all_pools()
 
 
 # Concurrency model: one Uvicorn worker. `/health` stays on the event loop.
@@ -754,7 +796,11 @@ app.add_middleware(
 async def attach_request_id(request: Request, call_next):
     request_id = request.headers.get("x-request-id") or uuid4().hex
     request.state.request_id = request_id
-    response = await call_next(request)
+    bind_request_context(request_id=request_id, endpoint=request.url.path)
+    try:
+        response = await call_next(request)
+    finally:
+        clear_request_context()
     response.headers["X-Request-ID"] = request_id
     return response
 
@@ -766,8 +812,55 @@ async def read_root() -> dict[str, str]:
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
-    # Stay on the event loop so a saturated worker pool cannot hide a live process.
+    # Liveness only. Do not query Postgres.
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, object]:
+    """Readiness. SELECT 1, or 503 when Postgres cannot serve queries."""
+    try:
+        ensure_schema()
+        latency_ms = ping_database()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "unavailable",
+                "failure_category": failure_category(exc),
+            },
+        ) from exc
+    return {"status": "ok", "database_latency_ms": round(latency_ms, 1)}
+
+
+@app.get("/diagnostics")
+def diagnostics(
+    current_user: UserRecord = Depends(require_current_user),
+) -> dict[str, object]:
+    """Safe ops snapshot for a signed-in user. No credentials or spending rows."""
+    del current_user
+    try:
+        latency_ms = ping_database()
+    except Exception as exc:
+        stats = pool_stats()
+        return {
+            "api": "ok",
+            "database": "unavailable",
+            "database_ok": False,
+            "failure_category": failure_category(exc),
+            "database_latency_ms": None,
+            "pool_size": stats["pool_size"],
+            "pool_available": stats["pool_available"],
+        }
+    stats = pool_stats()
+    return {
+        "api": "ok",
+        "database": "ok",
+        "database_ok": True,
+        "database_latency_ms": round(latency_ms, 1),
+        "pool_size": stats["pool_size"],
+        "pool_available": stats["pool_available"],
+    }
 
 
 @app.get("/auth/session")

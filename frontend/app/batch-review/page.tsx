@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -28,6 +28,11 @@ import {
 } from "@fluentui/react-components";
 
 import { apiFetch, ApiError, apiFetchJson } from "../api";
+import {
+  DashboardRequestCoordinator,
+  recoverableReadFailure,
+} from "../dashboard-refresh";
+import { useReadRecovery } from "../read-recovery";
 import { invalidateSpendingData } from "../server-state";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
@@ -388,64 +393,127 @@ export default function BatchReviewPage() {
   const [digitNoisePendingCount, setDigitNoisePendingCount] = useState(0);
   const [dismissingDigitNoise, setDismissingDigitNoise] = useState(false);
   const [autoCategorizing, setAutoCategorizing] = useState(false);
+  const [loadMessage, setLoadMessage] = useState("");
+  const [failureId, setFailureId] = useState(0);
+  const [recoveryTick, setRecoveryTick] = useState(0);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const hasLoadedRef = useRef(false);
+  const failureIdRef = useRef(failureId);
+  failureIdRef.current = failureId;
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const refreshSessionRef = useRef(refreshSession);
+  refreshSessionRef.current = refreshSession;
+  const coordinatorRef = useRef(new DashboardRequestCoordinator());
+  const { retryNow, resetCycle } = useReadRecovery(
+    status === "authenticated",
+    failureId,
+    () => setRecoveryTick((tick) => tick + 1)
+  );
 
   async function loadBatchState(reviewOnly: boolean) {
+    const coordinator = coordinatorRef.current;
+    const ticket = coordinator.start();
+    const activeLocale = localeRef.current;
     setLoading(true);
-    setError("");
+    if (failureIdRef.current === 0) {
+      setLoadMessage("");
+    }
     try {
       const latestPayload = await apiFetchJson<BatchImportLatestResponse>(
         "/batch-imports/latest",
-        "Failed to load batch-import status."
+        "Failed to load batch-import status.",
+        { signal: ticket.signal }
       );
       const activeRunId = latestPayload.run?.id ?? null;
       const [transactionsPayload, merchantsPayload, digitNoisePayload] =
         await Promise.all([
           apiFetchJson<BatchTransactionsResponse>(
             `/batch-imports/transactions?needs_review_only=${reviewOnly}&limit=500`,
-            "Failed to load batch-import transactions."
+            "Failed to load batch-import transactions.",
+            { signal: ticket.signal }
           ),
           activeRunId
             ? apiFetchJson<NeedsReviewMerchantsResponse>(
                 `/batch-imports/needs-review-merchants?run_id=${activeRunId}&limit=20`,
-                "Failed to load review merchants."
+                "Failed to load review merchants.",
+                { signal: ticket.signal }
               )
             : Promise.resolve({ merchants: [] }),
           activeRunId
             ? apiFetchJson<{ pending_count: number }>(
                 `/batch-imports/digit-noise-pending-count?run_id=${activeRunId}`,
-                "Failed to load junk merchant count."
+                "Failed to load junk merchant count.",
+                { signal: ticket.signal }
               )
             : Promise.resolve({ pending_count: 0 }),
         ]);
+      if (!coordinator.isLatest(ticket.generation) || ticket.signal.aborted) {
+        return;
+      }
       setRun(latestPayload.run);
       setTransactions(transactionsPayload.transactions);
       setNeedsReviewMerchants(merchantsPayload.merchants);
       setDigitNoisePendingCount(digitNoisePayload.pending_count);
+      hasLoadedRef.current = true;
+      setHasLoaded(true);
+      setLoadMessage("");
+      setFailureId(0);
     } catch (loadError) {
-      if (loadError instanceof ApiError && loadError.status === 401) {
-        await refreshSession();
+      const outcome = recoverableReadFailure(
+        loadError,
+        hasLoadedRef.current,
+        {
+          staleData: translate(activeLocale, "dashboardStaleData"),
+          unableToRefresh: translate(activeLocale, "initialRecovery"),
+        },
+        {
+          aborted: ticket.signal.aborted,
+          latest: coordinator.isLatest(ticket.generation),
+        }
+      );
+      if (outcome.action === "ignore") {
         return;
       }
-      setError(
-        loadError instanceof Error
-          ? loadError.message
-          : "Failed to load batch-review data."
-      );
+      if (outcome.action === "unauthorized") {
+        setFailureId(0);
+        await refreshSessionRef.current();
+        return;
+      }
+      setLoadMessage(outcome.message);
+      setFailureId((id) => id + 1);
     } finally {
-      setLoading(false);
+      if (coordinator.isLatest(ticket.generation) && !ticket.signal.aborted) {
+        setLoading(false);
+      }
     }
   }
 
+  const loadBatchStateRef = useRef(loadBatchState);
+  loadBatchStateRef.current = loadBatchState;
+
+  useEffect(() => {
+    resetCycle();
+  }, [needsReviewOnly, resetCycle, status]);
+
   useEffect(() => {
     if (status === "authenticated") {
-      void loadBatchState(needsReviewOnly);
-      return;
+      void loadBatchStateRef.current(needsReviewOnly);
+      return () => {
+        coordinatorRef.current.start();
+      };
     }
 
     setLoading(status === "loading");
-    setRun(null);
-    setTransactions([]);
-  }, [needsReviewOnly, refreshSession, status]);
+    if (status !== "loading") {
+      setRun(null);
+      setTransactions([]);
+      hasLoadedRef.current = false;
+      setHasLoaded(false);
+      setFailureId(0);
+      setLoadMessage("");
+    }
+  }, [needsReviewOnly, recoveryTick, status]);
 
   const activeReviewCount = useMemo(
     () => transactions.filter((transaction) => transaction.needs_review).length,
@@ -944,9 +1012,11 @@ export default function BatchReviewPage() {
               <Button appearance="secondary" disabled={running || !run} onClick={onSyncToDashboard}>
                 Sync to dashboard
               </Button>
-              <Badge appearance="outline" color="brand">
-                {run ? `${run.transaction_count} normalized rows` : "No run yet"}
-              </Badge>
+              {hasLoaded ? (
+                <Badge appearance="outline" color="brand">
+                  {run ? `${run.transaction_count} normalized rows` : "No run yet"}
+                </Badge>
+              ) : null}
               {loading ? <Spinner size="tiny" label="Refreshing queue" /> : null}
             </div>
 
@@ -1002,13 +1072,31 @@ export default function BatchReviewPage() {
                   </div>
                 </div>
               </>
-            ) : (
+            ) : hasLoaded ? (
               <Body1 className={styles.quietText}>
                 No batch import has been run yet on the default SQLite store.
               </Body1>
-            )}
+            ) : null}
           </Card>
 
+          {loadMessage ? (
+            <div
+              data-testid={
+                hasLoaded
+                  ? "batch-review-stale-warning"
+                  : "batch-review-initial-recovery"
+              }
+            >
+              <MessageBar intent={hasLoaded ? "error" : "warning"}>
+                <MessageBarBody>
+                  {loadMessage}
+                  <Button appearance="secondary" onClick={retryNow} size="small">
+                    {translate(locale, "retryNow")}
+                  </Button>
+                </MessageBarBody>
+              </MessageBar>
+            </div>
+          ) : null}
           {error ? (
             <MessageBar intent="error">
               <MessageBarBody>{error}</MessageBarBody>
@@ -1151,7 +1239,7 @@ export default function BatchReviewPage() {
               />
             </div>
 
-            {!transactions.length && !loading ? (
+            {!transactions.length && !loading && hasLoaded ? (
               <Body1 className={styles.quietText}>
                 {run
                   ? "No transactions match the current review filter."
