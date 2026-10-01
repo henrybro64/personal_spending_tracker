@@ -177,3 +177,150 @@ test("batch review page loads queue, runs import, and syncs to dashboard", async
   await expect(page.getByText("Synced 1 transaction(s) to the dashboard.")).toBeVisible();
   expect(mergePayload).toMatchObject({ run_id: sampleRun.id });
 });
+
+test("batch review queue appears on its own after the first load fails", async ({
+  page,
+}) => {
+  let open = false;
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/batch-imports/**", async (route) => {
+    if (!open) {
+      await route.abort("failed");
+      return;
+    }
+    const url = route.request().url();
+    if (url.includes("/batch-imports/latest")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ run: sampleRun }),
+      });
+      return;
+    }
+    if (url.includes("/batch-imports/transactions")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          transactions: sampleTransactions.filter(
+            (transaction) => transaction.needs_review
+          ),
+        }),
+      });
+      return;
+    }
+    if (url.includes("/batch-imports/needs-review-merchants")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ merchants: [] }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ pending_count: 0 }),
+    });
+  });
+
+  await page.goto("/batch-review");
+  await expect(page.getByTestId("batch-review-initial-recovery")).toContainText(
+    "Unable to load data right now. Retrying automatically…",
+    { timeout: 15_000 }
+  );
+  await expect(page.getByRole("button", { name: "Retry now" })).toBeVisible();
+  await expect(
+    page.getByText("Run the batch import to populate the review queue.")
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("No batch import has been run yet on the default SQLite store.")
+  ).toHaveCount(0);
+  await expect(page.getByText("No run yet")).toHaveCount(0);
+  open = true;
+  await expect(
+    page.getByRole("textbox", { name: "Merchant for transaction 12" })
+  ).toHaveValue("UNKNOWN MERCHANT", { timeout: 15_000 });
+  await expect(page.getByTestId("batch-review-initial-recovery")).toHaveCount(0);
+});
+
+test("a loaded batch review keeps its rows and recovers after an outage", async ({
+  page,
+}) => {
+  let open = true;
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/batch-imports/**", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    if (!open) {
+      await route.abort("failed");
+      return;
+    }
+    const url = route.request().url();
+    if (url.includes("/batch-imports/latest")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ run: sampleRun }),
+      });
+      return;
+    }
+    if (url.includes("/batch-imports/transactions")) {
+      const reviewOnly = new URL(url).searchParams.get("needs_review_only") === "true";
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          transactions: reviewOnly
+            ? sampleTransactions.filter((transaction) => transaction.needs_review)
+            : sampleTransactions,
+        }),
+      });
+      return;
+    }
+    if (url.includes("/batch-imports/needs-review-merchants")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ merchants: [] }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ pending_count: 0 }),
+    });
+  });
+
+  await page.goto("/batch-review");
+  const reviewTable = page.getByRole("table", {
+    name: "Batch import review queue",
+  });
+  await expect(
+    reviewTable.getByRole("textbox", { name: "Merchant for transaction 12" })
+  ).toHaveValue("UNKNOWN MERCHANT");
+
+  open = false;
+  await page.getByRole("switch", { name: "Show only flagged rows" }).uncheck();
+  await expect(page.getByTestId("batch-review-stale-warning")).toContainText(
+    "Refresh failed. Retrying automatically. Showing the last successfully loaded data.",
+    { timeout: 15_000 }
+  );
+  await expect(
+    reviewTable.getByRole("textbox", { name: "Merchant for transaction 12" })
+  ).toHaveValue("UNKNOWN MERCHANT");
+  await expect(
+    reviewTable.getByRole("textbox", { name: "Merchant for transaction 11" })
+  ).toHaveCount(0);
+
+  open = true;
+  await expect(
+    reviewTable.getByRole("textbox", { name: "Merchant for transaction 11" })
+  ).toHaveValue("STARBUCKS", { timeout: 15_000 });
+  await expect(page.getByTestId("batch-review-stale-warning")).toHaveCount(0);
+});

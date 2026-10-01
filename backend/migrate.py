@@ -7,6 +7,8 @@ from typing import Any
 
 import psycopg
 
+from backend.db import migration_connection
+
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 _MIGRATION_NAME_PATTERN = re.compile(r"^(\d+)_.+\.sql$")
 
@@ -136,7 +138,7 @@ def _backfill_statement_uploads(cursor: psycopg.Cursor[Any]) -> None:
 def migrate_database(database_url: str) -> list[str]:
     applied_now: list[str] = []
 
-    with psycopg.connect(database_url) as connection:
+    with migration_connection(database_url) as connection:
         with connection.cursor() as cursor:
             _ensure_schema_migrations_table(cursor)
             applied_versions = _applied_versions(cursor)

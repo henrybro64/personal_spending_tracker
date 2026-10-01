@@ -5,6 +5,8 @@ from typing import Any, Literal, TypedDict
 import psycopg
 from psycopg.types.json import Json
 
+from backend.db import db_connection
+
 from backend.currency import (
     DEFAULT_BASE_CURRENCY,
     derive_base_money_fields,
@@ -210,7 +212,7 @@ def create_user(
     normalized_email = email.strip().lower()
     normalized_display_name = display_name.strip()
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -348,7 +350,7 @@ def maybe_claim_legacy_data_for_first_user(
 ) -> dict[str, int]:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(%s)",
@@ -376,7 +378,7 @@ def register_new_user(
     normalized_email = email.strip().lower()
     normalized_display_name = display_name.strip()
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(%s)",
@@ -413,18 +415,20 @@ def get_user_auth_by_email(
     resolved_database_url = _resolve_database_url(database_url)
     normalized_email = email.strip().lower()
 
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, email, display_name, created_at, password_hash
-                FROM users
-                WHERE email = %s
-                LIMIT 1
-                """,
-                (normalized_email,),
-            )
-            row = cursor.fetchone()
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT id, email, display_name, created_at, password_hash
+            FROM users
+            WHERE email = %s
+            LIMIT 1
+            """,
+            (normalized_email,),
+        )
+        row = cursor.fetchone()
 
     if not row:
         return None
@@ -445,18 +449,20 @@ def get_user_by_id(
 ) -> UserRecord | None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, email, display_name, created_at
-                FROM users
-                WHERE id = %s
-                LIMIT 1
-                """,
-                (user_id,),
-            )
-            row = cursor.fetchone()
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT id, email, display_name, created_at
+            FROM users
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cursor.fetchone()
 
     if not row:
         return None
@@ -476,7 +482,7 @@ def update_user_last_login(
 ) -> None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -497,7 +503,7 @@ def create_session(
 ) -> None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -515,7 +521,7 @@ def get_user_for_session(
 ) -> UserRecord | None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -570,7 +576,7 @@ def revoke_session(
 ) -> None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -599,7 +605,7 @@ def record_audit_event(
 ) -> None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -637,7 +643,7 @@ def list_user_ai_provider_settings(
 ) -> list[UserAiProviderSettingRecord]:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -714,7 +720,7 @@ def _upsert_user_ai_provider_setting_once(
     normalized_api_key = api_key.strip() if api_key and api_key.strip() else None
     normalized_model = model.strip() if model and model.strip() else None
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(%s::integer, hashtext(%s))",
@@ -839,7 +845,7 @@ def delete_user_ai_provider_setting(
 ) -> bool:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -907,7 +913,7 @@ def get_user_ai_provider_secret(
         """
         params = (encryption_key, user_id, provider)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(query, params)
             row = cursor.fetchone()
@@ -942,7 +948,11 @@ def create_statement_upload(
     resolved_database_url = _resolve_database_url(database_url)
 
     try:
-        with psycopg.connect(resolved_database_url) as connection:
+        with db_connection(
+            resolved_database_url,
+            operation="create_statement_upload",
+            statement_timeout_ms=None,
+        ) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
@@ -1051,7 +1061,11 @@ def insert_transactions(
             )
         )
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(
+        resolved_database_url,
+        operation="insert_transactions",
+        statement_timeout_ms=None,
+    ) as connection:
         with connection.cursor() as cursor:
             cursor.executemany(
                 """
@@ -1138,7 +1152,7 @@ def insert_manual_transaction(
         else "Manual entry"
     )
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 f"""
@@ -1234,7 +1248,7 @@ def update_transaction(
     if normalized_category is None and normalized_merchant is None:
         return None
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -1303,7 +1317,7 @@ def delete_transaction(
     database_url: str | None = None,
 ) -> bool:
     resolved_database_url = _resolve_database_url(database_url)
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -1329,7 +1343,7 @@ def delete_transaction_by_match(
 ) -> bool:
     """Remove a dashboard row that came from batch merge (best-effort match)."""
     resolved_database_url = _resolve_database_url(database_url)
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -1385,7 +1399,7 @@ def count_statement_uploads(
     """All statement uploads for this user, including rows with no transactions."""
     resolved_database_url = _resolve_database_url(database_url)
     with (
-        psycopg.connect(resolved_database_url) as connection,
+        db_connection(resolved_database_url) as connection,
         connection.cursor() as cursor,
     ):
         cursor.execute(
@@ -1447,67 +1461,69 @@ def get_recent_uploads(
 ) -> list[RecentUpload]:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT
+                statement_uploads.id,
+                statement_uploads.stored_file_name,
+                statement_uploads.original_file_name,
+                COUNT(transactions.id) AS transaction_count,
+                COALESCE(SUM(COALESCE(transactions.original_amount, transactions.amount)), 0)
+                    AS total_amount,
+                statement_uploads.uploaded_at,
+                statement_uploads.parse_status
+            FROM statement_uploads
+            LEFT JOIN transactions
+                ON transactions.statement_upload_id = statement_uploads.id
+            WHERE statement_uploads.user_id = %s
+            GROUP BY statement_uploads.id
+            ORDER BY statement_uploads.uploaded_at DESC, statement_uploads.id DESC
+            LIMIT %s
+            """,
+            (user_id, limit),
+        )
+        rows = cursor.fetchall()
+
+        upload_ids = [int(row[0]) for row in rows]
+        currency_totals_by_upload: dict[int, list[RecentUploadCurrencyTotal]] = {
+            upload_id: [] for upload_id in upload_ids
+        }
+        if upload_ids:
             cursor.execute(
                 """
                 SELECT
-                    statement_uploads.id,
-                    statement_uploads.stored_file_name,
-                    statement_uploads.original_file_name,
-                    COUNT(transactions.id) AS transaction_count,
-                    COALESCE(SUM(COALESCE(transactions.original_amount, transactions.amount)), 0)
-                        AS total_amount,
-                    statement_uploads.uploaded_at,
-                    statement_uploads.parse_status
-                FROM statement_uploads
-                LEFT JOIN transactions
-                    ON transactions.statement_upload_id = statement_uploads.id
-                WHERE statement_uploads.user_id = %s
-                GROUP BY statement_uploads.id
-                ORDER BY statement_uploads.uploaded_at DESC, statement_uploads.id DESC
-                LIMIT %s
-                """,
-                (user_id, limit),
-            )
-            rows = cursor.fetchall()
-
-            upload_ids = [int(row[0]) for row in rows]
-            currency_totals_by_upload: dict[int, list[RecentUploadCurrencyTotal]] = {
-                upload_id: [] for upload_id in upload_ids
-            }
-            if upload_ids:
-                cursor.execute(
-                    """
-                    SELECT
-                        statement_upload_id,
-                        COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
-                            AS currency,
-                        COALESCE(SUM(COALESCE(original_amount, amount)), 0)
-                            AS total_amount,
-                        COUNT(*) AS transaction_count
-                    FROM transactions
-                    WHERE statement_upload_id = ANY(%s)
-                    GROUP BY
-                        statement_upload_id,
-                        COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
-                    ORDER BY statement_upload_id ASC, currency ASC
-                    """,
-                    (upload_ids,),
-                )
-                for (
                     statement_upload_id,
-                    currency,
-                    total_amount,
-                    transaction_count,
-                ) in cursor.fetchall():
-                    currency_totals_by_upload[int(statement_upload_id)].append(
-                        {
-                            "currency": str(currency),
-                            "total_amount": float(total_amount),
-                            "transaction_count": int(transaction_count),
-                        }
-                    )
+                    COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
+                        AS currency,
+                    COALESCE(SUM(COALESCE(original_amount, amount)), 0)
+                        AS total_amount,
+                    COUNT(*) AS transaction_count
+                FROM transactions
+                WHERE statement_upload_id = ANY(%s)
+                GROUP BY
+                    statement_upload_id,
+                    COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
+                ORDER BY statement_upload_id ASC, currency ASC
+                """,
+                (upload_ids,),
+            )
+            for (
+                statement_upload_id,
+                currency,
+                total_amount,
+                transaction_count,
+            ) in cursor.fetchall():
+                currency_totals_by_upload[int(statement_upload_id)].append(
+                    {
+                        "currency": str(currency),
+                        "total_amount": float(total_amount),
+                        "transaction_count": int(transaction_count),
+                    }
+                )
 
     return [
         {
@@ -1572,16 +1588,15 @@ def iter_transactions(
         range_key=range_key,
         limit=limit,
     )
-    connection = psycopg.connect(resolved_database_url)
-    cursor = connection.cursor(name="transaction_scan")
-    cursor.itersize = 200
-    try:
-        cursor.execute(transaction_query, query_params)
-        for row in cursor:
-            yield _stored_transaction_from_row(row)
-    finally:
-        cursor.close()
-        connection.close()
+    with db_connection(resolved_database_url, operation="iter_transactions") as connection:
+        cursor = connection.cursor(name="transaction_scan")
+        cursor.itersize = 200
+        try:
+            cursor.execute(transaction_query, query_params)
+            for row in cursor:
+                yield _stored_transaction_from_row(row)
+        finally:
+            cursor.close()
 
 
 def get_transactions(
@@ -1598,7 +1613,7 @@ def get_transactions(
         limit=limit,
     )
     with (
-        psycopg.connect(resolved_database_url) as connection,
+        db_connection(resolved_database_url) as connection,
         connection.cursor() as cursor,
     ):
         cursor.execute(transaction_query, query_params)
@@ -1615,25 +1630,27 @@ def get_existing_upload_by_fingerprint(
 ) -> ExistingUpload | None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    stored_file_name,
-                    original_file_name,
-                    uploaded_at,
-                    parse_status
-                FROM statement_uploads
-                WHERE user_id = %s
-                  AND file_fingerprint_sha256 = %s
-                ORDER BY uploaded_at DESC, id DESC
-                LIMIT 1
-                """,
-                (user_id, file_fingerprint_sha256),
-            )
-            row = cursor.fetchone()
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT
+                id,
+                stored_file_name,
+                original_file_name,
+                uploaded_at,
+                parse_status
+            FROM statement_uploads
+            WHERE user_id = %s
+              AND file_fingerprint_sha256 = %s
+            ORDER BY uploaded_at DESC, id DESC
+            LIMIT 1
+            """,
+            (user_id, file_fingerprint_sha256),
+        )
+        row = cursor.fetchone()
 
     if not row:
         return None
@@ -1660,23 +1677,25 @@ def get_statement_upload_for_user(
 ) -> StatementUploadDetail | None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    stored_file_name,
-                    original_file_name,
-                    uploaded_at,
-                    parse_status
-                FROM statement_uploads
-                WHERE id = %s
-                  AND user_id = %s
-                """,
-                (upload_id, user_id),
-            )
-            row = cursor.fetchone()
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT
+                id,
+                stored_file_name,
+                original_file_name,
+                uploaded_at,
+                parse_status
+            FROM statement_uploads
+            WHERE id = %s
+              AND user_id = %s
+            """,
+            (upload_id, user_id),
+        )
+        row = cursor.fetchone()
 
     if not row:
         return None
@@ -1700,7 +1719,7 @@ def delete_statement_upload_for_user(
 ) -> StatementUploadDetail | None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -1756,7 +1775,7 @@ def purge_expired_audit_logs(
 ) -> int:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -1779,7 +1798,7 @@ def purge_expired_statement_uploads(
     resolved_database_url = _resolve_database_url(database_url)
     cutoff_days = max(retention_days, 1)
 
-    with psycopg.connect(resolved_database_url) as connection:
+    with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """

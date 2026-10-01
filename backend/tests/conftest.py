@@ -185,7 +185,12 @@ def database_url(tmp_path_factory: pytest.TempPathFactory) -> str:
 
         database.init_db(configured)
         _wait_for_postgres(configured)
-        yield configured
+        try:
+            yield configured
+        finally:
+            from backend.db import close_all_pools
+
+            close_all_pools()
         return
 
     dsn, teardown = _start_ephemeral_postgres(tmp_path_factory)
@@ -193,6 +198,9 @@ def database_url(tmp_path_factory: pytest.TempPathFactory) -> str:
     try:
         yield dsn
     finally:
+        from backend.db import close_all_pools
+
+        close_all_pools()
         subprocess.run(
             [
                 teardown["dropdb"],
@@ -292,6 +300,14 @@ def api_main(
     else:
         api_main = importlib.import_module("backend.main")
     return api_main
+
+
+@pytest.fixture(autouse=True)
+def close_db_pools_after_test():
+    yield
+    from backend.db import close_all_pools
+
+    close_all_pools()
 
 
 @pytest.fixture(autouse=True)

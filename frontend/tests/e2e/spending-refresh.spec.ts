@@ -142,6 +142,7 @@ test("a failed transactions refresh keeps loaded rows and hides the raw browser 
   page,
 }) => {
   let failReads = false;
+  let recovered = false;
 
   await mockAuthenticatedSession(page);
   await page.route("**/api/transactions?range=all&limit=5000", async (route) => {
@@ -149,29 +150,30 @@ test("a failed transactions refresh keeps loaded rows and hides the raw browser 
       await route.abort("failed");
       return;
     }
+    const transactions = [
+      {
+        id: 1,
+        date: "2025-04-21",
+        merchant: "KEEP CAFE",
+        amount: 20,
+        category: "Dining",
+        currency: "USD",
+      },
+    ];
+    if (!recovered) {
+      transactions.push({
+        id: 2,
+        date: "2025-04-21",
+        merchant: "DELETE ME",
+        amount: 30,
+        category: "Dining",
+        currency: "USD",
+      });
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        transactions: [
-          {
-            id: 1,
-            date: "2025-04-21",
-            merchant: "KEEP CAFE",
-            amount: 20,
-            category: "Dining",
-            currency: "USD",
-          },
-          {
-            id: 2,
-            date: "2025-04-21",
-            merchant: "DELETE ME",
-            amount: 30,
-            category: "Dining",
-            currency: "USD",
-          },
-        ],
-      }),
+      body: JSON.stringify({ transactions }),
     });
   });
   await page.route("**/api/transactions/2", async (route) => {
@@ -199,11 +201,23 @@ test("a failed transactions refresh keeps loaded rows and hides the raw browser 
     .click();
 
   await expect(page.getByTestId("transactions-load-warning")).toContainText(
-    "Refresh failed. Showing the last successfully loaded data.",
+    "Refresh failed. Retrying automatically. Showing the last successfully loaded data.",
     { timeout: 15_000 }
   );
   await expect(
     page.getByRole("textbox", { name: "Merchant for transaction 1" })
   ).toHaveValue("KEEP CAFE");
   await expect(page.getByText("Failed to fetch")).toHaveCount(0);
+
+  failReads = false;
+  recovered = true;
+  await expect(page.getByTestId("transactions-load-warning")).toHaveCount(0, {
+    timeout: 15_000,
+  });
+  await expect(
+    page.getByRole("textbox", { name: "Merchant for transaction 1" })
+  ).toHaveValue("KEEP CAFE");
+  await expect(
+    page.getByRole("textbox", { name: "Merchant for transaction 2" })
+  ).toHaveCount(0);
 });

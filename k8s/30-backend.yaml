@@ -28,61 +28,6 @@ spec:
           volumeMounts:
             - name: batch-data
               mountPath: /app/batch
-        - name: wait-for-postgres
-          image: ${POSTGRES_IMAGE}
-          imagePullPolicy: ${IMAGE_PULL_POLICY}
-          command:
-            - sh
-            - -c
-            - |
-              echo "Waiting for postgres at ${DATABASE_HOST}:${DATABASE_PORT}..."
-              until pg_isready -h "${DATABASE_HOST}" -p "${DATABASE_PORT}" -q; do
-                sleep 2
-              done
-              echo "Postgres is ready."
-          env:
-            - name: DATABASE_HOST
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_HOST
-            - name: DATABASE_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_PORT
-        - name: migrate-database
-          image: ${BACKEND_IMAGE}
-          imagePullPolicy: ${APP_IMAGE_PULL_POLICY}
-          command: ["python", "-m", "backend.migrate"]
-          env:
-            - name: DB_HOST
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_HOST
-            - name: DB_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_NAME
-            - name: DB_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_PORT
-            - name: DB_USER
-              valueFrom:
-                configMapKeyRef:
-                  name: spending-tracker-config
-                  key: DATABASE_USER
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: spending-tracker-secrets
-                  key: DATABASE_PASSWORD
-            - name: DATABASE_URL
-              value: postgresql://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)
       containers:
         - name: backend
           image: ${BACKEND_IMAGE}
@@ -170,12 +115,13 @@ spec:
               mountPath: /app/batch
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 10
-            failureThreshold: 6
+            timeoutSeconds: 8
+            # Three misses, 10s apart, take the pod out of rotation.
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
@@ -183,9 +129,8 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 30
             timeoutSeconds: 10
-            # /health stays on the event loop, so a saturated worker pool does
-            # not fail this probe. Three misses restart a process whose loop is
-            # actually stuck.
+            # Three misses restart a stuck event loop. This probe does not
+            # query Postgres.
             failureThreshold: 3
       volumes:
         - name: uploads-data

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -23,6 +23,12 @@ import {
 } from "@fluentui/react-components";
 
 import { apiFetch, apiFetchJson, ApiError } from "../api";
+import {
+  DashboardRequestCoordinator,
+  recoverableReadFailure,
+} from "../dashboard-refresh";
+import { useReadRecovery } from "../read-recovery";
+import { mergeProviderDraft } from "../settings-drafts";
 import {
   type AiProvider,
   type AiProviderSettingsView,
@@ -130,53 +136,139 @@ export default function SettingsPage() {
   const shellStyles = useAppShellStyles();
   const pathname = usePathname();
   const { locale } = useLocale();
-  const { status } = useAuth();
+  const { refreshSession, status, user } = useAuth();
   const [settings, setSettings] = useState<AiSettingsResponse | null>(null);
   const [drafts, setDrafts] = useState<Record<AiProvider, ProviderDraft>>(emptyDrafts);
   const [error, setError] = useState("");
+  const [loadMessage, setLoadMessage] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  const [failureId, setFailureId] = useState(0);
+  const [recoveryTick, setRecoveryTick] = useState(0);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const failureIdRef = useRef(failureId);
+  failureIdRef.current = failureId;
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const refreshSessionRef = useRef(refreshSession);
+  refreshSessionRef.current = refreshSession;
+  const coordinatorRef = useRef(new DashboardRequestCoordinator());
+  const signedInUserIdRef = useRef<number | null>(null);
+  const { retryNow, resetCycle } = useReadRecovery(
+    status === "authenticated",
+    failureId,
+    () => setRecoveryTick((tick) => tick + 1)
+  );
 
-  useEffect(() => {
-    if (status !== "authenticated") {
-      setLoading(false);
-      return;
-    }
-    void loadSettings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
-
-  function applySettings(nextSettings: AiSettingsResponse) {
+  function applySettings(nextSettings: AiSettingsResponse, resetProvider?: AiProvider) {
+    const previous = settingsRef.current;
     setSettings(nextSettings);
     setDrafts((currentDrafts) => {
       const nextDrafts = { ...currentDrafts };
       for (const provider of nextSettings.providers) {
-        nextDrafts[provider.provider] = {
-          apiKey: "",
-          model: provider.model,
-          saving: false,
-          removing: false,
-        };
+        const previousModel =
+          previous?.providers.find((item) => item.provider === provider.provider)?.model ??
+          null;
+        nextDrafts[provider.provider] = mergeProviderDraft(
+          currentDrafts[provider.provider],
+          provider.model,
+          previousModel,
+          provider.provider === resetProvider
+        );
       }
       return nextDrafts;
     });
   }
 
   async function loadSettings() {
-    setLoading(true);
-    setError("");
+    const coordinator = coordinatorRef.current;
+    const ticket = coordinator.start();
+    const activeLocale = localeRef.current;
+    if (settingsRef.current === null && failureIdRef.current === 0) {
+      setLoading(true);
+    }
+    if (failureIdRef.current === 0) {
+      setLoadMessage("");
+    }
     try {
       const nextSettings = await apiFetchJson<AiSettingsResponse>(
         "/ai/settings",
-        translate(locale, "errAiSettingsLoad")
+        translate(activeLocale, "errAiSettingsLoad"),
+        { signal: ticket.signal }
       );
+      if (!coordinator.isLatest(ticket.generation) || ticket.signal.aborted) {
+        return;
+      }
       applySettings(nextSettings);
+      setLoadMessage("");
+      setFailureId(0);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : translate(locale, "errAiSettingsLoad"));
+      const outcome = recoverableReadFailure(
+        loadError,
+        settingsRef.current !== null,
+        {
+          staleData: translate(activeLocale, "dashboardStaleData"),
+          unableToRefresh: translate(activeLocale, "initialRecovery"),
+        },
+        {
+          aborted: ticket.signal.aborted,
+          latest: coordinator.isLatest(ticket.generation),
+        }
+      );
+      if (outcome.action === "ignore") {
+        return;
+      }
+      if (outcome.action === "unauthorized") {
+        setFailureId(0);
+        void refreshSessionRef.current();
+        return;
+      }
+      setLoadMessage(outcome.message);
+      setFailureId((id) => id + 1);
     } finally {
-      setLoading(false);
+      if (coordinator.isLatest(ticket.generation) && !ticket.signal.aborted) {
+        setLoading(false);
+      }
     }
   }
+
+  const loadSettingsRef = useRef(loadSettings);
+  loadSettingsRef.current = loadSettings;
+
+  useEffect(() => {
+    resetCycle();
+  }, [resetCycle, status]);
+
+  useEffect(() => {
+    if (status !== "authenticated") {
+      signedInUserIdRef.current = null;
+      setLoading(status === "loading");
+      if (status === "unauthenticated") {
+        setSettings(null);
+        setDrafts(emptyDrafts);
+        setFailureId(0);
+        setLoadMessage("");
+        setError("");
+        setMessage("");
+      }
+      return;
+    }
+    if (
+      user &&
+      signedInUserIdRef.current !== null &&
+      signedInUserIdRef.current !== user.id
+    ) {
+      setDrafts(emptyDrafts);
+    }
+    if (user) {
+      signedInUserIdRef.current = user.id;
+    }
+    void loadSettingsRef.current();
+    return () => {
+      coordinatorRef.current.start();
+    };
+  }, [recoveryTick, status, user]);
 
   function setDraftValue(provider: AiProvider, field: "apiKey" | "model", value: string) {
     setDrafts((currentDrafts) => ({
@@ -199,6 +291,7 @@ export default function SettingsPage() {
     }));
     setError("");
     setMessage("");
+    coordinatorRef.current.start();
     try {
       const nextSettings = await apiFetchJson<AiSettingsResponse>(
         `/ai/settings/${provider}`,
@@ -213,7 +306,10 @@ export default function SettingsPage() {
           }),
         }
       );
-      applySettings(nextSettings);
+      coordinatorRef.current.start();
+      applySettings(nextSettings, provider);
+      setFailureId(0);
+      setLoadMessage("");
       setMessage(translate(locale, "settingsSavedMessage"));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : translate(locale, "errAiSettingsSave"));
@@ -237,6 +333,7 @@ export default function SettingsPage() {
     }));
     setError("");
     setMessage("");
+    coordinatorRef.current.start();
     try {
       const response = await apiFetch(`/ai/settings/${provider}`, {
         method: "DELETE",
@@ -319,6 +416,26 @@ export default function SettingsPage() {
             <Title1>{translate(locale, "settingsTitle")}</Title1>
             <Body1 className={styles.quietText}>{translate(locale, "settingsBody")}</Body1>
           </Card>
+
+          {loadMessage ? (
+            <div
+              data-testid={
+                settings
+                  ? "settings-stale-warning"
+                  : "settings-initial-recovery"
+              }
+            >
+              <MessageBar intent={settings ? "error" : "warning"}>
+                <MessageBarBody>
+                  <MessageBarTitle>{translate(locale, "errRequestFailed")}</MessageBarTitle>
+                  {loadMessage}
+                  <Button appearance="secondary" onClick={retryNow} size="small">
+                    {translate(locale, "retryNow")}
+                  </Button>
+                </MessageBarBody>
+              </MessageBar>
+            </div>
+          ) : null}
 
           {error ? (
             <MessageBar intent="error">

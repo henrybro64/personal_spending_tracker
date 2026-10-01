@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -22,6 +22,12 @@ import {
 } from "@fluentui/react-components";
 
 import { apiFetchJson } from "../api";
+import {
+  DashboardRequestCoordinator,
+  recoverableReadFailure,
+} from "../dashboard-refresh";
+import { useReadRecovery } from "../read-recovery";
+import { keepProviderSelection } from "../settings-drafts";
 import {
   type AiInsightResponse,
   type AiProvider,
@@ -176,28 +182,64 @@ function unconvertedInsightNotice(
   );
 }
 
+function ReadRecoveryBanner(props: {
+  hasSettings: boolean;
+  message: string;
+  locale: ReturnType<typeof useLocale>["locale"];
+  onRetry: () => void;
+  testIdPrefix: string;
+}) {
+  return (
+    <div
+      data-testid={
+        props.hasSettings
+          ? `${props.testIdPrefix}-stale-warning`
+          : `${props.testIdPrefix}-initial-recovery`
+      }
+    >
+      <MessageBar intent={props.hasSettings ? "error" : "warning"}>
+        <MessageBarBody>
+          <MessageBarTitle>{translate(props.locale, "errRequestFailed")}</MessageBarTitle>
+          {props.message}
+          <Button appearance="secondary" onClick={props.onRetry} size="small">
+            {translate(props.locale, "retryNow")}
+          </Button>
+        </MessageBarBody>
+      </MessageBar>
+    </div>
+  );
+}
+
 export default function AiInsightsPage() {
   const styles = useStyles();
   const shellStyles = useAppShellStyles();
   const pathname = usePathname();
   const { locale } = useLocale();
-  const { status } = useAuth();
+  const { refreshSession, status } = useAuth();
   const [settings, setSettings] = useState<AiSettingsResponse | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<AiProvider | "">("");
   const [range, setRange] = useState<InsightRange>("quarter");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [loadMessage, setLoadMessage] = useState("");
   const [insight, setInsight] = useState<AiInsightResponse | null>(null);
-
-  useEffect(() => {
-    if (status !== "authenticated") {
-      setLoading(false);
-      return;
-    }
-    void loadSettings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  const [failureId, setFailureId] = useState(0);
+  const [recoveryTick, setRecoveryTick] = useState(0);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const failureIdRef = useRef(failureId);
+  failureIdRef.current = failureId;
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const refreshSessionRef = useRef(refreshSession);
+  refreshSessionRef.current = refreshSession;
+  const coordinatorRef = useRef(new DashboardRequestCoordinator());
+  const { retryNow, resetCycle } = useReadRecovery(
+    status === "authenticated",
+    failureId,
+    () => setRecoveryTick((tick) => tick + 1)
+  );
 
   const configuredProviders = useMemo(
     () => settings?.providers.filter((provider) => provider.configured) ?? [],
@@ -205,25 +247,86 @@ export default function AiInsightsPage() {
   );
 
   async function loadSettings() {
-    setLoading(true);
-    setError("");
+    const coordinator = coordinatorRef.current;
+    const ticket = coordinator.start();
+    const activeLocale = localeRef.current;
+    if (settingsRef.current === null && failureIdRef.current === 0) {
+      setLoading(true);
+    }
+    if (failureIdRef.current === 0) {
+      setLoadMessage("");
+    }
     try {
       const nextSettings = await apiFetchJson<AiSettingsResponse>(
         "/ai/settings",
-        translate(locale, "errAiSettingsLoad")
+        translate(activeLocale, "errAiSettingsLoad"),
+        { signal: ticket.signal }
       );
+      if (!coordinator.isLatest(ticket.generation) || ticket.signal.aborted) {
+        return;
+      }
       setSettings(nextSettings);
-      const activeProvider =
-        nextSettings.selected_provider ??
-        nextSettings.providers.find((provider) => provider.configured)?.provider ??
-        "";
-      setSelectedProvider(activeProvider);
+      setSelectedProvider((current) =>
+        keepProviderSelection(
+          current,
+          nextSettings.providers,
+          nextSettings.selected_provider
+        )
+      );
+      setLoadMessage("");
+      setFailureId(0);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : translate(locale, "errAiSettingsLoad"));
+      const outcome = recoverableReadFailure(
+        loadError,
+        settingsRef.current !== null,
+        {
+          staleData: translate(activeLocale, "dashboardStaleData"),
+          unableToRefresh: translate(activeLocale, "initialRecovery"),
+        },
+        {
+          aborted: ticket.signal.aborted,
+          latest: coordinator.isLatest(ticket.generation),
+        }
+      );
+      if (outcome.action === "ignore") {
+        return;
+      }
+      if (outcome.action === "unauthorized") {
+        setFailureId(0);
+        void refreshSessionRef.current();
+        return;
+      }
+      setLoadMessage(outcome.message);
+      setFailureId((id) => id + 1);
     } finally {
-      setLoading(false);
+      if (coordinator.isLatest(ticket.generation) && !ticket.signal.aborted) {
+        setLoading(false);
+      }
     }
   }
+
+  const loadSettingsRef = useRef(loadSettings);
+  loadSettingsRef.current = loadSettings;
+
+  useEffect(() => {
+    resetCycle();
+  }, [resetCycle, status]);
+
+  useEffect(() => {
+    if (status !== "authenticated") {
+      setLoading(status === "loading");
+      if (status === "unauthenticated") {
+        setSettings(null);
+        setFailureId(0);
+        setLoadMessage("");
+      }
+      return;
+    }
+    void loadSettingsRef.current();
+    return () => {
+      coordinatorRef.current.start();
+    };
+  }, [recoveryTick, status]);
 
   async function generateInsights() {
     if (!selectedProvider) {
@@ -312,13 +415,23 @@ export default function AiInsightsPage() {
             <Body1 className={styles.quietText}>{translate(locale, "aiInsightsBody")}</Body1>
           </Card>
 
-          {configuredProviders.length === 0 ? (
+          {settings && configuredProviders.length === 0 ? (
             <MessageBar intent="warning">
               <MessageBarBody>
                 <MessageBarTitle>{translate(locale, "aiInsightsNeedConfig")}</MessageBarTitle>
                 <Link href="/settings">{translate(locale, "navSettings")}</Link>
               </MessageBarBody>
             </MessageBar>
+          ) : null}
+
+          {loadMessage ? (
+            <ReadRecoveryBanner
+              hasSettings={settings !== null}
+              locale={locale}
+              message={loadMessage}
+              onRetry={retryNow}
+              testIdPrefix="ai-insights"
+            />
           ) : null}
 
           {error ? (

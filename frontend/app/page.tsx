@@ -2,6 +2,7 @@
 
 import {
   Dispatch,
+  ReactNode,
   SetStateAction,
   useDeferredValue,
   useEffect,
@@ -39,16 +40,19 @@ import { apiFetchJson } from "./api";
 import {
   DashboardRequestCoordinator,
   type DashboardFilters,
-  dashboardFailureMessage,
   dashboardLoadKey,
   effectiveSearchQuery,
-  isAbortError,
+  lastRefreshLabel,
+  merchantSlicerEmpty,
+  nextFailureIdAfterLoad,
+  recoverableReadFailure,
   loadDashboardSnapshot,
   reduceDashboardLoad,
   refreshAfterUpload,
   runGuardedDashboardLoad,
   shouldReleaseSearchPin,
 } from "./dashboard-refresh";
+import { useReadRecovery } from "./read-recovery";
 import { useSpendingRevision } from "./server-state";
 import { AuthPage, AuthPanel, SessionCard } from "./auth-card";
 import { useAuth } from "./auth-provider";
@@ -1243,6 +1247,7 @@ function RecentStatementsCard({
   fm,
   intlLocale,
   isDashboardLoading,
+  hasSnapshot,
   recentUploads,
 }: Readonly<{
   styles: DashboardStyles;
@@ -1250,11 +1255,10 @@ function RecentStatementsCard({
   fm: DashboardFormatters;
   intlLocale: string;
   isDashboardLoading: boolean;
+  hasSnapshot: boolean;
   recentUploads: RecentUpload[];
 }>) {
-  let historyBody = (
-    <Body1 className={styles.emptyState}>{translate(locale, "noUploadsYet")}</Body1>
-  );
+  let historyBody: ReactNode = null;
   if (isDashboardLoading && recentUploads.length === 0) {
     historyBody = (
       <Body1 className={styles.emptyState}>
@@ -1275,6 +1279,10 @@ function RecentStatementsCard({
           />
         ))}
       </div>
+    );
+  } else if (hasSnapshot) {
+    historyBody = (
+      <Body1 className={styles.emptyState}>{translate(locale, "noUploadsYet")}</Body1>
     );
   }
 
@@ -1351,6 +1359,55 @@ function toCurrencyTotals(
   }));
 }
 
+function DashboardMerchantSlicer(props: {
+  locale: ReturnType<typeof useLocale>["locale"];
+  styles: ReturnType<typeof useStyles>;
+  merchants: Array<{ merchant: string }>;
+  selectedMerchant: string | null;
+  hasSnapshot: boolean;
+  onSelect: (merchant: string | null) => void;
+}) {
+  const state = merchantSlicerEmpty(
+    props.merchants.length > 0,
+    props.hasSnapshot
+  );
+  if (state === "hidden") {
+    return null;
+  }
+  if (state === "empty") {
+    return (
+      <Body1 className={props.styles.emptySlicerState}>
+        {translate(props.locale, "merchantSlicerEmpty")}
+      </Body1>
+    );
+  }
+  return (
+    <div className={props.styles.pillGrid}>
+      {props.merchants.map((merchantItem) => (
+        <Button
+          appearance={
+            props.selectedMerchant === merchantItem.merchant
+              ? "primary"
+              : "secondary"
+          }
+          className={props.styles.pillButton}
+          key={merchantItem.merchant}
+          onClick={() =>
+            props.onSelect(
+              props.selectedMerchant === merchantItem.merchant
+                ? null
+                : merchantItem.merchant
+            )
+          }
+          size="small"
+        >
+          {merchantItem.merchant}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const styles = useStyles();
   const { locale, setLocale, intlLocale } = useLocale();
@@ -1406,6 +1463,13 @@ export default function HomePage() {
   };
   const spendingRevision = useSpendingRevision();
   const dashboardLoadToken = dashboardLoadKey(requestFilters, spendingRevision);
+  const [failureId, setFailureId] = useState(0);
+  const [recoveryTick, setRecoveryTick] = useState(0);
+  const { retryNow, resetCycle } = useReadRecovery(
+    authStatus === "authenticated",
+    failureId,
+    () => setRecoveryTick((tick) => tick + 1)
+  );
   const [dashboardView, setDashboardView] = useState<DashboardViewResponse | null>(null);
   const dashboardViewRef = useRef(dashboardView);
   dashboardViewRef.current = dashboardView;
@@ -1511,12 +1575,17 @@ export default function HomePage() {
   }, [deferredSearchQuery, pinnedSearch, searchQuery]);
 
   useEffect(() => {
+    resetCycle();
+  }, [dashboardLoadToken, resetCycle]);
+
+  useEffect(() => {
     if (authStatus !== "authenticated") {
       setDashboardView(null);
       setRecentUploads([]);
       setError("");
       setDashboardError("");
       setDashboardStale(false);
+      setFailureId(0);
       setIsDashboardLoading(authStatus === "loading");
       return;
     }
@@ -1553,6 +1622,14 @@ export default function HomePage() {
             unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
           }
         );
+        if (nextFailureIdAfterLoad({
+          unauthorized: next.unauthorized,
+          failed: Boolean(next.error || next.uploadsError),
+        }) === "bump") {
+          setFailureId((id) => id + 1);
+        } else {
+          setFailureId(0);
+        }
         if (next.unauthorized) {
           void refreshSession();
         }
@@ -1563,20 +1640,27 @@ export default function HomePage() {
         setDashboardStale(next.stale);
       },
       onError: (loadError) => {
-        if (isAbortError(loadError)) {
+        const hasView = dashboardViewRef.current !== null;
+        const outcome = recoverableReadFailure(
+          loadError,
+          hasView,
+          {
+            staleData: translate(localeRef.current, "dashboardStaleData"),
+            unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
+          },
+          { aborted: ticket.signal.aborted, latest: true }
+        );
+        if (outcome.action === "ignore") {
           return;
         }
-        const hasView = dashboardViewRef.current !== null;
-        const message = dashboardFailureMessage(loadError, hasView, {
-          staleData: translate(localeRef.current, "dashboardStaleData"),
-          unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
-        });
-        if (!message) {
+        if (outcome.action === "unauthorized") {
+          setFailureId(0);
           void refreshSession();
           return;
         }
-        setError(message);
+        setError(outcome.message);
         setDashboardStale(hasView);
+        setFailureId((id) => id + 1);
       },
       onSettled: () => {
         setIsDashboardLoading(false);
@@ -1586,7 +1670,7 @@ export default function HomePage() {
     return () => {
       ticket.abort();
     };
-  }, [authStatus, dashboardLoadToken, refreshSession, requestFilters]);
+  }, [authStatus, dashboardLoadToken, recoveryTick, refreshSession, requestFilters]);
 
   function applyClearedSlicers(filters: DashboardFilters) {
     const nextFilters = refreshAfterUpload(filters);
@@ -1750,50 +1834,32 @@ export default function HomePage() {
               <Body1 className={styles.emptyState}>
                 {translate(locale, "merchantSlicerLabel")}
               </Body1>
-              {merchantBreakdown.length > 0 ? (
-                <div className={styles.pillGrid}>
-                  {merchantBreakdown.map((merchantItem) => (
-                    <Button
-                      appearance={
-                        selectedMerchant === merchantItem.merchant
-                          ? "primary"
-                          : "secondary"
-                      }
-                      className={styles.pillButton}
-                      key={merchantItem.merchant}
-                      onClick={() =>
-                        setSelectedMerchant((currentValue) =>
-                          currentValue === merchantItem.merchant
-                            ? null
-                            : merchantItem.merchant
-                        )
-                      }
-                      size="small"
-                    >
-                      {merchantItem.merchant}
-                    </Button>
-                  ))}
-                </div>
-              ) : (
-                <Body1 className={styles.emptySlicerState}>
-                  {translate(locale, "merchantSlicerEmpty")}
-                </Body1>
-              )}
+              <DashboardMerchantSlicer
+                hasSnapshot={dashboardView !== null}
+                locale={locale}
+                merchants={merchantBreakdown}
+                onSelect={setSelectedMerchant}
+                selectedMerchant={selectedMerchant}
+                styles={styles}
+              />
             </div>
 
             <div className={styles.actions}>
               <Button appearance="secondary" onClick={clearSlicers} size="small">
                 {translate(locale, "clearSlicers")}
               </Button>
-              <Badge appearance="outline" color="brand">
-                {fm.formatCount(visibleRowsCount)}{" "}
-                {translate(locale, "rowsInViewSuffix")}
-              </Badge>
+              {dashboardView ? (
+                <Badge appearance="outline" color="brand">
+                  {fm.formatCount(visibleRowsCount)}{" "}
+                  {translate(locale, "rowsInViewSuffix")}
+                </Badge>
+              ) : null}
             </div>
           </Card>
 
           <RecentStatementsCard
             fm={fm}
+            hasSnapshot={dashboardView !== null}
             intlLocale={intlLocale}
             isDashboardLoading={isDashboardLoading}
             locale={locale}
@@ -1804,22 +1870,32 @@ export default function HomePage() {
         </aside>
 
         <section className={styles.reportArea}>
-          {dashboardStale && error ? (
+          {dashboardView && dashboardStale && error ? (
             <div data-testid="dashboard-stale-warning">
               <MessageBar intent="warning">
                 <MessageBarBody>{error}</MessageBarBody>
               </MessageBar>
+              <Button appearance="secondary" onClick={retryNow} size="small">
+                {translate(locale, "retryNow")}
+              </Button>
             </div>
           ) : null}
-          {!dashboardStale && error ? (
+          {dashboardView && !dashboardStale && error ? (
             <MessageBar intent="error">
               <MessageBarBody>{error}</MessageBarBody>
             </MessageBar>
           ) : null}
-          {dashboardError ? (
-            <MessageBar intent="error">
-              <MessageBarBody>{dashboardError}</MessageBarBody>
-            </MessageBar>
+          {dashboardView && dashboardError ? (
+            <div>
+              <MessageBar intent="error">
+                <MessageBarBody>{dashboardError}</MessageBarBody>
+              </MessageBar>
+              {!error && failureId > 0 ? (
+                <Button appearance="secondary" onClick={retryNow} size="small">
+                  {translate(locale, "retryNow")}
+                </Button>
+              ) : null}
+            </div>
           ) : null}
           {unconvertedCount > 0 ? (
             <UnconvertedTransactionsNotice
@@ -1884,11 +1960,13 @@ export default function HomePage() {
                     currency: activeCurrencyLabel,
                   })}
                 </Body1>
-                <Body1 className={styles.currencyContextNote}>
-                  {translate(locale, "metricModelTotalHintTemplate", {
-                    n: fm.formatCount(summary.number_of_statements),
-                  })}
-                </Body1>
+                {dashboardView ? (
+                  <Body1 className={styles.currencyContextNote}>
+                    {translate(locale, "metricModelTotalHintTemplate", {
+                      n: fm.formatCount(summary.number_of_statements),
+                    })}
+                  </Body1>
+                ) : null}
               </div>
 
               <div className={styles.headerHighlights}>
@@ -1897,10 +1975,12 @@ export default function HomePage() {
                     {translate(locale, "storedModelLabel")}
                   </div>
                   <div className={styles.headerHighlightValue}>
-                    {fm.formatCurrency(
-                      metrics?.model_total_in_active_currency ?? 0,
-                      activeCurrency
-                    )}
+                    {dashboardView
+                      ? fm.formatCurrency(
+                          metrics?.model_total_in_active_currency ?? 0,
+                          activeCurrency
+                        )
+                      : "—"}
                   </div>
                 </div>
                 <div className={styles.headerHighlight}>
@@ -1908,9 +1988,13 @@ export default function HomePage() {
                     {translate(locale, "lastRefreshLabel")}
                   </div>
                   <div className={styles.headerHighlightValue}>
-                    {latestUpload
-                      ? fm.formatUploadDate(latestUpload.uploaded_at)
-                      : translate(locale, "waiting")}
+                    {lastRefreshLabel({
+                      latestUploadAt: latestUpload
+                        ? fm.formatUploadDate(latestUpload.uploaded_at)
+                        : null,
+                      hasSnapshot: dashboardView !== null,
+                      waitingLabel: translate(locale, "waiting"),
+                    })}
                   </div>
                 </div>
               </div>
@@ -1935,6 +2019,24 @@ export default function HomePage() {
             </div>
           </Card>
 
+          {dashboardView === null ? (
+            <Card
+              className={mergeClasses(styles.panel, styles.reportHeader)}
+              data-testid="dashboard-initial-recovery"
+            >
+              {error ? (
+                <>
+                  <Body1>{translate(locale, "initialRecovery")}</Body1>
+                  <Button appearance="primary" onClick={retryNow} size="small">
+                    {translate(locale, "retryNow")}
+                  </Button>
+                </>
+              ) : (
+                <ProgressBar />
+              )}
+            </Card>
+          ) : (
+          <>
           <div className={styles.metricGrid} data-testid="dashboard-metric-grid">
             {metricCards.slice(0, 3).map((metricCard) => (
               <div className={styles.metricCard} key={metricCard.label}>
@@ -1978,7 +2080,8 @@ export default function HomePage() {
             styles={styles}
             visibleRowsCount={visibleRowsCount}
           />
-
+          </>
+          )}
 
         </section>
       </div>
