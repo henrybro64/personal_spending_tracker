@@ -26,8 +26,8 @@ export function mergeProviderDraft(
   return {
     apiKey: current.apiKey,
     model: modelIsUntouched ? serverModel : current.model,
-    saving: current.saving,
-    removing: current.removing,
+    saving: false,
+    removing: false,
   };
 }
 

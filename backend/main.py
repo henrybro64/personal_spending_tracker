@@ -19,6 +19,7 @@ if _repo_root_str not in sys.path:
     sys.path.insert(0, _repo_root_str)
 
 from fastapi import (  # noqa: E402
+    Cookie,
     Depends,
     FastAPI,
     File,
@@ -30,6 +31,7 @@ from fastapi import (  # noqa: E402
     UploadFile,
     status,
 )
+from psycopg_pool import PoolTimeout  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 import psycopg  # noqa: E402
@@ -40,6 +42,7 @@ from backend.auth import (  # noqa: E402
     display_name_from_username,
     generate_session_token,
     AuditRequestContext,
+    SESSION_COOKIE_NAME,
     get_audit_request_context,
     get_optional_current_user,
     hash_password,
@@ -816,7 +819,64 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/ready")
+_DATABASE_UNAVAILABLE = (
+    psycopg.OperationalError,
+    psycopg.InterfaceError,
+    PoolTimeout,
+)
+
+
+def _diagnostics_snapshot(
+    *,
+    database_ok: bool,
+    latency_ms: float | None,
+    exc: BaseException | None,
+) -> dict[str, object]:
+    stats = pool_stats()
+    if not database_ok:
+        return {
+            "api": "ok",
+            "database": "unavailable",
+            "database_ok": False,
+            "failure_category": failure_category(exc) if exc else "database_error",
+            "database_latency_ms": None,
+            "pool_size": stats["pool_size"],
+            "pool_available": stats["pool_available"],
+        }
+    return {
+        "api": "ok",
+        "database": "ok",
+        "database_ok": True,
+        "database_latency_ms": round(latency_ms or 0, 1),
+        "pool_size": stats["pool_size"],
+        "pool_available": stats["pool_available"],
+    }
+
+
+def _reject_unauthenticated_diagnostics(request: Request) -> None:
+    """Return 401. A down database must not turn this into a 500."""
+    audit_context = get_audit_request_context(request)
+    try:
+        record_audit_event(
+            action="authorization_failure",
+            status="rejected",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"path": request.url.path, "method": request.method},
+        )
+    except _DATABASE_UNAVAILABLE:
+        pass
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication is required.",
+    )
+
+
+@app.get(
+    "/ready",
+    responses={503: {"description": "Postgres cannot serve queries."}},
+)
 def ready() -> dict[str, object]:
     """Readiness. SELECT 1, or 503 when Postgres cannot serve queries."""
     try:
@@ -833,34 +893,44 @@ def ready() -> dict[str, object]:
     return {"status": "ok", "database_latency_ms": round(latency_ms, 1)}
 
 
-@app.get("/diagnostics")
+@app.get(
+    "/diagnostics",
+    responses={401: {"description": "Authentication is required."}},
+)
 def diagnostics(
-    current_user: UserRecord = Depends(require_current_user),
+    request: Request,
+    session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, object]:
-    """Safe ops snapshot for a signed-in user. No credentials or spending rows."""
-    del current_user
+    """Safe ops snapshot for a signed-in user. No credentials or spending rows.
+
+    Session lookup uses Postgres. When that lookup cannot run, a presented
+    session cookie still receives the unavailable snapshot instead of a 500.
+    """
+    try:
+        current_user = get_optional_current_user(request, session_token)
+    except _DATABASE_UNAVAILABLE as exc:
+        if session_token:
+            return _diagnostics_snapshot(
+                database_ok=False,
+                latency_ms=None,
+                exc=exc,
+            )
+        _reject_unauthenticated_diagnostics(request)
+    if current_user is None:
+        _reject_unauthenticated_diagnostics(request)
     try:
         latency_ms = ping_database()
     except Exception as exc:
-        stats = pool_stats()
-        return {
-            "api": "ok",
-            "database": "unavailable",
-            "database_ok": False,
-            "failure_category": failure_category(exc),
-            "database_latency_ms": None,
-            "pool_size": stats["pool_size"],
-            "pool_available": stats["pool_available"],
-        }
-    stats = pool_stats()
-    return {
-        "api": "ok",
-        "database": "ok",
-        "database_ok": True,
-        "database_latency_ms": round(latency_ms, 1),
-        "pool_size": stats["pool_size"],
-        "pool_available": stats["pool_available"],
-    }
+        return _diagnostics_snapshot(
+            database_ok=False,
+            latency_ms=None,
+            exc=exc,
+        )
+    return _diagnostics_snapshot(
+        database_ok=True,
+        latency_ms=latency_ms,
+        exc=None,
+    )
 
 
 @app.get("/auth/session")

@@ -165,6 +165,8 @@ test("a failed insight request is not repeated automatically", async ({ page }) 
   await page.goto("/ai-insights");
   await page.getByRole("button", { name: "Generate insights" }).click();
   await expect(page.getByText("Failed to fetch")).toBeVisible();
-  await page.waitForTimeout(4_000);
+  await expect
+    .poll(async () => insightPosts, { timeout: 4_000 })
+    .toBe(1);
   expect(insightPosts).toBe(1);
 });

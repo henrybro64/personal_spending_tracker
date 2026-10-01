@@ -136,7 +136,7 @@ export default function SettingsPage() {
   const shellStyles = useAppShellStyles();
   const pathname = usePathname();
   const { locale } = useLocale();
-  const { refreshSession, status } = useAuth();
+  const { refreshSession, status, user } = useAuth();
   const [settings, setSettings] = useState<AiSettingsResponse | null>(null);
   const [drafts, setDrafts] = useState<Record<AiProvider, ProviderDraft>>(emptyDrafts);
   const [error, setError] = useState("");
@@ -154,6 +154,7 @@ export default function SettingsPage() {
   const refreshSessionRef = useRef(refreshSession);
   refreshSessionRef.current = refreshSession;
   const coordinatorRef = useRef(new DashboardRequestCoordinator());
+  const signedInUserIdRef = useRef<number | null>(null);
   const { retryNow, resetCycle } = useReadRecovery(
     status === "authenticated",
     failureId,
@@ -241,19 +242,33 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (status !== "authenticated") {
+      signedInUserIdRef.current = null;
       setLoading(status === "loading");
       if (status === "unauthenticated") {
         setSettings(null);
+        setDrafts(emptyDrafts);
         setFailureId(0);
         setLoadMessage("");
+        setError("");
+        setMessage("");
       }
       return;
+    }
+    if (
+      user &&
+      signedInUserIdRef.current !== null &&
+      signedInUserIdRef.current !== user.id
+    ) {
+      setDrafts(emptyDrafts);
+    }
+    if (user) {
+      signedInUserIdRef.current = user.id;
     }
     void loadSettingsRef.current();
     return () => {
       coordinatorRef.current.start();
     };
-  }, [recoveryTick, status]);
+  }, [recoveryTick, status, user]);
 
   function setDraftValue(provider: AiProvider, field: "apiKey" | "model", value: string) {
     setDrafts((currentDrafts) => ({

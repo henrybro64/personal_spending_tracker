@@ -211,6 +211,35 @@ def test_ready_recovers_and_authenticated_reads_still_work(
     assert client.get("/dashboard/view").status_code == 200
 
 
+def _checkout_and_select_one(database_url: str, operation: str) -> None:
+    with db_connection(database_url, operation=operation) as connection:
+        connection.execute("SELECT 1")
+
+
+def _checkout_and_sleep(database_url: str, operation: str, seconds: float) -> None:
+    with db_connection(database_url, operation=operation) as connection:
+        connection.execute("SELECT pg_sleep(%s)", (seconds,))
+
+
+def test_diagnostics_returns_unavailable_when_session_lookup_cannot_reach_postgres(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _register(client)
+
+    def fail_session(_token: str, database_url: str | None = None):
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr("backend.auth.get_user_for_session", fail_session)
+    response = client.get("/diagnostics")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["database"] == "unavailable"
+    assert body["database_ok"] is False
+    assert body["failure_category"] == "network"
+
+
 def test_diagnostics_hides_secrets_from_anonymous_callers(client: TestClient) -> None:
     anonymous = client.get("/diagnostics")
     assert anonymous.status_code == 401
@@ -240,11 +269,10 @@ def test_connect_timeout_is_bounded(
     started = time.perf_counter()
 
     with pytest.raises((psycopg.OperationalError, PoolTimeout)):
-        with db_connection(
+        _checkout_and_select_one(
             "postgresql://appuser:super-secret-password@192.0.2.1:5432/none",
-            operation="connect-timeout",
-        ) as connection:
-            connection.execute("SELECT 1")
+            "connect-timeout",
+        )
 
     assert time.perf_counter() - started < 8
     assert "req-68" in caplog.text
@@ -262,8 +290,7 @@ def test_query_timeout_is_bounded(
     started = time.perf_counter()
 
     with pytest.raises(psycopg.errors.QueryCanceled):
-        with db_connection(database_url, operation="query-timeout") as connection:
-            connection.execute("SELECT pg_sleep(5)")
+        _checkout_and_sleep(database_url, "query-timeout", 5)
 
     assert time.perf_counter() - started < 3
 
@@ -283,11 +310,7 @@ def test_bulk_write_checkout_skips_the_read_statement_timeout(
         connection.execute("SELECT pg_sleep(0.6)")
 
     with pytest.raises(psycopg.errors.QueryCanceled):
-        with db_connection(
-            database_url,
-            operation="query-timeout",
-        ) as connection:
-            connection.execute("SELECT pg_sleep(5)")
+        _checkout_and_sleep(database_url, "query-timeout", 5)
 
     close_all_pools()
 
@@ -305,8 +328,7 @@ def test_pool_acquire_timeout_is_bounded(
     with db_connection(database_url) as held:
         held.execute("SELECT 1")
         with pytest.raises(PoolTimeout):
-            with db_connection(database_url) as second:
-                second.execute("SELECT 1")
+            _checkout_and_select_one(database_url, "pool-timeout")
 
     assert time.perf_counter() - started < 3
 

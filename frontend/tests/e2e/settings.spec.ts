@@ -77,6 +77,8 @@ test("saving a provider is not repeated automatically", async ({ page }) => {
   await expect(page.getByText("Saved key: ••••1234")).toBeVisible();
   await page.getByRole("button", { name: "Save and use" }).click();
   await expect(page.getByText("Failed to fetch")).toBeVisible();
-  await page.waitForTimeout(4_000);
+  await expect
+    .poll(async () => saves, { timeout: 4_000 })
+    .toBe(1);
   expect(saves).toBe(1);
 });

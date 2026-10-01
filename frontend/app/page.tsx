@@ -42,6 +42,9 @@ import {
   type DashboardFilters,
   dashboardLoadKey,
   effectiveSearchQuery,
+  lastRefreshLabel,
+  merchantSlicerEmpty,
+  nextFailureIdAfterLoad,
   recoverableReadFailure,
   loadDashboardSnapshot,
   reduceDashboardLoad,
@@ -1356,6 +1359,55 @@ function toCurrencyTotals(
   }));
 }
 
+function DashboardMerchantSlicer(props: {
+  locale: ReturnType<typeof useLocale>["locale"];
+  styles: ReturnType<typeof useStyles>;
+  merchants: Array<{ merchant: string }>;
+  selectedMerchant: string | null;
+  hasSnapshot: boolean;
+  onSelect: (merchant: string | null) => void;
+}) {
+  const state = merchantSlicerEmpty(
+    props.merchants.length > 0,
+    props.hasSnapshot
+  );
+  if (state === "hidden") {
+    return null;
+  }
+  if (state === "empty") {
+    return (
+      <Body1 className={props.styles.emptySlicerState}>
+        {translate(props.locale, "merchantSlicerEmpty")}
+      </Body1>
+    );
+  }
+  return (
+    <div className={props.styles.pillGrid}>
+      {props.merchants.map((merchantItem) => (
+        <Button
+          appearance={
+            props.selectedMerchant === merchantItem.merchant
+              ? "primary"
+              : "secondary"
+          }
+          className={props.styles.pillButton}
+          key={merchantItem.merchant}
+          onClick={() =>
+            props.onSelect(
+              props.selectedMerchant === merchantItem.merchant
+                ? null
+                : merchantItem.merchant
+            )
+          }
+          size="small"
+        >
+          {merchantItem.merchant}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const styles = useStyles();
   const { locale, setLocale, intlLocale } = useLocale();
@@ -1570,13 +1622,16 @@ export default function HomePage() {
             unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
           }
         );
-        if (next.unauthorized) {
-          setFailureId(0);
-          void refreshSession();
-        } else if (next.error || next.uploadsError) {
+        if (nextFailureIdAfterLoad({
+          unauthorized: next.unauthorized,
+          failed: Boolean(next.error || next.uploadsError),
+        }) === "bump") {
           setFailureId((id) => id + 1);
         } else {
           setFailureId(0);
+        }
+        if (next.unauthorized) {
+          void refreshSession();
         }
         setDashboardView(next.view);
         setRecentUploads(next.uploads);
@@ -1779,35 +1834,14 @@ export default function HomePage() {
               <Body1 className={styles.emptyState}>
                 {translate(locale, "merchantSlicerLabel")}
               </Body1>
-              {merchantBreakdown.length > 0 ? (
-                <div className={styles.pillGrid}>
-                  {merchantBreakdown.map((merchantItem) => (
-                    <Button
-                      appearance={
-                        selectedMerchant === merchantItem.merchant
-                          ? "primary"
-                          : "secondary"
-                      }
-                      className={styles.pillButton}
-                      key={merchantItem.merchant}
-                      onClick={() =>
-                        setSelectedMerchant((currentValue) =>
-                          currentValue === merchantItem.merchant
-                            ? null
-                            : merchantItem.merchant
-                        )
-                      }
-                      size="small"
-                    >
-                      {merchantItem.merchant}
-                    </Button>
-                  ))}
-                </div>
-              ) : dashboardView ? (
-                <Body1 className={styles.emptySlicerState}>
-                  {translate(locale, "merchantSlicerEmpty")}
-                </Body1>
-              ) : null}
+              <DashboardMerchantSlicer
+                hasSnapshot={dashboardView !== null}
+                locale={locale}
+                merchants={merchantBreakdown}
+                onSelect={setSelectedMerchant}
+                selectedMerchant={selectedMerchant}
+                styles={styles}
+              />
             </div>
 
             <div className={styles.actions}>
@@ -1954,11 +1988,13 @@ export default function HomePage() {
                     {translate(locale, "lastRefreshLabel")}
                   </div>
                   <div className={styles.headerHighlightValue}>
-                    {latestUpload
-                      ? fm.formatUploadDate(latestUpload.uploaded_at)
-                      : dashboardView
-                        ? translate(locale, "waiting")
-                        : "—"}
+                    {lastRefreshLabel({
+                      latestUploadAt: latestUpload
+                        ? fm.formatUploadDate(latestUpload.uploaded_at)
+                        : null,
+                      hasSnapshot: dashboardView !== null,
+                      waitingLabel: translate(locale, "waiting"),
+                    })}
                   </div>
                 </div>
               </div>

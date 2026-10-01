@@ -8,9 +8,16 @@ export const RECOVERY_MAX_DELAY_MS = 30_000;
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
+/** Delay jitter only. Not used for secrets or tokens. */
+export function unitInterval(): number {
+  const bytes = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(bytes);
+  return bytes[0] / 0x1_0000_0000;
+}
+
 export function recoveryDelayMs(
   cycle: number,
-  random = Math.random(),
+  random = unitInterval(),
   hidden = false
 ): number {
   if (hidden) {
@@ -37,7 +44,7 @@ export class ReadRecoveryScheduler {
     private readonly delayFor: (cycle: number, hidden: boolean) => number = (
       cycle,
       hidden
-    ) => recoveryDelayMs(cycle, Math.random(), hidden),
+    ) => recoveryDelayMs(cycle, unitInterval(), hidden),
     // Call through globalThis. A detached setTimeout throws in the browser.
     private readonly setTimer: (callback: () => void, delay: number) => TimerHandle = (
       callback,

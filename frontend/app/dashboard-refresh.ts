@@ -102,6 +102,40 @@ export function isUnauthorizedError(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
 }
 
+export function nextFailureIdAfterLoad(options: {
+  unauthorized: boolean;
+  failed: boolean;
+}): "clear" | "bump" {
+  if (options.unauthorized || !options.failed) {
+    return "clear";
+  }
+  return "bump";
+}
+
+export function lastRefreshLabel(options: {
+  latestUploadAt: string | null;
+  hasSnapshot: boolean;
+  waitingLabel: string;
+}): string {
+  if (options.latestUploadAt) {
+    return options.latestUploadAt;
+  }
+  if (options.hasSnapshot) {
+    return options.waitingLabel;
+  }
+  return "—";
+}
+
+export function merchantSlicerEmpty(
+  hasMerchants: boolean,
+  hasSnapshot: boolean
+): "list" | "empty" | "hidden" {
+  if (hasMerchants) {
+    return "list";
+  }
+  return hasSnapshot ? "empty" : "hidden";
+}
+
 /**
  * A failed refresh keeps the last successful snapshot. The raw browser message
  * is replaced with localized copy. API details stay available for HTTP errors.

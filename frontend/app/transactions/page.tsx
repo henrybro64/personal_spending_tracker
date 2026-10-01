@@ -27,6 +27,7 @@ import {
 import { apiFetch, apiFetchJson } from "../api";
 import {
   DashboardRequestCoordinator,
+  merchantSlicerEmpty,
   recoverableReadFailure,
 } from "../dashboard-refresh";
 import { useReadRecovery } from "../read-recovery";
@@ -444,6 +445,43 @@ function buildGroupedTransactions(
         });
       return { year, months };
     });
+}
+
+function TransactionsMerchantSlicer(props: {
+  locale: ReturnType<typeof useLocale>["locale"];
+  styles: ReturnType<typeof useStyles>;
+  merchants: string[];
+  selectedMerchant: string | null;
+  hasLoaded: boolean;
+  onSelect: (merchant: string | null) => void;
+}) {
+  const state = merchantSlicerEmpty(props.merchants.length > 0, props.hasLoaded);
+  if (state === "hidden") {
+    return null;
+  }
+  if (state === "empty") {
+    return (
+      <Body1 className={props.styles.emptySlicerState}>
+        {translate(props.locale, "merchantSlicerEmpty")}
+      </Body1>
+    );
+  }
+  return (
+    <div className={props.styles.pillGrid}>
+      {props.merchants.map((merchant) => (
+        <Button
+          key={merchant}
+          size="small"
+          appearance={props.selectedMerchant === merchant ? "primary" : "secondary"}
+          onClick={() =>
+            props.onSelect(props.selectedMerchant === merchant ? null : merchant)
+          }
+        >
+          {merchant}
+        </Button>
+      ))}
+    </div>
+  );
 }
 
 export default function TransactionsPage() {
@@ -933,26 +971,14 @@ export default function TransactionsPage() {
               <Body1 className={styles.emptySlicerState}>
                 {translate(locale, "merchantSlicerLabel")}
               </Body1>
-              {merchantCandidates.length > 0 ? (
-                <div className={styles.pillGrid}>
-                  {merchantCandidates.map((merchant) => (
-                    <Button
-                      key={merchant}
-                      size="small"
-                      appearance={selectedMerchant === merchant ? "primary" : "secondary"}
-                      onClick={() =>
-                        setSelectedMerchant((current) => (current === merchant ? null : merchant))
-                      }
-                    >
-                      {merchant}
-                    </Button>
-                  ))}
-                </div>
-              ) : hasLoaded ? (
-                <Body1 className={styles.emptySlicerState}>
-                  {translate(locale, "merchantSlicerEmpty")}
-                </Body1>
-              ) : null}
+              <TransactionsMerchantSlicer
+                hasLoaded={hasLoaded}
+                locale={locale}
+                merchants={merchantCandidates}
+                onSelect={setSelectedMerchant}
+                selectedMerchant={selectedMerchant}
+                styles={styles}
+              />
             </div>
             <div className={styles.actions}>
               <Button

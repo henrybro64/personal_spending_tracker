@@ -30,6 +30,18 @@ test("a recovered settings load takes a new server model when the field is untou
   assert.equal(kept.model, "gpt-4.2");
 });
 
+test("a recovered settings load clears a stuck removal flag", () => {
+  const kept = mergeProviderDraft(
+    { ...typed, removing: true },
+    "gpt-4.1",
+    "gpt-4.1",
+    false
+  );
+  assert.equal(kept.apiKey, "sk-user-typing");
+  assert.equal(kept.removing, false);
+  assert.equal(kept.saving, false);
+});
+
 test("saving clears the secret and uses the server model", () => {
   const cleared = mergeProviderDraft(typed, "gpt-4.1", "gpt-4.1", true);
   assert.equal(cleared.apiKey, "");

@@ -366,6 +366,24 @@ function formatDateTime(timestamp: string) {
   }).format(parsedDate);
 }
 
+function batchRunEmptyMessage(hasLoaded: boolean): string | null {
+  if (!hasLoaded) {
+    return null;
+  }
+  return "No batch import has been run yet on the default SQLite store.";
+}
+
+function BatchEmptyRunNotice(props: {
+  hasLoaded: boolean;
+  styles: { quietText: string };
+}) {
+  const message = batchRunEmptyMessage(props.hasLoaded);
+  if (!message) {
+    return null;
+  }
+  return <Body1 className={props.styles.quietText}>{message}</Body1>;
+}
+
 export default function BatchReviewPage() {
   const styles = useStyles();
   const pathname = usePathname();
@@ -1072,11 +1090,9 @@ export default function BatchReviewPage() {
                   </div>
                 </div>
               </>
-            ) : hasLoaded ? (
-              <Body1 className={styles.quietText}>
-                No batch import has been run yet on the default SQLite store.
-              </Body1>
-            ) : null}
+            ) : (
+              <BatchEmptyRunNotice hasLoaded={hasLoaded} styles={styles} />
+            )}
           </Card>
 
           {loadMessage ? (

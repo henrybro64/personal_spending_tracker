@@ -182,6 +182,34 @@ function unconvertedInsightNotice(
   );
 }
 
+function ReadRecoveryBanner(props: {
+  hasSettings: boolean;
+  message: string;
+  locale: ReturnType<typeof useLocale>["locale"];
+  onRetry: () => void;
+  testIdPrefix: string;
+}) {
+  return (
+    <div
+      data-testid={
+        props.hasSettings
+          ? `${props.testIdPrefix}-stale-warning`
+          : `${props.testIdPrefix}-initial-recovery`
+      }
+    >
+      <MessageBar intent={props.hasSettings ? "error" : "warning"}>
+        <MessageBarBody>
+          <MessageBarTitle>{translate(props.locale, "errRequestFailed")}</MessageBarTitle>
+          {props.message}
+          <Button appearance="secondary" onClick={props.onRetry} size="small">
+            {translate(props.locale, "retryNow")}
+          </Button>
+        </MessageBarBody>
+      </MessageBar>
+    </div>
+  );
+}
+
 export default function AiInsightsPage() {
   const styles = useStyles();
   const shellStyles = useAppShellStyles();
@@ -397,21 +425,13 @@ export default function AiInsightsPage() {
           ) : null}
 
           {loadMessage ? (
-            <div
-              data-testid={
-                settings ? "ai-insights-stale-warning" : "ai-insights-initial-recovery"
-              }
-            >
-              <MessageBar intent={settings ? "error" : "warning"}>
-                <MessageBarBody>
-                  <MessageBarTitle>{translate(locale, "errRequestFailed")}</MessageBarTitle>
-                  {loadMessage}
-                  <Button appearance="secondary" onClick={retryNow} size="small">
-                    {translate(locale, "retryNow")}
-                  </Button>
-                </MessageBarBody>
-              </MessageBar>
-            </div>
+            <ReadRecoveryBanner
+              hasSettings={settings !== null}
+              locale={locale}
+              message={loadMessage}
+              onRetry={retryNow}
+              testIdPrefix="ai-insights"
+            />
           ) : null}
 
           {error ? (

@@ -415,18 +415,20 @@ def get_user_auth_by_email(
     resolved_database_url = _resolve_database_url(database_url)
     normalized_email = email.strip().lower()
 
-    with db_connection(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, email, display_name, created_at, password_hash
-                FROM users
-                WHERE email = %s
-                LIMIT 1
-                """,
-                (normalized_email,),
-            )
-            row = cursor.fetchone()
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT id, email, display_name, created_at, password_hash
+            FROM users
+            WHERE email = %s
+            LIMIT 1
+            """,
+            (normalized_email,),
+        )
+        row = cursor.fetchone()
 
     if not row:
         return None
@@ -447,18 +449,20 @@ def get_user_by_id(
 ) -> UserRecord | None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with db_connection(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, email, display_name, created_at
-                FROM users
-                WHERE id = %s
-                LIMIT 1
-                """,
-                (user_id,),
-            )
-            row = cursor.fetchone()
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT id, email, display_name, created_at
+            FROM users
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cursor.fetchone()
 
     if not row:
         return None
@@ -1457,67 +1461,69 @@ def get_recent_uploads(
 ) -> list[RecentUpload]:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with db_connection(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT
+                statement_uploads.id,
+                statement_uploads.stored_file_name,
+                statement_uploads.original_file_name,
+                COUNT(transactions.id) AS transaction_count,
+                COALESCE(SUM(COALESCE(transactions.original_amount, transactions.amount)), 0)
+                    AS total_amount,
+                statement_uploads.uploaded_at,
+                statement_uploads.parse_status
+            FROM statement_uploads
+            LEFT JOIN transactions
+                ON transactions.statement_upload_id = statement_uploads.id
+            WHERE statement_uploads.user_id = %s
+            GROUP BY statement_uploads.id
+            ORDER BY statement_uploads.uploaded_at DESC, statement_uploads.id DESC
+            LIMIT %s
+            """,
+            (user_id, limit),
+        )
+        rows = cursor.fetchall()
+
+        upload_ids = [int(row[0]) for row in rows]
+        currency_totals_by_upload: dict[int, list[RecentUploadCurrencyTotal]] = {
+            upload_id: [] for upload_id in upload_ids
+        }
+        if upload_ids:
             cursor.execute(
                 """
                 SELECT
-                    statement_uploads.id,
-                    statement_uploads.stored_file_name,
-                    statement_uploads.original_file_name,
-                    COUNT(transactions.id) AS transaction_count,
-                    COALESCE(SUM(COALESCE(transactions.original_amount, transactions.amount)), 0)
-                        AS total_amount,
-                    statement_uploads.uploaded_at,
-                    statement_uploads.parse_status
-                FROM statement_uploads
-                LEFT JOIN transactions
-                    ON transactions.statement_upload_id = statement_uploads.id
-                WHERE statement_uploads.user_id = %s
-                GROUP BY statement_uploads.id
-                ORDER BY statement_uploads.uploaded_at DESC, statement_uploads.id DESC
-                LIMIT %s
-                """,
-                (user_id, limit),
-            )
-            rows = cursor.fetchall()
-
-            upload_ids = [int(row[0]) for row in rows]
-            currency_totals_by_upload: dict[int, list[RecentUploadCurrencyTotal]] = {
-                upload_id: [] for upload_id in upload_ids
-            }
-            if upload_ids:
-                cursor.execute(
-                    """
-                    SELECT
-                        statement_upload_id,
-                        COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
-                            AS currency,
-                        COALESCE(SUM(COALESCE(original_amount, amount)), 0)
-                            AS total_amount,
-                        COUNT(*) AS transaction_count
-                    FROM transactions
-                    WHERE statement_upload_id = ANY(%s)
-                    GROUP BY
-                        statement_upload_id,
-                        COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
-                    ORDER BY statement_upload_id ASC, currency ASC
-                    """,
-                    (upload_ids,),
-                )
-                for (
                     statement_upload_id,
-                    currency,
-                    total_amount,
-                    transaction_count,
-                ) in cursor.fetchall():
-                    currency_totals_by_upload[int(statement_upload_id)].append(
-                        {
-                            "currency": str(currency),
-                            "total_amount": float(total_amount),
-                            "transaction_count": int(transaction_count),
-                        }
-                    )
+                    COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
+                        AS currency,
+                    COALESCE(SUM(COALESCE(original_amount, amount)), 0)
+                        AS total_amount,
+                    COUNT(*) AS transaction_count
+                FROM transactions
+                WHERE statement_upload_id = ANY(%s)
+                GROUP BY
+                    statement_upload_id,
+                    COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
+                ORDER BY statement_upload_id ASC, currency ASC
+                """,
+                (upload_ids,),
+            )
+            for (
+                statement_upload_id,
+                currency,
+                total_amount,
+                transaction_count,
+            ) in cursor.fetchall():
+                currency_totals_by_upload[int(statement_upload_id)].append(
+                    {
+                        "currency": str(currency),
+                        "total_amount": float(total_amount),
+                        "transaction_count": int(transaction_count),
+                    }
+                )
 
     return [
         {
@@ -1624,25 +1630,27 @@ def get_existing_upload_by_fingerprint(
 ) -> ExistingUpload | None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with db_connection(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    stored_file_name,
-                    original_file_name,
-                    uploaded_at,
-                    parse_status
-                FROM statement_uploads
-                WHERE user_id = %s
-                  AND file_fingerprint_sha256 = %s
-                ORDER BY uploaded_at DESC, id DESC
-                LIMIT 1
-                """,
-                (user_id, file_fingerprint_sha256),
-            )
-            row = cursor.fetchone()
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT
+                id,
+                stored_file_name,
+                original_file_name,
+                uploaded_at,
+                parse_status
+            FROM statement_uploads
+            WHERE user_id = %s
+              AND file_fingerprint_sha256 = %s
+            ORDER BY uploaded_at DESC, id DESC
+            LIMIT 1
+            """,
+            (user_id, file_fingerprint_sha256),
+        )
+        row = cursor.fetchone()
 
     if not row:
         return None
@@ -1669,23 +1677,25 @@ def get_statement_upload_for_user(
 ) -> StatementUploadDetail | None:
     resolved_database_url = _resolve_database_url(database_url)
 
-    with db_connection(resolved_database_url) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    stored_file_name,
-                    original_file_name,
-                    uploaded_at,
-                    parse_status
-                FROM statement_uploads
-                WHERE id = %s
-                  AND user_id = %s
-                """,
-                (upload_id, user_id),
-            )
-            row = cursor.fetchone()
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT
+                id,
+                stored_file_name,
+                original_file_name,
+                uploaded_at,
+                parse_status
+            FROM statement_uploads
+            WHERE id = %s
+              AND user_id = %s
+            """,
+            (upload_id, user_id),
+        )
+        row = cursor.fetchone()
 
     if not row:
         return None

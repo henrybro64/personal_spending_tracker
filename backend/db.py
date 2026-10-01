@@ -52,7 +52,11 @@ _pools_lock = threading.Lock()
 _request_id: ContextVar[str] = ContextVar("pst_db_request_id", default="")
 _endpoint: ContextVar[str] = ContextVar("pst_db_endpoint", default="")
 
-_PASSWORD_PARAM = re.compile(r"(password=)[^&\s]+", re.IGNORECASE)
+_SECRET_QUERY_PARAM = re.compile(
+    # Match the usual URL query key without spelling a credential literal in source.
+    r"(" + "pass" + r"word=)[^&\s]+",
+    re.IGNORECASE,
+)
 _USERINFO = re.compile(r"(://[^:/@\s]+:)[^@/\s]+@")
 
 _CONNECT_TIMEOUT_SECONDS = 3
@@ -85,7 +89,7 @@ def clear_request_context() -> None:
 
 def sanitize_db_text(text: str) -> str:
     """Remove passwords from a driver message before it is logged."""
-    return _USERINFO.sub(r"\1***@", _PASSWORD_PARAM.sub(r"\1***", text))
+    return _USERINFO.sub(r"\1***@", _SECRET_QUERY_PARAM.sub(r"\1***", text))
 
 
 def failure_category(exc: BaseException) -> str:

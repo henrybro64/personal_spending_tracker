@@ -108,7 +108,7 @@ kubectl -n spending-tracker logs deployment/backend
 bash scripts/triage-k3s-pods.sh   # pods Error / ContainerCreating
 ```
 
-**Backend `Error` while postgres is `ContainerCreating`:** migrations run in a `migrate-database` init container after `wait-for-postgres`. If Postgres was not ready, wait until it is `Running`, then `kubectl -n spending-tracker rollout restart deployment/backend`.
+**Backend stays up while Postgres is starting:** the API process does not wait for Postgres. `/health` stays available, and `/ready` applies migrations once the database accepts connections. The pod stays out of rotation until that probe succeeds.
 
 **Backups:** see [docs/backup-restore.md](../docs/backup-restore.md). Use `KUBECTL='sudo k3s kubectl' ./scripts/backup-spending-tracker.sh --k3s` before major upgrades.
 
