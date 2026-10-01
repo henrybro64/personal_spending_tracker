@@ -1,3 +1,5 @@
+import { ApiError } from "./api";
+
 export type DashboardFilters = {
   timeRange: string;
   searchQuery: string;
@@ -12,6 +14,20 @@ export type SnapshotPart<T> =
   | { status: "error"; error: unknown };
 
 export type DashboardLoadDecision = "applied" | "ignored" | "error";
+
+export type DashboardFailureCopy = {
+  staleData: string;
+  unableToRefresh: string;
+};
+
+export type DashboardLoadReduction<TView, TUploads> = {
+  view: TView | null;
+  uploads: TUploads[];
+  error: string;
+  uploadsError: string;
+  stale: boolean;
+  unauthorized: boolean;
+};
 
 const clearedSlicers = {
   searchQuery: "",
@@ -80,6 +96,95 @@ export function shouldReleaseSearchPin(
 
 export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
+}
+
+export function isUnauthorizedError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
+/**
+ * A failed refresh keeps the last successful snapshot. The raw browser message
+ * is replaced with localized copy. API details stay available for HTTP errors.
+ */
+export function dashboardFailureMessage(
+  error: unknown,
+  hasCurrent: boolean,
+  copy: DashboardFailureCopy
+): string {
+  if (isAbortError(error) || isUnauthorizedError(error)) {
+    return "";
+  }
+  if (hasCurrent) {
+    if (error instanceof ApiError) {
+      return `${copy.staleData} ${error.message}`;
+    }
+    return copy.staleData;
+  }
+  if (error instanceof ApiError) {
+    return error.message;
+  }
+  return copy.unableToRefresh;
+}
+
+export function reduceDashboardLoad<TView, TUploads>(
+  current: { view: TView | null; uploads: TUploads[] },
+  snapshot: {
+    uploads: SnapshotPart<{ uploads: TUploads[] }>;
+    view: SnapshotPart<TView>;
+  },
+  copy: DashboardFailureCopy
+): DashboardLoadReduction<TView, TUploads> {
+  const viewResult = reduceView(current.view, snapshot.view, copy);
+  const uploadsResult = reduceUploads(current.uploads, snapshot.uploads, copy);
+  return {
+    view: viewResult.view,
+    uploads: uploadsResult.uploads,
+    error: viewResult.error,
+    uploadsError: uploadsResult.error,
+    stale: viewResult.stale,
+    unauthorized: viewResult.unauthorized || uploadsResult.unauthorized,
+  };
+}
+
+function reduceView<TView>(
+  current: TView | null,
+  part: SnapshotPart<TView>,
+  copy: DashboardFailureCopy
+): { view: TView | null; error: string; stale: boolean; unauthorized: boolean } {
+  if (part.status === "ok") {
+    return { view: part.value, error: "", stale: false, unauthorized: false };
+  }
+  if (isUnauthorizedError(part.error)) {
+    return { view: current, error: "", stale: false, unauthorized: true };
+  }
+  const hasCurrent = current !== null;
+  return {
+    view: current,
+    error: dashboardFailureMessage(part.error, hasCurrent, copy),
+    stale: hasCurrent,
+    unauthorized: false,
+  };
+}
+
+function reduceUploads<TUploads>(
+  current: TUploads[],
+  part: SnapshotPart<{ uploads: TUploads[] }>,
+  copy: DashboardFailureCopy
+): { uploads: TUploads[]; error: string; unauthorized: boolean } {
+  if (part.status === "ok") {
+    return { uploads: part.value.uploads, error: "", unauthorized: false };
+  }
+  if (isUnauthorizedError(part.error)) {
+    return { uploads: current, error: "", unauthorized: true };
+  }
+  return {
+    uploads: current,
+    error: dashboardFailureMessage(part.error, current.length > 0, {
+      staleData: copy.unableToRefresh,
+      unableToRefresh: copy.unableToRefresh,
+    }),
+    unauthorized: false,
+  };
 }
 
 export class DashboardRequestCoordinator {

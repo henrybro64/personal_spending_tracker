@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -25,6 +25,12 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import { apiFetch, apiFetchJson, ApiError } from "../api";
+import {
+  DashboardRequestCoordinator,
+  dashboardFailureMessage,
+  isAbortError,
+} from "../dashboard-refresh";
+import { invalidateSpendingData, useSpendingRevision } from "../server-state";
 import { AuthPage, AuthPanel, SessionCard } from "../auth-card";
 import { useAuth } from "../auth-provider";
 import {
@@ -445,7 +451,12 @@ export default function TransactionsPage() {
   const { locale, intlLocale } = useLocale();
   const { refreshSession, status, user } = useAuth();
   const pathname = usePathname();
+  const spendingRevision = useSpendingRevision();
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const transactionsRef = useRef(transactions);
+  transactionsRef.current = transactions;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -460,37 +471,67 @@ export default function TransactionsPage() {
   const [deletingTransactionId, setDeletingTransactionId] = useState<number | null>(null);
   const [categoryDrafts, setCategoryDrafts] = useState<Record<number, string>>({});
   const [merchantDrafts, setMerchantDrafts] = useState<Record<number, string>>({});
+  const requestCoordinatorRef = useRef(new DashboardRequestCoordinator());
 
   useEffect(() => {
-    async function loadTransactions() {
-      setLoading(true);
-      setError("");
-      setMessage("");
-      try {
-        const payload = await apiFetchJson<TransactionsResponse>(
-          "/transactions?range=all&limit=5000",
-          "Failed to load transactions."
-        );
-        setTransactions(payload.transactions);
-      } catch (loadError) {
-        if (loadError instanceof ApiError && loadError.status === 401) {
-          await refreshSession();
-          return;
-        }
-        setError(loadError instanceof Error ? loadError.message : "Failed to load transactions.");
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    if (status === "authenticated") {
-      void loadTransactions();
+    if (status !== "authenticated") {
+      setTransactions([]);
+      setLoading(status === "loading");
       return;
     }
 
-    setTransactions([]);
-    setLoading(status === "loading");
-  }, [refreshSession, status]);
+    const coordinator = requestCoordinatorRef.current;
+    const ticket = coordinator.start();
+    const hasCurrent = transactionsRef.current.length > 0;
+    if (!hasCurrent) {
+      setLoading(true);
+    }
+    setError("");
+    setMessage("");
+
+    void (async () => {
+      try {
+        const payload = await apiFetchJson<TransactionsResponse>(
+          "/transactions?range=all&limit=5000",
+          translate(localeRef.current, "errRequestFailed"),
+          { signal: ticket.signal }
+        );
+        if (!coordinator.isLatest(ticket.generation) || ticket.signal.aborted) {
+          return;
+        }
+        setTransactions(payload.transactions);
+      } catch (loadError) {
+        if (
+          isAbortError(loadError) ||
+          ticket.signal.aborted ||
+          !coordinator.isLatest(ticket.generation)
+        ) {
+          return;
+        }
+        const failureMessage = dashboardFailureMessage(
+          loadError,
+          transactionsRef.current.length > 0,
+          {
+            staleData: translate(localeRef.current, "dashboardStaleData"),
+            unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
+          }
+        );
+        if (!failureMessage) {
+          await refreshSession();
+          return;
+        }
+        setError(failureMessage);
+      } finally {
+        if (coordinator.isLatest(ticket.generation) && !ticket.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      ticket.abort();
+    };
+  }, [refreshSession, spendingRevision, status]);
 
   const merchantCandidates = useMemo(() => {
     const deduped = Array.from(
@@ -643,6 +684,7 @@ export default function TransactionsPage() {
             : "Failed to delete transaction."
         );
       }
+      invalidateSpendingData();
       setTransactions((current) =>
         current.filter((item) => item.id !== transaction.id)
       );
@@ -712,6 +754,7 @@ export default function TransactionsPage() {
         );
       }
       const updated = (payload as TransactionUpdateResponse).transaction;
+      invalidateSpendingData();
       setTransactions((current) =>
         current.map((item) => (item.id === updated.id ? updated : item))
       );
@@ -924,11 +967,12 @@ export default function TransactionsPage() {
           </div>
 
           <Card className={styles.card}>
-            {loading ? (
+            {error ? (
+              <Body1 data-testid="transactions-load-warning">{error}</Body1>
+            ) : null}
+            {loading && transactions.length === 0 ? (
               <Spinner label="Loading transactions..." />
-            ) : error ? (
-              <Body1>{error}</Body1>
-            ) : (
+            ) : error && transactions.length === 0 ? null : (
               <div className={styles.tableWrap}>
                 <div className={styles.drilldownPanel}>
                   <div className={styles.drilldownLabel}>

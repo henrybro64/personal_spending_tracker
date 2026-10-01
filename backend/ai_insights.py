@@ -8,6 +8,7 @@ from typing import Literal, TypedDict
 import httpx
 
 from backend.currency import DisplayCurrency
+from backend.http_retry import ATTEMPT_TIMEOUT_SECONDS, request_with_retry
 from backend.database import StoredTransaction, TimeRange
 from backend.spending import (
     DisplayTransaction,
@@ -77,6 +78,16 @@ class GeneratedInsightResult(TypedDict):
     generated_at: str
     insight_text: str
     citations: list[str]
+
+
+def _provider_http_timeout() -> httpx.Timeout:
+    """Read budget matches one retry attempt. Connect failures stay short."""
+    return httpx.Timeout(
+        connect=10.0,
+        read=ATTEMPT_TIMEOUT_SECONDS,
+        write=20.0,
+        pool=10.0,
+    )
 
 
 def default_model_for_provider(provider: AiProvider) -> str:
@@ -385,15 +396,16 @@ def _build_prompts(snapshot: SpendingInsightSnapshot) -> tuple[str, str]:
     return system_prompt, user_prompt
 
 
-async def _request_openai_insights(
+async def _post_openai(
+    client: httpx.AsyncClient,
     *,
     api_key: str,
     model: str,
     system_prompt: str,
     user_prompt: str,
-) -> tuple[str, list[str]]:
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        response = await client.post(
+) -> httpx.Response:
+    return await request_with_retry(
+        lambda: client.post(
             "https://api.openai.com/v1/responses",
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -417,6 +429,25 @@ async def _request_openai_insights(
                     },
                 ],
             },
+        ),
+        provider="OpenAI",
+    )
+
+
+async def _request_openai_insights(
+    *,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> tuple[str, list[str]]:
+    async with httpx.AsyncClient(timeout=_provider_http_timeout()) as client:
+        response = await _post_openai(
+            client,
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
         )
 
     if response.status_code >= 400:
@@ -459,16 +490,17 @@ async def _request_openai_insights(
     return insight_text, _dedupe_preserve_order(citations)
 
 
-async def _request_perplexity_insights(
+async def _post_perplexity(
+    client: httpx.AsyncClient,
     *,
     api_key: str,
     model: str,
     system_prompt: str,
     user_prompt: str,
     language: InsightLanguage,
-) -> tuple[str, list[str]]:
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        response = await client.post(
+) -> httpx.Response:
+    return await request_with_retry(
+        lambda: client.post(
             "https://api.perplexity.ai/v1/sonar",
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -484,6 +516,27 @@ async def _request_perplexity_insights(
                 "disable_search": True,
                 "language_preference": "zh" if language == "zh-Hant" else "en",
             },
+        ),
+        provider="Perplexity",
+    )
+
+
+async def _request_perplexity_insights(
+    *,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    language: InsightLanguage,
+) -> tuple[str, list[str]]:
+    async with httpx.AsyncClient(timeout=_provider_http_timeout()) as client:
+        response = await _post_perplexity(
+            client,
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            language=language,
         )
 
     if response.status_code >= 400:
