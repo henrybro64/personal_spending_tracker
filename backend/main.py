@@ -2338,7 +2338,10 @@ def _open_uploaded_statement(
         if timed_out:
             raise HTTPException(
                 status_code=504,
-                detail="This PDF took too long to read. Try a smaller statement.",
+                detail=(
+                    "This PDF took too long to read. Try again, or export the "
+                    "statement from your bank again."
+                ),
             ) from None
         raise HTTPException(
             status_code=422,

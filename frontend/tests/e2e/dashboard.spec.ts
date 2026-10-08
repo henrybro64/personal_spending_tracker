@@ -520,6 +520,64 @@ test("recent statements wait for their own request instead of showing an empty l
   await expect(page.getByText("No uploaded statements yet.")).toHaveCount(0);
 });
 
+test("a filter change does not cancel the retry for failed recent statements", async ({
+  page,
+}) => {
+  let uploadsOpen = false;
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    if (!uploadsOpen) {
+      await route.abort("failed");
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        uploads: [
+          {
+            file_name: "sample.pdf",
+            display_name: "Sample Statement.pdf",
+            transaction_count: 4,
+            total_amount: 44.65,
+            currency_totals: [],
+            uploaded_at: "2026-05-16T09:30:00+00:00",
+            parse_status: "parsed",
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/api/dashboard/view**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(buildDashboardView("USD")),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  // Wait until the uploads failure has reached the page, past the client's
+  // own GET retries, so a retry is pending when the filter changes.
+  await expect(page.getByText(/Unable to refresh data/)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const filters = page.getByRole("complementary");
+  await filters.getByRole("button", { name: "Spend", exact: true }).click();
+  await expect(page.getByTestId("dashboard-shell")).toHaveAttribute(
+    "data-dashboard-loading",
+    "false"
+  );
+
+  uploadsOpen = true;
+  await expect(page.getByText("Sample Statement.pdf")).toBeVisible({
+    timeout: 15_000,
+  });
+});
+
 test("dashboard warns when transactions cannot be converted", async ({ page }) => {
   await mockAuthenticatedSession(page);
   await page.route("**/api/uploads/recent?limit=6", async (route) => {

@@ -57,6 +57,7 @@ import {
   runGuardedDashboardLoad,
   searchDebounceDelay,
   shouldReleaseSearchPin,
+  shouldResetRecoveryOnFilterChange,
 } from "./dashboard-refresh";
 import { useDebouncedValue } from "./use-debounced-value";
 import { useReadRecovery } from "./read-recovery";
@@ -1586,10 +1587,6 @@ export default function HomePage() {
     setPinnedSearch(null);
   }, [debouncedSearchQuery, pinnedSearch, searchQuery]);
 
-  useEffect(() => {
-    resetCycle();
-  }, [dashboardLoadToken, resetCycle]);
-
   // The view and recent uploads load separately but share one retry cycle.
   const readFailuresRef = useRef<DashboardReadFailures>({
     view: false,
@@ -1604,6 +1601,12 @@ export default function HomePage() {
       setFailureId(0);
     }
   }, []);
+
+  useEffect(() => {
+    if (shouldResetRecoveryOnFilterChange(readFailuresRef.current)) {
+      resetCycle();
+    }
+  }, [dashboardLoadToken, resetCycle]);
 
   useEffect(() => {
     if (authStatus !== "authenticated") {

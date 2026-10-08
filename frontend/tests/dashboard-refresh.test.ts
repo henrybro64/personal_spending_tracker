@@ -19,6 +19,7 @@ import {
   runGuardedDashboardLoad,
   searchDebounceDelay,
   shouldReleaseSearchPin,
+  shouldResetRecoveryOnFilterChange,
 } from "../app/dashboard-refresh";
 
 const dirtyFilters: DashboardFilters = {
@@ -516,4 +517,19 @@ test("one read's success does not cancel the other read's retry", () => {
   assert.deepEqual(uploadsOk.failures, healthy);
 
   assert.equal(recordDashboardRead(healthy, "view", false).failureAction, "clear");
+});
+
+test("a filter change keeps the pending retry for failed recent uploads", () => {
+  assert.equal(
+    shouldResetRecoveryOnFilterChange({ view: false, uploads: false }),
+    true
+  );
+  assert.equal(
+    shouldResetRecoveryOnFilterChange({ view: true, uploads: false }),
+    true
+  );
+  assert.equal(
+    shouldResetRecoveryOnFilterChange({ view: false, uploads: true }),
+    false
+  );
 });

@@ -308,6 +308,17 @@ export function recordDashboardRead(
   };
 }
 
+/**
+ * New filters start a fresh view request, so the view's backoff can restart.
+ * Recent uploads do not reload on a filter change, so while they wait on a
+ * retry the pending retry must stay scheduled.
+ */
+export function shouldResetRecoveryOnFilterChange(
+  failures: DashboardReadFailures
+): boolean {
+  return !failures.uploads;
+}
+
 export async function runGuardedDashboardLoad<T>(options: {
   coordinator: DashboardRequestCoordinator;
   generation: number;

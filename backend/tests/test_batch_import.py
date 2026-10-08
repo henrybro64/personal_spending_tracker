@@ -500,7 +500,7 @@ class StatementImporterTests(unittest.TestCase):
 
             def fake_extractor(path: str | Path) -> str:
                 if Path(path).name == "hangs.pdf":
-                    raise PdfWorkerTimeout("PDF processing took longer than 120 seconds.")
+                    raise PdfWorkerTimeout("PDF processing passed the 120 s limit.")
                 raise PdfWorkerError("The PDF worker process stopped unexpectedly.")
 
             previous_values = self._apply_batch_env(env_overrides)

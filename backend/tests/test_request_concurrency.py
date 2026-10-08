@@ -631,3 +631,39 @@ def test_pdf_worker_reports_a_pool_that_cannot_start(
 
     with pytest.raises(process_pool.PdfWorkerError):
         process_pool.run_cpu_bound(os.getpid)
+
+
+def test_pdf_worker_lock_serves_waiters_in_arrival_order() -> None:
+    import time
+
+    from backend.process_pool import _FifoLock
+
+    lock = _FifoLock()
+    order: list[str] = []
+
+    def wait_for_waiters(count: int) -> None:
+        deadline = time.monotonic() + 5
+        while lock.waiting_count() < count:
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+
+    def take(name: str) -> None:
+        with lock:
+            order.append(name)
+
+    lock.__enter__()  # a batch import holds the worker
+    first = threading.Thread(target=take, args=("upload-1",))
+    first.start()
+    wait_for_waiters(1)
+    second = threading.Thread(target=take, args=("upload-2",))
+    second.start()
+    wait_for_waiters(2)
+
+    # The batch releases and asks again at once. It must not cut in line.
+    batch_again = threading.Thread(target=take, args=("batch-next-file",))
+    lock.__exit__(None, None, None)
+    batch_again.start()
+    for thread in (first, second, batch_again):
+        thread.join(timeout=5)
+
+    assert order == ["upload-1", "upload-2", "batch-next-file"]
