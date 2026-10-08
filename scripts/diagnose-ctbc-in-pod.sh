@@ -16,6 +16,10 @@ KUBECTL="${KUBECTL:-sudo k3s kubectl}"
 NS="${NAMESPACE:-spending-tracker}"
 ONLY_FILTER="${1:-}"
 BATCH_USER_ID="${BATCH_USER_ID:-1}"
+if [[ ! "$BATCH_USER_ID" =~ ^[0-9]+$ ]]; then
+  echo "BATCH_USER_ID must be a number" >&2
+  exit 1
+fi
 BATCH_SQLITE="${BATCH_SQLITE:-}"
 PDF_DIR="/app/batch/pdf/user-${BATCH_USER_ID}"
 

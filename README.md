@@ -107,12 +107,13 @@ export BATCH_TEXT_SOURCE_DIR="$(pwd)/credit_card_text"
 
 Batch import reads each signed-in user's own subfolder, for example `Credit_Card_PDF/user-1/` and `credit_card_text/user-1/`. The variables above only choose the parent folder. Files placed directly in the parent folder are ignored.
 
-**Upgrading:** earlier releases read the root of `BATCH_PDF_SOURCE_DIR` and `BATCH_TEXT_SOURCE_DIR` for every user when those variables were set. Move existing statements into the owner's `user-<id>` folder (normally `user-1`), for example:
+**Upgrading:** earlier releases read the root of `BATCH_PDF_SOURCE_DIR` and `BATCH_TEXT_SOURCE_DIR` for every user when those variables were set. If you set them, move existing statements into the owner's `user-<id>` folder (normally `user-1`). Without the variables, statements were already per user and nothing needs to move.
 
 ```bash
-mkdir -p "$BATCH_PDF_SOURCE_DIR/user-1" "$BATCH_TEXT_SOURCE_DIR/user-1"
-find "$BATCH_PDF_SOURCE_DIR" -maxdepth 1 -type f -exec mv {} "$BATCH_PDF_SOURCE_DIR/user-1/" \;
-find "$BATCH_TEXT_SOURCE_DIR" -maxdepth 1 -type f -exec mv {} "$BATCH_TEXT_SOURCE_DIR/user-1/" \;
+for dir in "${BATCH_PDF_SOURCE_DIR:?}" "${BATCH_TEXT_SOURCE_DIR:?}"; do
+  mkdir -p "$dir/user-1"
+  find "$dir" -maxdepth 1 -type f -exec mv {} "$dir/user-1/" \;
+done
 ```
 
 Run the FastAPI app:

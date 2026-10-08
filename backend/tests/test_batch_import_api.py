@@ -161,7 +161,8 @@ def test_batch_api_ignores_client_supplied_paths(api_main, tmp_path: Path) -> No
             "MALLORY"
         ]
         r = client.post("/batch-imports/merge", json={"sqlite_output_path": alice_db})
-        assert r.status_code in (200, 503), r.text
+        assert r.status_code == 200, r.text
+        assert r.json()["merged_count"] == 1  # mallory's own row only
 
         # cannot create directories anywhere on disk
         outside = tmp_path / "outside" / "deep" / "x.sqlite3"

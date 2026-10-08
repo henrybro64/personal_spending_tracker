@@ -56,6 +56,9 @@ echo "=== Recent cluster events (backend) ==="
 
 echo
 echo "=== Direct import in pod (bypasses UI; may take minutes) ==="
-echo "Run:"
+echo "Run (user-1; results appear on that user's /batch-review page):"
 printf '  %q' "${KUBECTL_CMD[@]}"
-echo " -n $NS exec -it $POD -c backend -- python3 -m backend.import_statements"
+echo " -n $NS exec -it $POD -c backend -- python3 -m backend.import_statements \\"
+echo "    --pdf-dir /app/batch/pdf/user-1 --text-dir /app/batch/text/user-1 \\"
+echo "    --sqlite-out /app/batch/data/batch_imports_user_1.sqlite3 \\"
+echo "    --csv-out /app/batch/data/batch_transactions_user_1.csv"
