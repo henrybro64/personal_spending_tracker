@@ -2319,32 +2319,11 @@ def _open_uploaded_statement(
                 "export a new file."
             ),
         ) from None
-    except PdfWorkerBusy:
-        saved_path.unlink(missing_ok=True)
-        logger.warning("statement upload waited too long user_id=%s", user_id)
-        record_audit_event(
-            action="statement_upload_parse_failure",
-            status="rejected",
-            user_id=user_id,
-            target_type="statement_upload",
-            request_id=audit_context.request_id,
-            ip_address=audit_context.ip_address,
-            user_agent=audit_context.user_agent,
-            metadata={"file_name": original_name, "reason": "busy"},
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="Other statements are still being read. Try again in a few minutes.",
-        ) from None
     except PdfWorkerError as exc:
-        # PdfWorkerTimeout is a PdfWorkerError; the worker is already replaced.
-        timed_out = isinstance(exc, PdfWorkerTimeout)
+        # After a timeout or crash the worker is already replaced.
+        reason, outcome, status_code, detail = _pdf_worker_failure_response(exc)
         saved_path.unlink(missing_ok=True)
-        logger.warning(
-            "statement upload parse %s user_id=%s",
-            "timed out" if timed_out else "worker crashed",
-            user_id,
-        )
+        logger.warning("statement upload parse %s user_id=%s", outcome, user_id)
         record_audit_event(
             action="statement_upload_parse_failure",
             status="rejected",
@@ -2353,23 +2332,34 @@ def _open_uploaded_statement(
             request_id=audit_context.request_id,
             ip_address=audit_context.ip_address,
             user_agent=audit_context.user_agent,
-            metadata={
-                "file_name": original_name,
-                "reason": "timeout" if timed_out else "worker_error",
-            },
+            metadata={"file_name": original_name, "reason": reason},
         )
-        if timed_out:
-            raise HTTPException(
-                status_code=504,
-                detail=(
-                    "This PDF took too long to read. Try again, or export the "
-                    "statement from your bank again."
-                ),
-            ) from None
-        raise HTTPException(
-            status_code=422,
-            detail="This PDF could not be read. Please try again or use another file.",
-        ) from None
+        raise HTTPException(status_code=status_code, detail=detail) from None
+
+
+def _pdf_worker_failure_response(exc: PdfWorkerError) -> tuple[str, str, int, str]:
+    """Return the audit reason, log wording, status and message for a failure."""
+    if isinstance(exc, PdfWorkerBusy):
+        return (
+            "busy",
+            "waited too long",
+            503,
+            "Other statements are still being read. Try again in a few minutes.",
+        )
+    if isinstance(exc, PdfWorkerTimeout):
+        return (
+            "timeout",
+            "timed out",
+            504,
+            "This PDF took too long to read. Try again, or export the "
+            "statement from your bank again.",
+        )
+    return (
+        "worker_error",
+        "worker crashed",
+        422,
+        "This PDF could not be read. Please try again or use another file.",
+    )
 
 
 def _store_uploaded_pdf(

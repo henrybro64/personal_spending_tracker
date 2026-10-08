@@ -31,6 +31,36 @@ const dirtyFilters: DashboardFilters = {
   displayCurrency: "USD",
 };
 
+/** Start a guarded view load that shows the response label when it applies. */
+function startLabelLoad(options: {
+  coordinator: DashboardRequestCoordinator;
+  filters: DashboardFilters;
+  fetchJson: <T>(path: string) => Promise<T>;
+  show: (label: string) => void;
+  errors: unknown[];
+}) {
+  const ticket = options.coordinator.start();
+  const load = runGuardedDashboardLoad({
+    coordinator: options.coordinator,
+    generation: ticket.generation,
+    signal: ticket.signal,
+    load: () =>
+      loadDashboardView<{ label: string }>({
+        filters: options.filters,
+        signal: ticket.signal,
+        fetchJson: options.fetchJson,
+      }),
+    apply: (part) => {
+      if (part.status === "ok") {
+        options.show(part.value.label);
+      }
+    },
+    onError: (error) => options.errors.push(error),
+    onSettled: () => {},
+  });
+  return { ticket, load };
+}
+
 function deferred<T>() {
   let resolve: (value: T) => void = () => {};
   let reject: (error: unknown) => void = () => {};
@@ -246,45 +276,23 @@ test("rapid filter changes keep the newest snapshot when responses resolve out o
     });
   }
 
-  const first = coordinator.start();
-  const firstLoad = runGuardedDashboardLoad({
+  const show = (label: string) => {
+    displayed = label;
+  };
+  const firstLoad = startLabelLoad({
     coordinator,
-    generation: first.generation,
-    signal: first.signal,
-    load: () =>
-      loadDashboardView<{ label: string }>({
-        filters: usdFilters,
-        signal: first.signal,
-        fetchJson,
-      }),
-    apply: (part) => {
-      if (part.status === "ok") {
-        displayed = part.value.label;
-      }
-    },
-    onError: (error) => errors.push(error),
-    onSettled: () => {},
-  });
-
-  const second = coordinator.start();
-  const secondLoad = runGuardedDashboardLoad({
+    filters: usdFilters,
+    fetchJson,
+    show,
+    errors,
+  }).load;
+  const secondLoad = startLabelLoad({
     coordinator,
-    generation: second.generation,
-    signal: second.signal,
-    load: () =>
-      loadDashboardView<{ label: string }>({
-        filters: twdFilters,
-        signal: second.signal,
-        fetchJson,
-      }),
-    apply: (part) => {
-      if (part.status === "ok") {
-        displayed = part.value.label;
-      }
-    },
-    onError: (error) => errors.push(error),
-    onSettled: () => {},
-  });
+    filters: twdFilters,
+    fetchJson,
+    show,
+    errors,
+  }).load;
 
   assert.equal(fetches.length, 2);
   assert.equal(
@@ -326,26 +334,15 @@ test("upload, manual entry, and a later filter change keep the newest snapshot",
   }
 
   function startLoad(filters: DashboardFilters) {
-    const ticket = coordinator.start();
-    const load = runGuardedDashboardLoad({
+    return startLabelLoad({
       coordinator,
-      generation: ticket.generation,
-      signal: ticket.signal,
-      load: () =>
-        loadDashboardView<{ label: string }>({
-          filters,
-          signal: ticket.signal,
-          fetchJson,
-        }),
-      apply: (part) => {
-        if (part.status === "ok") {
-          displayed = part.value.label;
-        }
+      filters,
+      fetchJson,
+      show: (label) => {
+        displayed = label;
       },
-      onError: (error) => errors.push(error),
-      onSettled: () => {},
+      errors,
     });
-    return { ticket, load };
   }
 
   const beforeManual = dashboardLoadKey(dirtyFilters, 2);
