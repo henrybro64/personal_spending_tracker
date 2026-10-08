@@ -474,6 +474,52 @@ test("typing a search sends one dashboard request and does not reload recent upl
   expect(uploadsRequests).toBe(1);
 });
 
+test("recent statements wait for their own request instead of showing an empty list", async ({
+  page,
+}) => {
+  let releaseUploads = () => {};
+  const uploadsGate = new Promise<void>((resolve) => {
+    releaseUploads = resolve;
+  });
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    await uploadsGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        uploads: [
+          {
+            file_name: "sample.pdf",
+            display_name: "Sample Statement.pdf",
+            transaction_count: 4,
+            total_amount: 44.65,
+            currency_totals: [],
+            uploaded_at: "2026-05-16T09:30:00+00:00",
+            parse_status: "parsed",
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/api/dashboard/view**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(buildDashboardView("USD")),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  await expect(page.getByText("No uploaded statements yet.")).toHaveCount(0);
+
+  releaseUploads();
+  await expect(page.getByText("Sample Statement.pdf")).toBeVisible();
+  await expect(page.getByText("No uploaded statements yet.")).toHaveCount(0);
+});
+
 test("dashboard warns when transactions cannot be converted", async ({ page }) => {
   await mockAuthenticatedSession(page);
   await page.route("**/api/uploads/recent?limit=6", async (route) => {

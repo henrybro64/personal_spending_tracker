@@ -99,7 +99,13 @@ def run_cpu_bound(func: Callable[..., _T], /, *args: object) -> _T:
             # Nothing has run yet, so a fresh worker can take the task.
             _discard_executor(executor, terminate=False)
             executor = _executor_instance()
-            future = executor.submit(func, *args)
+            try:
+                future = executor.submit(func, *args)
+            except BrokenProcessPool as exc:
+                _discard_executor(executor, terminate=False)
+                raise PdfWorkerError(
+                    "The PDF worker process could not be started."
+                ) from exc
 
         try:
             return future.result(timeout=timeout)

@@ -1252,7 +1252,7 @@ function RecentStatementsCard({
   locale,
   fm,
   intlLocale,
-  isDashboardLoading,
+  isUploadsLoading,
   hasSnapshot,
   recentUploads,
 }: Readonly<{
@@ -1260,12 +1260,12 @@ function RecentStatementsCard({
   locale: ReturnType<typeof useLocale>["locale"];
   fm: DashboardFormatters;
   intlLocale: string;
-  isDashboardLoading: boolean;
+  isUploadsLoading: boolean;
   hasSnapshot: boolean;
   recentUploads: RecentUpload[];
 }>) {
   let historyBody: ReactNode = null;
-  if (isDashboardLoading && recentUploads.length === 0) {
+  if (isUploadsLoading && recentUploads.length === 0) {
     historyBody = (
       <Body1 className={styles.emptyState}>
         {translate(locale, "loadingHistoryLabel")}
@@ -1430,6 +1430,8 @@ export default function HomePage() {
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardStale, setDashboardStale] = useState(false);
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
+  // Recent uploads load on their own, so they keep their own loading flag.
+  const [isUploadsLoading, setIsUploadsLoading] = useState(true);
   // Wait for a pause in typing so each keystroke does not start a server scan.
   const debouncedSearchQuery = useDebouncedValue(
     searchQuery,
@@ -1693,10 +1695,12 @@ export default function HomePage() {
     if (authStatus !== "authenticated") {
       setRecentUploads([]);
       setDashboardError("");
+      setIsUploadsLoading(authStatus === "loading");
       return;
     }
 
     const controller = new AbortController();
+    setIsUploadsLoading(true);
     const copy = {
       staleData: translate(localeRef.current, "dashboardStaleData"),
       unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
@@ -1726,6 +1730,11 @@ export default function HomePage() {
         }
         recordRead("uploads", true);
         setDashboardError(copy.unableToRefresh);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsUploadsLoading(false);
+        }
       });
 
     return () => {
@@ -1922,7 +1931,7 @@ export default function HomePage() {
             fm={fm}
             hasSnapshot={dashboardView !== null}
             intlLocale={intlLocale}
-            isDashboardLoading={isDashboardLoading}
+            isUploadsLoading={isUploadsLoading}
             locale={locale}
             recentUploads={recentUploads}
             styles={styles}

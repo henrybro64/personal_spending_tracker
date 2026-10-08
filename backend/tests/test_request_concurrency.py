@@ -610,3 +610,24 @@ def test_concurrent_provider_selection_keeps_one_selected(
         if row["is_selected"]
     ]
     assert len(selected) == 1
+
+
+def test_pdf_worker_reports_a_pool_that_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures.process import BrokenProcessPool
+
+    from backend import process_pool
+
+    class AlwaysBroken:
+        def submit(self, *args, **kwargs):
+            raise BrokenProcessPool("cannot start")
+
+        def shutdown(self, *args, **kwargs):
+            return None
+
+    process_pool.shutdown_process_pool()
+    monkeypatch.setattr(process_pool, "_executor_instance", AlwaysBroken)
+
+    with pytest.raises(process_pool.PdfWorkerError):
+        process_pool.run_cpu_bound(os.getpid)

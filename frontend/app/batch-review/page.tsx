@@ -89,6 +89,7 @@ const SKIP_REASON_LABELS: Record<string, string> = {
   pdf_read_error: "PDF read error",
   read_error: "File read error",
   processing_error: "Processing error",
+  timeout: "Took too long to read",
   unsupported_format: "Unsupported format",
   no_transactions_found: "No transactions found",
 };
