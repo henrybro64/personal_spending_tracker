@@ -3,11 +3,11 @@
 
 Run inside the backend pod (or locally with the same env vars):
 
-  python scripts/diagnose-batch-pdfs.py /app/batch/pdf
+  python scripts/diagnose-batch-pdfs.py /app/batch/pdf/user-1
 
 Optional: stop after N failures (default 5):
 
-  python scripts/diagnose-batch-pdfs.py /app/batch/pdf --max-failures 10
+  python scripts/diagnose-batch-pdfs.py /app/batch/pdf/user-1 --max-failures 10
 """
 
 from __future__ import annotations

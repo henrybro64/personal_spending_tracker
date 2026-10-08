@@ -92,11 +92,29 @@ YAML uses `${VAR}` placeholders (`NAMESPACE`, `BACKEND_IMAGE`, etc.). Do not `ku
 
 Backend mounts `batch-data` PVC at `/app/batch`:
 
-- `/app/batch/pdf` — PDF statements
-- `/app/batch/text` — text statements
-- `/app/batch/data` — batch SQLite / exports
+- `/app/batch/pdf/user-<id>/` — PDF statements for one user
+- `/app/batch/text/user-<id>/` — text statements for one user
+- `/app/batch/data` — batch SQLite / exports (`batch_imports_user_<id>.sqlite3`)
 
-Copy files into the backend pod, review at `/batch-review`, then **Sync to dashboard** for Postgres.
+**Run batch import** reads only the signed-in user's `user-<id>` folders. Files in the root of `/app/batch/pdf` or `/app/batch/text` are ignored. The first account created is normally `user-1`.
+
+Copy files into the backend pod, review at `/batch-review`, then **Sync to dashboard** for Postgres:
+
+```bash
+POD=$(sudo k3s kubectl -n spending-tracker get pods -l app.kubernetes.io/name=backend -o jsonpath='{.items[0].metadata.name}')
+sudo k3s kubectl -n spending-tracker exec "$POD" -c backend -- mkdir -p /app/batch/pdf/user-1
+sudo k3s kubectl -n spending-tracker cp ./Credit_Card_PDF/. "$POD:/app/batch/pdf/user-1/" -c backend
+```
+
+**Upgrading from a release that used a shared batch folder:** move existing statements from the folder root into the owner's folder, or the next import finds nothing:
+
+```bash
+sudo k3s kubectl -n spending-tracker exec "$POD" -c backend -- sh -c '
+  for kind in pdf text; do
+    mkdir -p /app/batch/$kind/user-1
+    find /app/batch/$kind -maxdepth 1 -type f -exec mv {} /app/batch/$kind/user-1/ \;
+  done'
+```
 
 ## Verify and troubleshoot
 
@@ -128,15 +146,15 @@ bash scripts/diagnose-ctbc-in-pod.sh CTBC_card   # only filenames containing CTB
 # Or manually:
 POD=$(sudo k3s kubectl -n spending-tracker get pods -l app.kubernetes.io/name=backend -o jsonpath='{.items[0].metadata.name}')
 sudo k3s kubectl -n spending-tracker exec -it "$POD" -c backend -- \
-  python3 -m backend.diagnose_pdf_merchants /app/batch/pdf \
-  --sqlite /app/batch/data/batch_imports.sqlite3 --only CTBC_card
+  python3 -m backend.diagnose_pdf_merchants /app/batch/pdf/user-1 \
+  --sqlite /app/batch/data/batch_imports_user_1.sqlite3 --only CTBC_card
 ```
 
 Paste the full output into a bug report. Compare **sample raw lines** (text in PDF) vs **parsed merchants** (what the importer stored).
 
 ## Reset import data (test batch re-import)
 
-After deploying new parser/category code, clear merged Postgres rows and batch SQLite so the next **Run batch import** starts fresh. PDFs under `/app/batch/pdf` are kept.
+After deploying new parser/category code, clear merged Postgres rows and batch SQLite so the next **Run batch import** starts fresh. PDFs under `/app/batch/pdf/user-<id>/` are kept.
 
 ```bash
 # On the cluster node

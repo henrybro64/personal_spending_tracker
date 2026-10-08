@@ -219,7 +219,7 @@ confirm() {
     echo "  Postgres: TRUNCATE transactions, statement_uploads, audit_logs (keep users/sessions)"
   fi
   echo "  SQLite:   delete batch_imports*.sqlite3 and batch_transactions*.csv under $sqlite_dir"
-  echo "  PDFs:     NOT deleted (re-use /app/batch/pdf)"
+  echo "  PDFs:     NOT deleted (re-use /app/batch/pdf/user-<id>/)"
   echo
   if [[ "$ASSUME_YES" -eq 1 ]]; then
     return 0

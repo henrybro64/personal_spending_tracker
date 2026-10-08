@@ -105,6 +105,16 @@ export BATCH_PDF_SOURCE_DIR="$(pwd)/Credit_Card_PDF"
 export BATCH_TEXT_SOURCE_DIR="$(pwd)/credit_card_text"
 ```
 
+Batch import reads each signed-in user's own subfolder, for example `Credit_Card_PDF/user-1/` and `credit_card_text/user-1/`. The variables above only choose the parent folder. Files placed directly in the parent folder are ignored.
+
+**Upgrading:** earlier releases read the root of `BATCH_PDF_SOURCE_DIR` and `BATCH_TEXT_SOURCE_DIR` for every user when those variables were set. Move existing statements into the owner's `user-<id>` folder (normally `user-1`), for example:
+
+```bash
+mkdir -p "$BATCH_PDF_SOURCE_DIR/user-1" "$BATCH_TEXT_SOURCE_DIR/user-1"
+find "$BATCH_PDF_SOURCE_DIR" -maxdepth 1 -type f -exec mv {} "$BATCH_PDF_SOURCE_DIR/user-1/" \;
+find "$BATCH_TEXT_SOURCE_DIR" -maxdepth 1 -type f -exec mv {} "$BATCH_TEXT_SOURCE_DIR/user-1/" \;
+```
+
 Run the FastAPI app:
 
 ```bash
@@ -264,7 +274,7 @@ Use the frontend batch review page at `http://localhost:3000/batch-review` to:
 - save learned merchant rules for future imports
 - sync reviewed, non-excluded transactions into PostgreSQL for the main dashboard
 
-Batch-import API paths must stay within `BATCH_DATA_DIR`, `BATCH_PDF_SOURCE_DIR`, and `BATCH_TEXT_SOURCE_DIR`.
+The batch-import API does not accept file or directory paths. It always uses the signed-in user's own files: `user-<id>/` under the source folders, and `batch_imports_user_<id>.sqlite3` / `batch_transactions_user_<id>.csv` under `BATCH_DATA_DIR`. Only the command-line importer (`python -m backend.import_statements`) takes paths, and those must stay within `BATCH_DATA_DIR`, `BATCH_PDF_SOURCE_DIR`, and `BATCH_TEXT_SOURCE_DIR`.
 Sync is idempotent per batch row via a `postgres_synced` flag in the batch SQLite database.
 
 ## API Response Examples

@@ -35,8 +35,15 @@ echo "=== Code markers in running container ==="
 '
 
 echo
-echo "=== PDF count ==="
-"${KUBECTL_CMD[@]}" -n "$NS" exec "$POD" -c backend -- sh -c 'ls -1 /app/batch/pdf/*.pdf 2>/dev/null | wc -l'
+echo "=== PDF count per user (batch import reads /app/batch/pdf/user-<id>/) ==="
+"${KUBECTL_CMD[@]}" -n "$NS" exec "$POD" -c backend -- sh -c '
+  for d in /app/batch/pdf/user-*/; do
+    [ -d "$d" ] && echo "$d $(ls -1 "$d"*.pdf 2>/dev/null | wc -l)"
+  done
+  n=$(ls -1 /app/batch/pdf/*.pdf 2>/dev/null | wc -l)
+  [ "$n" -gt 0 ] && echo "WARNING: $n PDF(s) in /app/batch/pdf root are ignored; move them to /app/batch/pdf/user-<id>/"
+  true
+'
 
 echo
 echo "=== Recent backend logs (batch / errors) ==="

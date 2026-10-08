@@ -9,8 +9,10 @@
 #   PDF_PASSWORD='your-bank-password' ./scripts/decrypt-pdfs.sh ./Credit_Card_PDF ./Credit_Card_PDF_decrypted
 #   ./scripts/decrypt-pdfs.sh -f ~/.pdf-password -r ./Credit_Card_PDF ./Credit_Card_PDF_decrypted
 #
-# Then copy the decrypted folder into the cluster:
-#   kubectl cp ./Credit_Card_PDF_decrypted/. "$POD:/app/batch/pdf/" -c backend
+# Then copy the decrypted folder into the cluster. Batch import reads only the
+# signed-in user's folder, /app/batch/pdf/user-<id>/ (the first account is user-1):
+#   kubectl exec "$POD" -c backend -- mkdir -p /app/batch/pdf/user-1
+#   kubectl cp ./Credit_Card_PDF_decrypted/. "$POD:/app/batch/pdf/user-1/" -c backend
 
 set -euo pipefail
 

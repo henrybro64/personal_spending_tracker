@@ -2,12 +2,12 @@
 
 Run inside the backend pod (or locally with the same paths):
 
-  python3 -m backend.diagnose_pdf_merchants /app/batch/pdf
+  python3 -m backend.diagnose_pdf_merchants /app/batch/pdf/user-1
 
 Optional SQLite batch store:
 
-  python3 -m backend.diagnose_pdf_merchants /app/batch/pdf \\
-      --sqlite /app/batch/data/batch_imports.sqlite3
+  python3 -m backend.diagnose_pdf_merchants /app/batch/pdf/user-1 \\
+      --sqlite /app/batch/data/batch_imports_user_1.sqlite3
 """
 
 from __future__ import annotations
