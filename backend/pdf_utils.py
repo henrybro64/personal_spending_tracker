@@ -93,9 +93,15 @@ def extract_pdf_text(
 
 
 def read_statement_pdf(
-    file_path: str | Path, password: str | None = None
+    file_path: str | Path,
+    password: str | None = None,
+    *,
+    max_wait: float | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Extract and parse one statement without holding the API process GIL."""
+    """Extract and parse one statement without holding the API process GIL.
+
+    ``max_wait`` limits how long to wait for other PDFs to finish first.
+    """
     from backend.process_pool import run_cpu_bound
 
     return _raise_pdf_worker_failure(
@@ -103,6 +109,7 @@ def read_statement_pdf(
             _read_statement_pdf_in_process,
             os.fspath(file_path),
             password,
+            max_wait=max_wait,
         )
     )
 

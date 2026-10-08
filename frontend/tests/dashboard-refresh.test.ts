@@ -8,11 +8,18 @@ import {
   buildDashboardViewPath,
   dashboardLoadKey,
   effectiveSearchQuery,
-  loadDashboardSnapshot,
-  reduceDashboardLoad,
+  RECENT_UPLOADS_PATH,
+  SEARCH_DEBOUNCE_MS,
+  loadDashboardView,
+  loadRecentUploads,
+  recordDashboardRead,
+  reduceDashboardView,
+  reduceRecentUploads,
   refreshAfterUpload,
   runGuardedDashboardLoad,
+  searchDebounceDelay,
   shouldReleaseSearchPin,
+  shouldResetRecoveryOnFilterChange,
 } from "../app/dashboard-refresh";
 
 const dirtyFilters: DashboardFilters = {
@@ -23,6 +30,36 @@ const dirtyFilters: DashboardFilters = {
   selectedMerchant: "UBER TRIP",
   displayCurrency: "USD",
 };
+
+/** Start a guarded view load that shows the response label when it applies. */
+function startLabelLoad(options: {
+  coordinator: DashboardRequestCoordinator;
+  filters: DashboardFilters;
+  fetchJson: <T>(path: string) => Promise<T>;
+  show: (label: string) => void;
+  errors: unknown[];
+}) {
+  const ticket = options.coordinator.start();
+  const load = runGuardedDashboardLoad({
+    coordinator: options.coordinator,
+    generation: ticket.generation,
+    signal: ticket.signal,
+    load: () =>
+      loadDashboardView<{ label: string }>({
+        filters: options.filters,
+        signal: ticket.signal,
+        fetchJson: options.fetchJson,
+      }),
+    apply: (part) => {
+      if (part.status === "ok") {
+        options.show(part.value.label);
+      }
+    },
+    onError: (error) => options.errors.push(error),
+    onSettled: () => {},
+  });
+  return { ticket, load };
+}
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => {};
@@ -239,56 +276,35 @@ test("rapid filter changes keep the newest snapshot when responses resolve out o
     });
   }
 
-  const first = coordinator.start();
-  const firstLoad = runGuardedDashboardLoad({
+  const show = (label: string) => {
+    displayed = label;
+  };
+  const firstLoad = startLabelLoad({
     coordinator,
-    generation: first.generation,
-    signal: first.signal,
-    load: () =>
-      loadDashboardSnapshot<{ label: string }, { label: string }>({
-        filters: usdFilters,
-        signal: first.signal,
-        fetchJson,
-      }),
-    apply: (snapshot) => {
-      if (snapshot.view.status === "ok") {
-        displayed = snapshot.view.value.label;
-      }
-    },
-    onError: (error) => errors.push(error),
-    onSettled: () => {},
-  });
-
-  const second = coordinator.start();
-  const secondLoad = runGuardedDashboardLoad({
+    filters: usdFilters,
+    fetchJson,
+    show,
+    errors,
+  }).load;
+  const secondLoad = startLabelLoad({
     coordinator,
-    generation: second.generation,
-    signal: second.signal,
-    load: () =>
-      loadDashboardSnapshot<{ label: string }, { label: string }>({
-        filters: twdFilters,
-        signal: second.signal,
-        fetchJson,
-      }),
-    apply: (snapshot) => {
-      if (snapshot.view.status === "ok") {
-        displayed = snapshot.view.value.label;
-      }
-    },
-    onError: (error) => errors.push(error),
-    onSettled: () => {},
-  });
+    filters: twdFilters,
+    fetchJson,
+    show,
+    errors,
+  }).load;
 
-  assert.equal(fetches.length, 4);
+  assert.equal(fetches.length, 2);
+  assert.equal(
+    fetches.some((item) => item.path.startsWith("/uploads/recent")),
+    false
+  );
   const twdView = fetches.find((item) => item.path.includes("currency=TWD"));
   const usdView = fetches.find((item) => item.path.includes("currency=USD"));
   assert.ok(twdView);
   assert.ok(usdView);
 
   twdView.resolve({ label: "TWD" });
-  fetches
-    .filter((item) => item.path.startsWith("/uploads/recent"))
-    .forEach((item) => item.resolve({ label: "uploads" }));
   await secondLoad;
 
   usdView.reject(new Error("stale failure"));
@@ -318,26 +334,15 @@ test("upload, manual entry, and a later filter change keep the newest snapshot",
   }
 
   function startLoad(filters: DashboardFilters) {
-    const ticket = coordinator.start();
-    const load = runGuardedDashboardLoad({
+    return startLabelLoad({
       coordinator,
-      generation: ticket.generation,
-      signal: ticket.signal,
-      load: () =>
-        loadDashboardSnapshot<{ label: string }, { label: string }>({
-          filters,
-          signal: ticket.signal,
-          fetchJson,
-        }),
-      apply: (snapshot) => {
-        if (snapshot.view.status === "ok") {
-          displayed = snapshot.view.value.label;
-        }
+      filters,
+      fetchJson,
+      show: (label) => {
+        displayed = label;
       },
-      onError: (error) => errors.push(error),
-      onSettled: () => {},
+      errors,
     });
-    return { ticket, load };
   }
 
   const beforeManual = dashboardLoadKey(dirtyFilters, 2);
@@ -375,9 +380,6 @@ test("upload, manual entry, and a later filter change keep the newest snapshot",
   );
 
   latestView.resolve({ label: "cleared-TWD" });
-  fetches
-    .filter((item) => item.path.startsWith("/uploads/recent"))
-    .forEach((item) => item.resolve({ label: "uploads" }));
   await latestLoad.load;
 
   uploadView.resolve({ label: "cleared-USD" });
@@ -399,12 +401,9 @@ const failureCopy = {
 const loadedView = { summary: { total_spending: 40 } };
 
 test("a failed refresh keeps the last dashboard snapshot", () => {
-  const next = reduceDashboardLoad(
-    { view: loadedView, uploads: [{ id: 1 }] },
-    {
-      view: { status: "error", error: new TypeError("Failed to fetch") },
-      uploads: { status: "ok", value: { uploads: [{ id: 1 }] } },
-    },
+  const next = reduceDashboardView(
+    loadedView,
+    { status: "error", error: new TypeError("Failed to fetch") },
     failureCopy
   );
 
@@ -415,12 +414,9 @@ test("a failed refresh keeps the last dashboard snapshot", () => {
 });
 
 test("the first failed load has no snapshot to preserve", () => {
-  const next = reduceDashboardLoad(
-    { view: null, uploads: [] },
-    {
-      view: { status: "error", error: new TypeError("Failed to fetch") },
-      uploads: { status: "ok", value: { uploads: [] } },
-    },
+  const next = reduceDashboardView(
+    null,
+    { status: "error", error: new TypeError("Failed to fetch") },
     failureCopy
   );
 
@@ -431,12 +427,9 @@ test("the first failed load has no snapshot to preserve", () => {
 
 test("the next successful refresh replaces stale data and clears the warning", () => {
   const recovered = { summary: { total_spending: 80 } };
-  const next = reduceDashboardLoad(
-    { view: loadedView, uploads: [] },
-    {
-      view: { status: "ok", value: recovered },
-      uploads: { status: "ok", value: { uploads: [] } },
-    },
+  const next = reduceDashboardView(
+    loadedView,
+    { status: "ok", value: recovered },
     failureCopy
   );
 
@@ -446,12 +439,9 @@ test("the next successful refresh replaces stale data and clears the warning", (
 });
 
 test("a 401 keeps the snapshot and leaves session handling to the caller", () => {
-  const next = reduceDashboardLoad(
-    { view: loadedView, uploads: [] },
-    {
-      view: { status: "error", error: new ApiError("unauthorized", 401) },
-      uploads: { status: "ok", value: { uploads: [] } },
-    },
+  const next = reduceDashboardView(
+    loadedView,
+    { status: "error", error: new ApiError("unauthorized", 401) },
     failureCopy
   );
 
@@ -462,14 +452,81 @@ test("a 401 keeps the snapshot and leaves session handling to the caller", () =>
 });
 
 test("an HTTP error keeps the API detail", () => {
-  const next = reduceDashboardLoad(
-    { view: null, uploads: [] },
-    {
-      view: { status: "error", error: new ApiError("database down", 500) },
-      uploads: { status: "ok", value: { uploads: [] } },
-    },
+  const next = reduceDashboardView(
+    null,
+    { status: "error", error: new ApiError("database down", 500) },
     failureCopy
   );
 
   assert.equal(next.error, "database down");
+});
+
+test("typing waits for a pause, but clearing the search applies at once", () => {
+  assert.equal(SEARCH_DEBOUNCE_MS, 300);
+  assert.equal(searchDebounceDelay("s"), SEARCH_DEBOUNCE_MS);
+  assert.equal(searchDebounceDelay("starbucks"), SEARCH_DEBOUNCE_MS);
+  assert.equal(searchDebounceDelay(""), 0);
+});
+
+test("the dashboard view and recent uploads load from separate requests", async () => {
+  const paths: string[] = [];
+  async function fetchJson<T>(path: string): Promise<T> {
+    paths.push(path);
+    return { label: path } as T;
+  }
+  const signal = new AbortController().signal;
+
+  const view = await loadDashboardView<{ label: string }>({
+    filters: dirtyFilters,
+    signal,
+    fetchJson,
+  });
+  const uploads = await loadRecentUploads<{ label: string }>({ signal, fetchJson });
+
+  assert.deepEqual(paths, [buildDashboardViewPath(dirtyFilters), RECENT_UPLOADS_PATH]);
+  assert.equal(view.status, "ok");
+  assert.equal(uploads.status, "ok");
+});
+
+test("a failed uploads read keeps the list and reports an error", () => {
+  const current = [{ id: 1 }];
+  const next = reduceRecentUploads(
+    current,
+    { status: "error", error: new TypeError("Failed to fetch") },
+    failureCopy
+  );
+  assert.equal(next.uploads, current);
+  assert.equal(next.error, failureCopy.unableToRefresh);
+  assert.equal(next.unauthorized, false);
+});
+
+test("one read's success does not cancel the other read's retry", () => {
+  const healthy = { view: false, uploads: false };
+
+  const uploadsFailed = recordDashboardRead(healthy, "uploads", true);
+  assert.equal(uploadsFailed.failureAction, "bump");
+
+  const viewOk = recordDashboardRead(uploadsFailed.failures, "view", false);
+  assert.equal(viewOk.failureAction, "keep");
+
+  const uploadsOk = recordDashboardRead(viewOk.failures, "uploads", false);
+  assert.equal(uploadsOk.failureAction, "clear");
+  assert.deepEqual(uploadsOk.failures, healthy);
+
+  assert.equal(recordDashboardRead(healthy, "view", false).failureAction, "clear");
+});
+
+test("a filter change keeps the pending retry for failed recent uploads", () => {
+  assert.equal(
+    shouldResetRecoveryOnFilterChange({ view: false, uploads: false }),
+    true
+  );
+  assert.equal(
+    shouldResetRecoveryOnFilterChange({ view: true, uploads: false }),
+    true
+  );
+  assert.equal(
+    shouldResetRecoveryOnFilterChange({ view: false, uploads: true }),
+    false
+  );
 });

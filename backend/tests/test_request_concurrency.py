@@ -166,8 +166,8 @@ def test_pdf_cpu_work_is_scheduled_in_the_child_process(
 ) -> None:
     scheduled: list[str] = []
 
-    def fake_run(func, *args):
-        del args
+    def fake_run(func, *args, max_wait=None):
+        del args, max_wait
         scheduled.append(func.__name__)
         if func.__name__ == "_read_statement_pdf_in_process":
             return "statement", []
@@ -239,6 +239,137 @@ def test_password_error_round_trips_without_breaking_the_process_pool() -> None:
     with pytest.raises(PdfPasswordProtectedError) as second:
         _raise_pdf_worker_failure(second_failure)
     assert second.value.had_password is True
+
+
+def test_pdf_worker_recovers_after_the_child_process_dies() -> None:
+    from backend import process_pool
+
+    process_pool.shutdown_process_pool()
+    try:
+        with pytest.raises(process_pool.PdfWorkerError):
+            process_pool.run_cpu_bound(os._exit, 137)  # the worker is killed
+        assert isinstance(process_pool.run_cpu_bound(os.getpid), int)
+    finally:
+        process_pool.shutdown_process_pool()
+
+
+def test_pdf_worker_replaces_a_worker_that_died_while_idle() -> None:
+    import signal
+    import time
+
+    from backend import process_pool
+
+    process_pool.shutdown_process_pool()
+    try:
+        first_pid = process_pool.run_cpu_bound(os.getpid)
+        os.kill(first_pid, signal.SIGKILL)
+        time.sleep(0.5)  # let the pool notice the dead worker
+        second_pid = process_pool.run_cpu_bound(os.getpid)
+        assert second_pid != first_pid
+    finally:
+        process_pool.shutdown_process_pool()
+
+
+def test_pdf_worker_times_out_and_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from backend import process_pool
+
+    monkeypatch.setenv("PDF_PARSE_TIMEOUT_SECONDS", "1")
+    process_pool.shutdown_process_pool()
+    try:
+        started = time.perf_counter()
+        with pytest.raises(process_pool.PdfWorkerTimeout):
+            process_pool.run_cpu_bound(time.sleep, 30)
+        assert time.perf_counter() - started < 10
+        assert isinstance(process_pool.run_cpu_bound(os.getpid), int)
+    finally:
+        process_pool.shutdown_process_pool()
+
+
+def test_pdf_worker_time_limit_does_not_count_time_spent_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend import process_pool
+
+    # Each task runs 1.2 s. The second waits for the first, so 2.4 s pass
+    # from its submission, but only its own run time counts toward 2 s.
+    monkeypatch.setenv("PDF_PARSE_TIMEOUT_SECONDS", "2")
+    process_pool.shutdown_process_pool()
+    try:
+        process_pool.run_cpu_bound(os.getpid)  # start the worker up front
+        with ThreadPoolExecutor(max_workers=2) as threads:
+            first = threads.submit(
+                process_pool.run_cpu_bound, process_pool.occupy_child_process, 1.2
+            )
+            second = threads.submit(
+                process_pool.run_cpu_bound, process_pool.occupy_child_process, 1.2
+            )
+            assert isinstance(first.result(timeout=10), int)
+            assert isinstance(second.result(timeout=10), int)
+    finally:
+        process_pool.shutdown_process_pool()
+
+
+def test_pdf_parse_timeout_falls_back_to_default_for_bad_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend import process_pool
+
+    for raw in ("", "abc", "0", "-5", "nan", "inf"):
+        monkeypatch.setenv("PDF_PARSE_TIMEOUT_SECONDS", raw)
+        assert process_pool.pdf_parse_timeout_seconds() == 120.0
+    monkeypatch.setenv("PDF_PARSE_TIMEOUT_SECONDS", "45")
+    assert process_pool.pdf_parse_timeout_seconds() == 45.0
+
+
+@pytest.mark.parametrize(
+    ("error_name", "status_code", "detail_snippet", "reason"),
+    [
+        ("PdfWorkerTimeout", 504, "took too long", "timeout"),
+        ("PdfWorkerBusy", 503, "still being read", "busy"),
+        ("PdfWorkerError", 422, "could not be read", "worker_error"),
+    ],
+)
+def test_pdf_worker_failure_rejects_upload_and_removes_the_file(
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+    error_name: str,
+    status_code: int,
+    detail_snippet: str,
+    reason: str,
+) -> None:
+    from fastapi import HTTPException
+
+    from backend import process_pool
+
+    audits: list[dict] = []
+    monkeypatch.setattr(api_main, "record_audit_event", lambda **kwargs: audits.append(kwargs))
+
+    def failing_load(path, password):
+        del path, password
+        raise getattr(process_pool, error_name)("worker failed")
+
+    monkeypatch.setattr(api_main, "_load_uploaded_statement", failing_load)
+
+    audit_context = api_main.get_audit_request_context(_upload_request())
+    with pytest.raises(HTTPException) as caught:
+        api_main._store_uploaded_pdf(
+            upload_stream=BytesIO(b"%PDF-1.4 synthetic"),
+            original_name="statement.pdf",
+            content_type="application/pdf",
+            password=None,
+            user_id=1,
+            audit_context=audit_context,
+        )
+
+    assert caught.value.status_code == status_code
+    assert detail_snippet in caught.value.detail
+    assert list(api_main._get_upload_dir(1).glob("*")) == []
+    assert audits[-1]["action"] == "statement_upload_parse_failure"
+    assert audits[-1]["metadata"]["reason"] == reason
 
 
 def test_oversized_upload_is_rejected_without_keeping_the_file(
@@ -480,3 +611,116 @@ def test_concurrent_provider_selection_keeps_one_selected(
         if row["is_selected"]
     ]
     assert len(selected) == 1
+
+
+def test_pdf_worker_reports_a_pool_that_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures.process import BrokenProcessPool
+
+    from backend import process_pool
+
+    class AlwaysBroken:
+        def submit(self, *args, **kwargs):
+            raise BrokenProcessPool("cannot start")
+
+        def shutdown(self, *args, **kwargs):
+            return None
+
+    process_pool.shutdown_process_pool()
+    monkeypatch.setattr(process_pool, "_executor_instance", AlwaysBroken)
+
+    with pytest.raises(process_pool.PdfWorkerError):
+        process_pool.run_cpu_bound(os.getpid)
+
+
+def test_pdf_worker_lock_serves_waiters_in_arrival_order() -> None:
+    import time
+
+    from backend.process_pool import _FifoLock
+
+    lock = _FifoLock()
+    order: list[str] = []
+
+    def wait_for_waiters(count: int) -> None:
+        deadline = time.monotonic() + 5
+        while lock.waiting_count() < count:
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+
+    def take(name: str) -> None:
+        with lock:
+            order.append(name)
+
+    lock.__enter__()  # a batch import holds the worker
+    first = threading.Thread(target=take, args=("upload-1",))
+    first.start()
+    wait_for_waiters(1)
+    second = threading.Thread(target=take, args=("upload-2",))
+    second.start()
+    wait_for_waiters(2)
+
+    # The batch releases and asks again at once. It must not cut in line.
+    batch_again = threading.Thread(target=take, args=("batch-next-file",))
+    lock.__exit__(None, None, None)
+    batch_again.start()
+    for thread in (first, second, batch_again):
+        thread.join(timeout=5)
+
+    assert order == ["upload-1", "upload-2", "batch-next-file"]
+
+
+def test_pdf_worker_lock_gives_up_after_max_wait() -> None:
+    from backend.process_pool import _FifoLock
+
+    lock = _FifoLock()
+    lock.__enter__()  # another PDF holds the worker
+    assert lock.acquire(0.05) is False
+    assert lock.waiting_count() == 0  # the caller left the line
+    lock.__exit__(None, None, None)
+    assert lock.acquire(0.05) is True
+    lock.release()
+
+
+def test_pdf_worker_reports_busy_without_running_the_task() -> None:
+    from backend import process_pool
+
+    process_pool._run_lock.__enter__()  # another PDF holds the worker
+    try:
+        with pytest.raises(process_pool.PdfWorkerBusy):
+            process_pool.run_cpu_bound(os.getpid, max_wait=0.05)
+    finally:
+        process_pool._run_lock.__exit__(None, None, None)
+
+
+def test_pdf_worker_returns_a_result_that_lands_at_the_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import Future
+    from concurrent.futures import TimeoutError as FutureTimeoutError
+
+    from backend import process_pool
+
+    class FinishesAtTheLimit(Future):
+        def result(self, timeout=None):
+            if timeout is not None:
+                # The task completes just after the wait gave up.
+                self.set_result("parsed")
+                raise FutureTimeoutError()
+            return super().result()
+
+    discarded: list[bool] = []
+
+    class FakeExecutor:
+        def submit(self, *args, **kwargs):
+            return FinishesAtTheLimit()
+
+    monkeypatch.setattr(process_pool, "_executor_instance", FakeExecutor)
+    monkeypatch.setattr(
+        process_pool,
+        "_discard_executor",
+        lambda executor, *, terminate: discarded.append(terminate),
+    )
+
+    assert process_pool.run_cpu_bound(os.getpid) == "parsed"
+    assert discarded == []

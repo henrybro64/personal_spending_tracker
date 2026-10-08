@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 type DashboardQuery = {
   range: string;
@@ -11,22 +11,80 @@ type DashboardQuery = {
 
 type DisplayCurrency = "USD" | "TWD";
 
+async function fulfillJson(route: Route, body: unknown, status = 200) {
+  await route.fulfill({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+}
+
+async function mockRecentUploads(page: Page, uploads: unknown[] = []) {
+  await page.route("**/api/uploads/recent?limit=6", (route) =>
+    fulfillJson(route, { uploads })
+  );
+}
+
+async function mockDashboardView(page: Page) {
+  await page.route("**/api/dashboard/view**", (route) =>
+    fulfillJson(route, buildDashboardView("USD"))
+  );
+}
+
+type OutagePhase = "ok" | "fail" | "recovered";
+
+/** Fail while the phase is "fail", then report `recoveredTotal` once recovered. */
+async function mockPhasedDashboardView(
+  page: Page,
+  phase: () => OutagePhase,
+  recoveredTotal: number
+) {
+  await page.route("**/api/dashboard/view**", async (route) => {
+    if (phase() === "fail") {
+      await route.abort("failed");
+      return;
+    }
+    const view = buildDashboardView(requestCurrency(route));
+    if (phase() === "recovered") {
+      view.metrics.model_total_in_active_currency = recoveredTotal;
+    }
+    await fulfillJson(route, view);
+  });
+}
+
+async function openLoadedDashboard(page: Page) {
+  await page.goto("/");
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+}
+
+function requestCurrency(route: Route): DisplayCurrency {
+  return new URL(route.request().url()).searchParams.get("currency") === "TWD"
+    ? "TWD"
+    : "USD";
+}
+
+const SAMPLE_UPLOAD = {
+  file_name: "sample.pdf",
+  display_name: "Sample Statement.pdf",
+  transaction_count: 4,
+  total_amount: 44.65,
+  currency_totals: [],
+  uploaded_at: "2026-05-16T09:30:00+00:00",
+  parse_status: "parsed",
+};
+
 async function mockAuthenticatedSession(page: Page) {
   await page.route("**/api/auth/session", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        authenticated: true,
-        user: {
-          id: 1,
-          email: "tester@example.com",
-          display_name: "Test User",
-          created_at: "2026-05-18T00:00:00+00:00",
-        },
-        claimed_legacy_transactions: 0,
-        claimed_legacy_uploads: 0,
-      }),
+    await fulfillJson(route, {
+      authenticated: true,
+      user: {
+        id: 1,
+        email: "tester@example.com",
+        display_name: "Test User",
+        created_at: "2026-05-18T00:00:00+00:00",
+      },
+      claimed_legacy_transactions: 0,
+      claimed_legacy_uploads: 0,
     });
   });
 }
@@ -56,56 +114,6 @@ function buildDashboardView(currency: DisplayCurrency) {
       original_currency: string;
       reason: string;
     }>,
-    transactions: [
-      {
-        date: "2025-04-19",
-        merchant: "STARBUCKS STORE 1234",
-        amount: starbucksAmount,
-        category: "Dining",
-        currency,
-        original_amount: 5.75,
-        original_currency: "USD",
-        display_amount: starbucksAmount,
-        display_currency: currency,
-        is_converted: isTwd,
-      },
-      {
-        date: "2025-04-20",
-        merchant: "UBER TRIP",
-        amount: uberAmount,
-        category: "Transport",
-        currency,
-        original_amount: 605,
-        original_currency: "TWD",
-        display_amount: uberAmount,
-        display_currency: currency,
-        is_converted: !isTwd,
-      },
-      {
-        date: "2025-04-21",
-        merchant: "OPENAI API",
-        amount: openaiAmount,
-        category: "Digital Services",
-        currency,
-        original_amount: 20,
-        original_currency: "USD",
-        display_amount: openaiAmount,
-        display_currency: currency,
-        is_converted: isTwd,
-      },
-      {
-        date: "2025-04-22",
-        merchant: "PAYMENT RECEIVED",
-        amount: paymentAmount,
-        category: "Refunds & Credits",
-        currency,
-        original_amount: -100,
-        original_currency: "USD",
-        display_amount: paymentAmount,
-        display_currency: currency,
-        is_converted: isTwd,
-      },
-    ],
     sorted_transactions: [
       {
         date: "2025-04-21",
@@ -232,48 +240,21 @@ test("dashboard renders with mocked API data and survives a currency toggle", as
 
   await mockAuthenticatedSession(page);
 
-  await page.route("**/api/uploads/recent?limit=6", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        uploads: [
-          {
-            file_name: "sample.pdf",
-            display_name: "Sample Statement.pdf",
-            transaction_count: 4,
-            total_amount: 44.65,
-            currency_totals: [
-              {
-                currency: "USD",
-                total_amount: -74.25,
-                transaction_count: 3,
-              },
-              {
-                currency: "TWD",
-                total_amount: 605,
-                transaction_count: 1,
-              },
-            ],
-            uploaded_at: "2026-05-16T09:30:00+00:00",
-            parse_status: "parsed",
-          },
-        ],
-      }),
-    });
-  });
+  await mockRecentUploads(page, [
+    {
+      ...SAMPLE_UPLOAD,
+      currency_totals: [
+        { currency: "USD", total_amount: -74.25, transaction_count: 3 },
+        { currency: "TWD", total_amount: 605, transaction_count: 1 },
+      ],
+    },
+  ]);
 
   await page.route("**/api/dashboard/view**", async (route) => {
-    const requestUrl = new URL(route.request().url());
-    const currency =
-      requestUrl.searchParams.get("currency") === "TWD" ? "TWD" : "USD";
+    const currency = requestCurrency(route);
     dashboardRequests.push(route.request().url());
 
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(buildDashboardView(currency)),
-    });
+    await fulfillJson(route, buildDashboardView(currency));
   });
 
   await page.goto("/");
@@ -341,28 +322,15 @@ test("an older dashboard response cannot overwrite a newer currency", async ({
 
   await mockAuthenticatedSession(page);
 
-  await page.route("**/api/uploads/recent?limit=6", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ uploads: [] }),
-    });
-  });
+  await mockRecentUploads(page);
 
   await page.route("**/api/dashboard/view**", async (route) => {
-    const currency =
-      new URL(route.request().url()).searchParams.get("currency") === "TWD"
-        ? "TWD"
-        : "USD";
+    const currency = requestCurrency(route);
     if (currency === "TWD" && !heldStaleRequest) {
       heldStaleRequest = true;
       try {
         await staleGate;
-        await route.fulfill({
-          status: 500,
-          contentType: "application/json",
-          body: JSON.stringify({ detail: "stale failure" }),
-        });
+        await fulfillJson(route, { detail: "stale failure" }, 500);
       } catch {
         // The page aborts this request once a newer filter is selected.
       } finally {
@@ -371,15 +339,10 @@ test("an older dashboard response cannot overwrite a newer currency", async ({
       return;
     }
 
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(buildDashboardView(currency)),
-    });
+    await fulfillJson(route, buildDashboardView(currency));
   });
 
-  await page.goto("/");
-  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  await openLoadedDashboard(page);
 
   const currencySwitch = page.getByRole("switch", { name: "Display currency" });
   await currencySwitch.click();
@@ -410,17 +373,10 @@ test("clearing slicers requests the reset filters once and drops the previous se
   const queries: DashboardQuery[] = [];
 
   await mockAuthenticatedSession(page);
-  await page.route("**/api/uploads/recent?limit=6", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ uploads: [] }),
-    });
-  });
+  await mockRecentUploads(page);
   await page.route("**/api/dashboard/view**", async (route) => {
     const requestUrl = new URL(route.request().url());
-    const currency: DisplayCurrency =
-      requestUrl.searchParams.get("currency") === "TWD" ? "TWD" : "USD";
+    const currency = requestCurrency(route);
     queries.push({
       range: requestUrl.searchParams.get("range") ?? "",
       search: requestUrl.searchParams.get("search") ?? "",
@@ -429,15 +385,10 @@ test("clearing slicers requests the reset filters once and drops the previous se
       selectedMerchant: requestUrl.searchParams.get("selected_merchant") ?? "",
       currency,
     });
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(buildDashboardView(currency)),
-    });
+    await fulfillJson(route, buildDashboardView(currency));
   });
 
-  await page.goto("/");
-  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  await openLoadedDashboard(page);
 
   const filters = page.getByRole("complementary");
   await filters.getByRole("button", { name: "Past month" }).click();
@@ -477,15 +428,104 @@ test("clearing slicers requests the reset filters once and drops the previous se
   expect(requestsAfterClear.every(isClearedMonthQuery)).toBe(true);
 });
 
-test("dashboard warns when transactions cannot be converted", async ({ page }) => {
+test("typing a search sends one dashboard request and does not reload recent uploads", async ({
+  page,
+}) => {
+  const searches: string[] = [];
+  let uploadsRequests = 0;
+
   await mockAuthenticatedSession(page);
   await page.route("**/api/uploads/recent?limit=6", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ uploads: [] }),
-    });
+    uploadsRequests += 1;
+    await fulfillJson(route, { uploads: [] });
   });
+  await page.route("**/api/dashboard/view**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    searches.push(requestUrl.searchParams.get("search") ?? "");
+    const currency = requestCurrency(route);
+    await fulfillJson(route, buildDashboardView(currency));
+  });
+
+  await openLoadedDashboard(page);
+
+  const filters = page.getByRole("complementary");
+  await filters.getByLabel("Search").click();
+  await page.keyboard.type("starbucks", { delay: 50 });
+
+  await expect.poll(() => searches.includes("starbucks")).toBe(true);
+  // Leave time for any late keystroke request to show up before counting.
+  await page.waitForTimeout(800);
+  expect(searches.filter((search) => search !== "")).toEqual(["starbucks"]);
+
+  // Other slicers still refresh the view at once, without reloading uploads.
+  const viewRequestsBeforeSlicer = searches.length;
+  await filters.getByRole("button", { name: "Spend", exact: true }).click();
+  await expect.poll(() => searches.length).toBeGreaterThan(viewRequestsBeforeSlicer);
+
+  expect(uploadsRequests).toBe(1);
+});
+
+test("recent statements wait for their own request instead of showing an empty list", async ({
+  page,
+}) => {
+  let releaseUploads = () => {};
+  const uploadsGate = new Promise<void>((resolve) => {
+    releaseUploads = resolve;
+  });
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    await uploadsGate;
+    await fulfillJson(route, { uploads: [SAMPLE_UPLOAD] });
+  });
+  await mockDashboardView(page);
+
+  await openLoadedDashboard(page);
+  await expect(page.getByText("No uploaded statements yet.")).toHaveCount(0);
+
+  releaseUploads();
+  await expect(page.getByText("Sample Statement.pdf")).toBeVisible();
+  await expect(page.getByText("No uploaded statements yet.")).toHaveCount(0);
+});
+
+test("a filter change does not cancel the retry for failed recent statements", async ({
+  page,
+}) => {
+  let uploadsOpen = false;
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    if (!uploadsOpen) {
+      await route.abort("failed");
+      return;
+    }
+    await fulfillJson(route, { uploads: [SAMPLE_UPLOAD] });
+  });
+  await mockDashboardView(page);
+
+  await openLoadedDashboard(page);
+  // Wait until the uploads failure has reached the page, past the client's
+  // own GET retries, so a retry is pending when the filter changes.
+  await expect(page.getByText(/Unable to refresh data/)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const filters = page.getByRole("complementary");
+  await filters.getByRole("button", { name: "Spend", exact: true }).click();
+  await expect(page.getByTestId("dashboard-shell")).toHaveAttribute(
+    "data-dashboard-loading",
+    "false"
+  );
+
+  uploadsOpen = true;
+  await expect(page.getByText("Sample Statement.pdf")).toBeVisible({
+    timeout: 15_000,
+  });
+});
+
+test("dashboard warns when transactions cannot be converted", async ({ page }) => {
+  await mockAuthenticatedSession(page);
+  await mockRecentUploads(page);
   await page.route("**/api/dashboard/view**", async (route) => {
     const view = buildDashboardView("USD");
     view.summary = {
@@ -511,11 +551,7 @@ test("dashboard warns when transactions cannot be converted", async ({ page }) =
         reason: "unsupported_display_conversion",
       },
     ];
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(view),
-    });
+    await fulfillJson(route, view);
   });
 
   await page.goto("/");
@@ -532,38 +568,13 @@ test("dashboard warns when transactions cannot be converted", async ({ page }) =
 test("a failed refresh keeps the last dashboard numbers and can recover", async ({
   page,
 }) => {
-  let phase: "ok" | "fail" | "recovered" = "ok";
+  let phase: OutagePhase = "ok";
 
   await mockAuthenticatedSession(page);
-  await page.route("**/api/uploads/recent?limit=6", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ uploads: [] }),
-    });
-  });
-  await page.route("**/api/dashboard/view**", async (route) => {
-    if (phase === "fail") {
-      await route.abort("failed");
-      return;
-    }
-    const currency =
-      new URL(route.request().url()).searchParams.get("currency") === "TWD"
-        ? "TWD"
-        : "USD";
-    const view = buildDashboardView(currency);
-    if (phase === "recovered") {
-      view.metrics.model_total_in_active_currency = 222.22;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(view),
-    });
-  });
+  await mockRecentUploads(page);
+  await mockPhasedDashboardView(page, () => phase, 222.22);
 
-  await page.goto("/");
-  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  await openLoadedDashboard(page);
 
   phase = "fail";
   await page.getByRole("switch", { name: "Display currency" }).click();
@@ -593,22 +604,14 @@ test("dashboard data appears on its own after the first load fails", async ({
       await route.abort("failed");
       return;
     }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ uploads: [] }),
-    });
+    await fulfillJson(route, { uploads: [] });
   });
   await page.route("**/api/dashboard/view**", async (route) => {
     if (!open) {
       await route.abort("failed");
       return;
     }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(buildDashboardView("USD")),
-    });
+    await fulfillJson(route, buildDashboardView("USD"));
   });
 
   await page.goto("/");
@@ -632,38 +635,13 @@ test("dashboard data appears on its own after the first load fails", async ({
 test("a loaded dashboard recovers automatically after an outage", async ({
   page,
 }) => {
-  let phase: "ok" | "fail" | "recovered" = "ok";
+  let phase: OutagePhase = "ok";
 
   await mockAuthenticatedSession(page);
-  await page.route("**/api/uploads/recent?limit=6", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ uploads: [] }),
-    });
-  });
-  await page.route("**/api/dashboard/view**", async (route) => {
-    if (phase === "fail") {
-      await route.abort("failed");
-      return;
-    }
-    const currency =
-      new URL(route.request().url()).searchParams.get("currency") === "TWD"
-        ? "TWD"
-        : "USD";
-    const view = buildDashboardView(currency);
-    if (phase === "recovered") {
-      view.metrics.model_total_in_active_currency = 7777;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(view),
-    });
-  });
+  await mockRecentUploads(page);
+  await mockPhasedDashboardView(page, () => phase, 7777);
 
-  await page.goto("/");
-  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+  await openLoadedDashboard(page);
 
   phase = "fail";
   await page.getByRole("switch", { name: "Display currency" }).click();

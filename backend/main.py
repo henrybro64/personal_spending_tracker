@@ -135,7 +135,13 @@ from backend.pdf_utils import (  # noqa: E402
     PdfPasswordProtectedError,
     read_statement_pdf,
 )
-from backend.process_pool import shutdown_process_pool  # noqa: E402
+from backend.process_pool import (  # noqa: E402
+    PdfWorkerBusy,
+    PdfWorkerError,
+    PdfWorkerTimeout,
+    pdf_parse_timeout_seconds,
+    shutdown_process_pool,
+)
 from backend.db import (  # noqa: E402
     bind_request_context,
     clear_request_context,
@@ -311,7 +317,6 @@ class DashboardViewResponse(TypedDict):
     active_currency: DisplayCurrency
     exchange_rate: ExchangeRateMetadata
     summary: SummaryResponse
-    transactions: list[DashboardTransaction]
     sorted_transactions: list[DashboardTransaction]
     unconverted_transactions: list[UnconvertedTransaction]
     merchant_breakdown: list[MerchantBreakdownItem]
@@ -1541,7 +1546,6 @@ def _collect_limited_dashboard(
 ) -> DashboardViewResponse:
     normalized_search = search.strip().lower()
     merchant_filter = selected_merchant.strip()
-    model_rows: list[DashboardTransaction] = []
     unconverted_rows: list[UnconvertedTransaction] = []
     unconverted_currencies: set[str] = set()
     merchant_totals: dict[str, float] = {}
@@ -1572,7 +1576,6 @@ def _collect_limited_dashboard(
         amount_value = float(transaction["amount"])
         model_total += amount_value
         model_count += 1
-        _keep_limited_row(model_rows, transaction, limit)
         if not _transaction_matches_dashboard_filters(
             transaction,
             normalized_search=normalized_search,
@@ -1616,7 +1619,6 @@ def _collect_limited_dashboard(
             unconverted_count=unconverted_count,
             unconverted_currencies=sorted(unconverted_currencies),
         ),
-        "transactions": model_rows,
         "sorted_transactions": _sort_transactions(kept_rows, sort_option),
         "unconverted_transactions": unconverted_rows,
         "merchant_breakdown": merchant_breakdown,
@@ -2175,7 +2177,11 @@ def _load_uploaded_statement(
     file_path: Path, password: str | None
 ) -> tuple[str, list[Transaction]]:
     # Tests replace this helper. Production runs PDF CPU in a child process.
-    return read_statement_pdf(file_path, password)
+    # Wait at most one parse limit for other PDFs, so the whole upload ends
+    # within twice PDF_PARSE_TIMEOUT_SECONDS. The frontend proxy relies on it.
+    return read_statement_pdf(
+        file_path, password, max_wait=pdf_parse_timeout_seconds()
+    )
 
 
 MAX_STATEMENT_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -2313,6 +2319,47 @@ def _open_uploaded_statement(
                 "export a new file."
             ),
         ) from None
+    except PdfWorkerError as exc:
+        # After a timeout or crash the worker is already replaced.
+        reason, outcome, status_code, detail = _pdf_worker_failure_response(exc)
+        saved_path.unlink(missing_ok=True)
+        logger.warning("statement upload parse %s user_id=%s", outcome, user_id)
+        record_audit_event(
+            action="statement_upload_parse_failure",
+            status="rejected",
+            user_id=user_id,
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"file_name": original_name, "reason": reason},
+        )
+        raise HTTPException(status_code=status_code, detail=detail) from None
+
+
+def _pdf_worker_failure_response(exc: PdfWorkerError) -> tuple[str, str, int, str]:
+    """Return the audit reason, log wording, status and message for a failure."""
+    if isinstance(exc, PdfWorkerBusy):
+        return (
+            "busy",
+            "waited too long",
+            503,
+            "Other statements are still being read. Try again in a few minutes.",
+        )
+    if isinstance(exc, PdfWorkerTimeout):
+        return (
+            "timeout",
+            "timed out",
+            504,
+            "This PDF took too long to read. Try again, or export the "
+            "statement from your bank again.",
+        )
+    return (
+        "worker_error",
+        "worker crashed",
+        422,
+        "This PDF could not be read. Please try again or use another file.",
+    )
 
 
 def _store_uploaded_pdf(

@@ -478,6 +478,50 @@ class StatementImporterTests(unittest.TestCase):
             self.assertEqual("locked.pdf", result.skipped_files[0]["statement_file"])
             self.assertEqual("password_required", result.skipped_files[0]["reason"])
 
+    def test_importer_skips_pdfs_whose_worker_timed_out_or_crashed(self) -> None:
+        from backend.process_pool import PdfWorkerError, PdfWorkerTimeout
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            pdf_dir, text_dir, output_dir = self._batch_sandbox(temp_dir)
+            (pdf_dir / "hangs.pdf").write_bytes(b"%PDF-1.4\n")
+            (pdf_dir / "crashes.pdf").write_bytes(b"%PDF-1.4\n")
+            (text_dir / "2026-01-29.txt").write_text(
+                (FIXTURE_DIR / "amex_statement.txt").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+            store = BatchImportStore(output_dir / "batch.sqlite3")
+            env_overrides = {
+                "BATCH_DATA_DIR": str(output_dir),
+                "BATCH_PDF_SOURCE_DIR": str(pdf_dir),
+                "BATCH_TEXT_SOURCE_DIR": str(text_dir),
+            }
+
+            def fake_extractor(path: str | Path) -> str:
+                if Path(path).name == "hangs.pdf":
+                    raise PdfWorkerTimeout("PDF processing passed the 120 s limit.")
+                raise PdfWorkerError("The PDF worker process stopped unexpectedly.")
+
+            previous_values = self._apply_batch_env(env_overrides)
+            try:
+                importer = StatementImporter(
+                    pdf_source_dir=pdf_dir,
+                    text_source_dir=text_dir,
+                    csv_output_path=output_dir / "batch.csv",
+                    store=store,
+                    pdf_text_extractor=fake_extractor,
+                )
+                result = importer.import_transactions()
+            finally:
+                self._restore_batch_env(previous_values)
+
+            self.assertEqual(["2026-01-29.txt"], result.parsed_files)
+            self.assertEqual(
+                {"crashes.pdf": "processing_error", "hangs.pdf": "timeout"},
+                {item["statement_file"]: item["reason"] for item in result.skipped_files},
+            )
+
     def test_importer_skips_parser_processing_errors(self) -> None:
         from unittest.mock import patch
 

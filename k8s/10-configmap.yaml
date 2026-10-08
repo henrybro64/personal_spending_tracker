@@ -16,4 +16,5 @@ data:
   USD_TWD_EXCHANGE_RATE: "32"
   AUDIT_LOG_RETENTION_DAYS: "365"
   STATEMENT_RETENTION_DAYS: "0"
-
+  # Read by both the backend and the frontend proxy, so keep it in one place.
+  PDF_PARSE_TIMEOUT_SECONDS: "120"

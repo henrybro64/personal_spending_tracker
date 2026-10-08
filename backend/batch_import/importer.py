@@ -169,8 +169,14 @@ class StatementImporter:
 
 def _pdf_skip_reason(exc: BaseException) -> str:
     from backend.pdf_utils import PdfDecryptError, PdfPasswordProtectedError
+    from backend.process_pool import PdfWorkerError, PdfWorkerTimeout
     from pdfplumber.utils.exceptions import PdfminerException
 
+    # The worker is replaced after either failure, so the run can go on.
+    if isinstance(exc, PdfWorkerTimeout):
+        return "timeout"
+    if isinstance(exc, PdfWorkerError):
+        return "processing_error"
     if isinstance(exc, PdfPasswordProtectedError):
         return "password_required"
     if isinstance(exc, PdfDecryptError):
@@ -182,9 +188,11 @@ def _pdf_skip_reason(exc: BaseException) -> str:
 
 def _pdf_read_errors() -> tuple[type[BaseException], ...]:
     from backend.pdf_utils import PdfDecryptError, PdfPasswordProtectedError
+    from backend.process_pool import PdfWorkerError
     from pdfplumber.utils.exceptions import PdfminerException
 
     return (
+        PdfWorkerError,
         PdfPasswordProtectedError,
         PdfDecryptError,
         PdfminerException,
