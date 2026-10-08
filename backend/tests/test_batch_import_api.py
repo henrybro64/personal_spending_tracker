@@ -113,6 +113,21 @@ def test_batch_source_folder_is_per_user_even_when_env_var_is_set(
     )
 
 
+def test_batch_run_logs_statements_left_in_shared_root(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    _write_statement(Path(os.environ["BATCH_TEXT_SOURCE_DIR"]))
+    _register(client, "alice")
+
+    with caplog.at_level("WARNING", logger="backend.main"):
+        run = client.post("/batch-imports/run")
+
+    assert run.status_code == 201, run.text
+    assert run.json()["run"]["statement_count"] == 0
+    assert "1 statement file(s) in the root" in caplog.text
+    assert "2026-01-29.txt" not in run.text
+
+
 def test_batch_api_ignores_client_supplied_paths(api_main, tmp_path: Path) -> None:
     client = TestClient(api_main.app, raise_server_exceptions=False)
     with client:
@@ -214,3 +229,37 @@ def test_batch_import_run_and_merge_use_sandboxed_paths(
     assert second_merge.status_code == 200
     assert second_merge.json()["merged_count"] == 0
     assert second_merge.json()["skipped_count"] == 1
+
+
+def test_batch_endpoints_accept_no_file_or_directory_paths(api_main) -> None:
+    spec = api_main.app.openapi()
+    schemas = spec["components"]["schemas"]
+
+    def body_fields(op: dict) -> list[str]:
+        content = op.get("requestBody", {}).get("content", {})
+        fields: list[str] = []
+        for media in content.values():
+            schema = media.get("schema", {})
+            refs = [schema] + schema.get("anyOf", [])
+            for ref in refs:
+                if "$ref" in ref:
+                    name = ref["$ref"].rsplit("/", 1)[-1]
+                    fields.extend(schemas[name].get("properties", {}))
+        return fields
+
+    checked = 0
+    offenders: list[str] = []
+    for route, ops in spec["paths"].items():
+        if not route.startswith("/batch-imports"):
+            continue
+        for method, op in ops.items():
+            checked += 1
+            names = [p["name"] for p in op.get("parameters", [])] + body_fields(op)
+            offenders.extend(
+                f"{method.upper()} {route}: {name}"
+                for name in names
+                if "path" in name or "dir" in name
+            )
+
+    assert checked >= 12
+    assert offenders == []

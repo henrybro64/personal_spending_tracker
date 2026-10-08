@@ -9,6 +9,7 @@
 | Upload metadata | PostgreSQL `statement_uploads` | Duplicate detection and history |
 | Sessions | PostgreSQL `user_sessions` | Auth cookies |
 | Audit events | PostgreSQL `audit_logs` | Security and data-change trail |
+| Batch source statements | `BATCH_PDF_SOURCE_DIR/user-<id>/`, `BATCH_TEXT_SOURCE_DIR/user-<id>/` | Files read by **Run batch import** for that user only |
 | Batch review DB | `batch_imports_user_<id>.sqlite3` | Offline review before merge |
 
 ## Retention policy

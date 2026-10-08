@@ -634,6 +634,22 @@ def _default_batch_text_source_dir_for_user(user_id: int) -> Path:
     return user_dir
 
 
+def _warn_about_statements_in_shared_batch_root() -> None:
+    # Older releases read the shared root. Tell the operator in the server
+    # log; the API response must not hint at files outside the user's folder.
+    stray_count = sum(1 for _ in default_pdf_source_dir().glob("*.pdf")) + sum(
+        1 for _ in default_text_source_dir().glob("*.txt")
+    )
+    if stray_count:
+        logger.warning(
+            "batch-imports/run: %s statement file(s) in the root of %s or %s are "
+            "ignored. Move them into the owner's user-<id> folder.",
+            stray_count,
+            default_pdf_source_dir(),
+            default_text_source_dir(),
+        )
+
+
 def _sort_transactions(
     transactions: list[DashboardTransaction], sort_option: SortOption
 ) -> list[DashboardTransaction]:
@@ -1785,6 +1801,7 @@ def _execute_batch_import(
             store=store,
         )
         result = importer.import_transactions()
+        _warn_about_statements_in_shared_batch_root()
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
