@@ -35,8 +35,15 @@ echo "=== Code markers in running container ==="
 '
 
 echo
-echo "=== PDF count ==="
-"${KUBECTL_CMD[@]}" -n "$NS" exec "$POD" -c backend -- sh -c 'ls -1 /app/batch/pdf/*.pdf 2>/dev/null | wc -l'
+echo "=== PDF count per user (batch import reads /app/batch/pdf/user-<id>/) ==="
+"${KUBECTL_CMD[@]}" -n "$NS" exec "$POD" -c backend -- sh -c '
+  for d in /app/batch/pdf/user-*/; do
+    [ -d "$d" ] && echo "$d $(ls -1 "$d"*.pdf 2>/dev/null | wc -l)"
+  done
+  n=$(ls -1 /app/batch/pdf/*.pdf 2>/dev/null | wc -l)
+  [ "$n" -gt 0 ] && echo "WARNING: $n PDF(s) in /app/batch/pdf root are ignored; move them to /app/batch/pdf/user-<id>/"
+  true
+'
 
 echo
 echo "=== Recent backend logs (batch / errors) ==="
@@ -49,6 +56,9 @@ echo "=== Recent cluster events (backend) ==="
 
 echo
 echo "=== Direct import in pod (bypasses UI; may take minutes) ==="
-echo "Run:"
+echo "Run (user-1; results appear on that user's /batch-review page):"
 printf '  %q' "${KUBECTL_CMD[@]}"
-echo " -n $NS exec -it $POD -c backend -- python3 -m backend.import_statements"
+echo " -n $NS exec -it $POD -c backend -- python3 -m backend.import_statements \\"
+echo "    --pdf-dir /app/batch/pdf/user-1 --text-dir /app/batch/text/user-1 \\"
+echo "    --sqlite-out /app/batch/data/batch_imports_user_1.sqlite3 \\"
+echo "    --csv-out /app/batch/data/batch_transactions_user_1.csv"

@@ -652,6 +652,30 @@ class StatementImporterTests(unittest.TestCase):
             self.assertEqual("GOOD", rows[0].merchant_raw)
 
 
+class AllowedPathTests(unittest.TestCase):
+    def test_resolve_allowed_file_rejects_outside_path_without_creating_dirs(self) -> None:
+        from unittest.mock import patch
+
+        from backend.batch_import.paths import resolve_allowed_file
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            env = {
+                "BATCH_DATA_DIR": str(temp_dir / "data"),
+                "BATCH_PDF_SOURCE_DIR": str(temp_dir / "pdf"),
+                "BATCH_TEXT_SOURCE_DIR": str(temp_dir / "text"),
+            }
+            outside = temp_dir / "outside" / "deep" / "x.sqlite3"
+            inside = temp_dir / "data" / "nested" / "x.sqlite3"
+            with patch.dict(os.environ, env):
+                with self.assertRaises(ValueError):
+                    resolve_allowed_file(outside, default=inside)
+                self.assertFalse((temp_dir / "outside").exists())
+
+                self.assertEqual(inside.resolve(), resolve_allowed_file(inside, default=inside))
+                self.assertTrue(inside.parent.exists())
+
+
 class MerchantDigitNoiseTests(unittest.TestCase):
     def test_parse_noise_detection(self) -> None:
         from backend.merchant_noise import merchant_raw_is_parse_noise

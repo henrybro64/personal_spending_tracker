@@ -105,7 +105,6 @@ from backend.bulk_import import (  # noqa: E402
 from backend.batch_import.paths import (  # noqa: E402
     default_pdf_source_dir,
     default_text_source_dir,
-    resolve_allowed_directory,
 )
 from backend.batch_import import (  # noqa: E402
     BatchImportRunSummary,
@@ -115,7 +114,6 @@ from backend.batch_import import (  # noqa: E402
     StatementImporter,
     default_sqlite_output_path,
     merge_run_to_postgres,
-    resolve_allowed_file,
 )
 from backend.currency import (  # noqa: E402
     DEFAULT_BASE_CURRENCY,
@@ -336,18 +334,10 @@ class ManualTransactionRequest(BaseModel):
     payment_method: str | None = None
 
 
-class BatchImportRequest(BaseModel):
-    pdf_source_dir: str | None = None
-    text_source_dir: str | None = None
-    csv_output_path: str | None = None
-    sqlite_output_path: str | None = None
-
-
 class BatchImportMergeRequest(BaseModel):
     run_id: int | None = None
     include_needs_review: bool = True
     include_excluded: bool = False
-    sqlite_output_path: str | None = None
 
 
 class BatchReviewUpdateRequest(BaseModel):
@@ -376,7 +366,6 @@ class BulkContentImportRequest(BaseModel):
     currency: str = "TWD"
     source_name: str = "import"
     destination: Literal["batch", "dashboard"] = "batch"
-    sqlite_output_path: str | None = None
 
 
 class BulkContentImportResponse(TypedDict):
@@ -630,23 +619,35 @@ def _build_ai_settings_response(
 
 
 def _default_batch_pdf_source_dir_for_user(user_id: int) -> Path:
-    base_dir = default_pdf_source_dir()
-    if os.getenv("BATCH_PDF_SOURCE_DIR"):
-        base_dir.mkdir(parents=True, exist_ok=True)
-        return base_dir
-    user_dir = base_dir / f"user-{user_id}"
+    # The env var only picks the parent folder. Each user reads their own
+    # subfolder so one user's statements never reach another user's import.
+    user_dir = default_pdf_source_dir() / f"user-{user_id}"
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
 
 def _default_batch_text_source_dir_for_user(user_id: int) -> Path:
-    base_dir = default_text_source_dir()
-    if os.getenv("BATCH_TEXT_SOURCE_DIR"):
-        base_dir.mkdir(parents=True, exist_ok=True)
-        return base_dir
-    user_dir = base_dir / f"user-{user_id}"
+    # The env var only picks the parent folder. Each user reads their own
+    # subfolder so one user's statements never reach another user's import.
+    user_dir = default_text_source_dir() / f"user-{user_id}"
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
+
+
+def _warn_about_statements_in_shared_batch_root() -> None:
+    # Older releases read the shared root. Tell the operator in the server
+    # log; the API response must not hint at files outside the user's folder.
+    stray_count = sum(1 for _ in default_pdf_source_dir().glob("*.pdf")) + sum(
+        1 for _ in default_text_source_dir().glob("*.txt")
+    )
+    if stray_count:
+        logger.warning(
+            "batch-imports/run: %s statement file(s) in the root of %s or %s are "
+            "ignored. Move them into the owner's user-<id> folder.",
+            stray_count,
+            default_pdf_source_dir(),
+            default_text_source_dir(),
+        )
 
 
 def _sort_transactions(
@@ -753,15 +754,9 @@ def _default_batch_csv_path_for_user(user_id: int) -> Path:
     return default_sqlite_output_path().with_name(f"batch_transactions_user_{user_id}.csv")
 
 
-def _get_batch_import_store(
-    user_id: int,
-    sqlite_path: str | None = None,
-) -> BatchImportStore:
-    resolved_sqlite_path = resolve_allowed_file(
-        sqlite_path,
-        default=_default_batch_sqlite_path_for_user(user_id),
-    )
-    store = BatchImportStore(resolved_sqlite_path)
+def _get_batch_import_store(user_id: int) -> BatchImportStore:
+    # Paths come only from the signed-in user's id, never from the request.
+    store = BatchImportStore(_default_batch_sqlite_path_for_user(user_id))
     store.initialize()
     return store
 
@@ -1794,30 +1789,19 @@ def delete_dashboard_transaction(
 def _execute_batch_import(
     *,
     user_id: int,
-    request_payload: BatchImportRequest,
     audit_context: AuditRequestContext,
 ) -> BatchImportRunExecutionResponse:
     logger.info("batch-imports/run started user_id=%s", user_id)
     try:
-        store = _get_batch_import_store(user_id, request_payload.sqlite_output_path)
-        pdf_source_dir = resolve_allowed_directory(
-            request_payload.pdf_source_dir,
-            default=_default_batch_pdf_source_dir_for_user(user_id),
-        )
-        text_source_dir = resolve_allowed_directory(
-            request_payload.text_source_dir,
-            default=_default_batch_text_source_dir_for_user(user_id),
-        )
+        store = _get_batch_import_store(user_id)
         importer = StatementImporter(
-            pdf_source_dir=str(pdf_source_dir),
-            text_source_dir=str(text_source_dir),
-            csv_output_path=resolve_allowed_file(
-                request_payload.csv_output_path,
-                default=_default_batch_csv_path_for_user(user_id),
-            ),
+            pdf_source_dir=_default_batch_pdf_source_dir_for_user(user_id),
+            text_source_dir=_default_batch_text_source_dir_for_user(user_id),
+            csv_output_path=_default_batch_csv_path_for_user(user_id),
             store=store,
         )
         result = importer.import_transactions()
+        _warn_about_statements_in_shared_batch_root()
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -1854,13 +1838,11 @@ def _execute_batch_import(
 @app.post("/batch-imports/run", status_code=status.HTTP_201_CREATED)
 async def run_batch_import(
     request: Request,
-    payload: BatchImportRequest | None = None,
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportRunExecutionResponse:
     return await asyncio.to_thread(
         _execute_batch_import,
         user_id=current_user["id"],
-        request_payload=payload or BatchImportRequest(),
         audit_context=get_audit_request_context(request),
     )
 
@@ -1870,10 +1852,7 @@ def import_batch_content(
     payload: BulkContentImportRequest,
     current_user: UserRecord = Depends(require_current_user),
 ) -> BulkContentImportResponse:
-    store = _get_batch_import_store(
-        current_user["id"],
-        payload.sqlite_output_path,
-    )
+    store = _get_batch_import_store(current_user["id"])
     store.initialize()
     category_engine = CategoryEngine(store.load_learned_rules())
     try:
@@ -1955,10 +1934,7 @@ def merge_batch_import(
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportMergeResponse:
     request_payload = payload or BatchImportMergeRequest()
-    store = _get_batch_import_store(
-        current_user["id"],
-        request_payload.sqlite_output_path,
-    )
+    store = _get_batch_import_store(current_user["id"])
 
     try:
         result = merge_run_to_postgres(
@@ -1998,10 +1974,9 @@ def merge_batch_import(
 
 @app.get("/batch-imports/latest")
 def batch_import_latest(
-    sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportLatestResponse:
-    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    store = _get_batch_import_store(current_user["id"])
     return {"run": store.get_latest_run()}
 
 
@@ -2010,10 +1985,9 @@ def batch_import_transactions(
     needs_review_only: bool = Query(default=False),
     run_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=500, ge=1, le=5000),
-    sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportTransactionsResponse:
-    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    store = _get_batch_import_store(current_user["id"])
     return {
         "transactions": store.list_transactions(
             needs_review_only=needs_review_only,
@@ -2028,14 +2002,13 @@ def update_batch_import_transaction(
     transaction_id: int,
     payload: BatchReviewUpdateRequest,
     request: Request,
-    sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportReviewUpdateResponse:
     category = payload.category.strip()
     if not category:
         raise HTTPException(status_code=400, detail="Category is required.")
 
-    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    store = _get_batch_import_store(current_user["id"])
     merchant_raw = (
         payload.merchant_raw.strip() if payload.merchant_raw is not None else None
     )
@@ -2078,10 +2051,9 @@ def update_batch_import_transaction(
 def delete_batch_import_transaction(
     transaction_id: int,
     request: Request,
-    sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> None:
-    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    store = _get_batch_import_store(current_user["id"])
     if store.is_transaction_synced(transaction_id):
         row = store.get_transaction(transaction_id)
         if row is None:
@@ -2121,10 +2093,9 @@ def delete_batch_import_transaction(
 def batch_import_needs_review_merchants(
     run_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=20, ge=1, le=200),
-    sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportNeedsReviewMerchantsResponse:
-    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    store = _get_batch_import_store(current_user["id"])
     category_engine = CategoryEngine(store.load_learned_rules())
     merchants: list[NeedsReviewMerchantSummary] = []
     for item in store.list_needs_review_merchants(run_id=run_id, limit=limit):
@@ -2142,7 +2113,6 @@ def batch_import_needs_review_merchants(
 @app.post("/batch-imports/review/bulk", status_code=status.HTTP_200_OK)
 def bulk_update_batch_import_review(
     payload: BatchReviewBulkUpdateRequest,
-    sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportBulkReviewUpdateResponse:
     category = payload.category.strip()
@@ -2152,7 +2122,7 @@ def bulk_update_batch_import_review(
     if not merchant_raw:
         raise HTTPException(status_code=400, detail="Merchant is required.")
 
-    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    store = _get_batch_import_store(current_user["id"])
     updated_count = store.bulk_update_merchant_review(
         run_id=payload.run_id,
         merchant_raw=merchant_raw,
@@ -2166,10 +2136,9 @@ def bulk_update_batch_import_review(
 @app.get("/batch-imports/digit-noise-pending-count")
 def batch_import_digit_noise_pending_count(
     run_id: int | None = Query(default=None, ge=1),
-    sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportDigitNoisePendingResponse:
-    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    store = _get_batch_import_store(current_user["id"])
     return {
         "pending_count": store.count_digit_only_noise_pending(run_id=run_id),
     }
@@ -2178,10 +2147,9 @@ def batch_import_digit_noise_pending_count(
 @app.post("/batch-imports/review/dismiss-digit-noise", status_code=status.HTTP_200_OK)
 def dismiss_batch_import_digit_noise(
     payload: BatchReviewDismissDigitNoiseRequest,
-    sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportDismissDigitNoiseResponse:
-    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    store = _get_batch_import_store(current_user["id"])
     updated_count = store.bulk_dismiss_digit_only_noise(run_id=payload.run_id)
     return {"updated_count": int(updated_count)}
 
@@ -2189,10 +2157,9 @@ def dismiss_batch_import_digit_noise(
 @app.post("/batch-imports/review/auto-categorize", status_code=status.HTTP_200_OK)
 def auto_categorize_batch_import_review(
     payload: BatchReviewDismissDigitNoiseRequest,
-    sqlite_path: str | None = Query(default=None),
     current_user: UserRecord = Depends(require_current_user),
 ) -> BatchImportAutoCategorizeResponse:
-    store = _get_batch_import_store(current_user["id"], sqlite_path)
+    store = _get_batch_import_store(current_user["id"])
     category_engine = CategoryEngine(store.load_learned_rules())
     updated_count = store.auto_apply_default_categories(
         run_id=payload.run_id,

@@ -1,8 +1,22 @@
-import tempfile
+import json
+import os
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
+from backend.batch_import import BatchImportStore
+
+
+AMEX_STATEMENT = (
+    "AMERICAN EXPRESS\n"
+    "Statement Date: 01/29/2026\n"
+    "Card ending 1001\n"
+    "Date Description Amount\n"
+    "01/05 STARBUCKS 5.75\n"
+    "01/05 STARBUCKS 5.75\n"
+    "01/09 IKEA 80.00\n"
+)
 
 
 def _register_user(client: TestClient) -> None:
@@ -15,6 +29,23 @@ def _register_user(client: TestClient) -> None:
         },
     )
     assert response.status_code == 201
+
+
+def _register(client: TestClient, username: str) -> None:
+    response = client.post(
+        "/auth/register",
+        json={"email": username, "password": "password123"},
+    )
+    assert response.status_code == 201, response.text
+
+
+def _logout(client: TestClient) -> None:
+    assert client.post("/auth/logout").status_code == 200
+
+
+def _write_statement(folder: Path) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "2026-01-29.txt").write_text(AMEX_STATEMENT, encoding="utf-8")
 
 
 @pytest.fixture
@@ -32,7 +63,9 @@ def batch_client(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: 
     monkeypatch.setenv("BATCH_TEXT_SOURCE_DIR", str(text_dir))
 
     fixture_dir = Path(__file__).parent / "fixtures" / "batch_import"
-    (text_dir / "2026-01-29.txt").write_text(
+    # The registered user is id 1, so the statement goes in their folder.
+    (text_dir / "user-1").mkdir()
+    (text_dir / "user-1" / "2026-01-29.txt").write_text(
         (fixture_dir / "amex_statement.txt").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
@@ -41,14 +74,120 @@ def batch_client(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: 
     return client
 
 
-def test_batch_import_rejects_paths_outside_allowed_roots(batch_client: TestClient) -> None:
+def test_batch_import_ignores_client_supplied_source_dir(batch_client: TestClient) -> None:
     response = batch_client.post(
         "/batch-imports/run",
-        json={"pdf_source_dir": "/etc"},
+        json={"pdf_source_dir": "/etc", "text_source_dir": "/etc"},
     )
 
-    assert response.status_code == 400
-    assert "outside allowed batch-import roots" in response.json()["detail"]
+    assert response.status_code == 201
+    assert response.json()["run"]["statement_count"] == 1
+    latest = batch_client.get("/batch-imports/latest").json()["run"]
+    assert latest["pdf_source_dir"].endswith(os.path.join("pdf", "user-1"))
+    assert latest["text_source_dir"].endswith(os.path.join("text", "user-1"))
+
+
+def test_batch_source_folder_is_per_user_even_when_env_var_is_set(
+    client: TestClient,
+) -> None:
+    text_root = Path(os.environ["BATCH_TEXT_SOURCE_DIR"])
+    # A file left in the shared root must not be imported by anyone.
+    _write_statement(text_root)
+    _write_statement(text_root / "user-1")
+
+    _register(client, "alice")
+    alice_run = client.post("/batch-imports/run", json={})
+    assert alice_run.status_code == 201, alice_run.text
+    assert alice_run.json()["run"]["statement_count"] == 1
+    assert client.get("/batch-imports/latest").json()["run"]["text_source_dir"] == str(
+        (text_root / "user-1").resolve()
+    )
+    _logout(client)
+
+    _register(client, "mallory")
+    run = client.post("/batch-imports/run", json={})
+    assert run.status_code == 201, run.text
+    assert run.json()["run"]["transaction_count"] == 0
+    assert client.get("/batch-imports/latest").json()["run"]["text_source_dir"] == str(
+        (text_root / "user-2").resolve()
+    )
+
+
+def test_batch_run_logs_statements_left_in_shared_root(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    _write_statement(Path(os.environ["BATCH_TEXT_SOURCE_DIR"]))
+    _register(client, "alice")
+
+    with caplog.at_level("WARNING", logger="backend.main"):
+        run = client.post("/batch-imports/run")
+
+    assert run.status_code == 201, run.text
+    assert run.json()["run"]["statement_count"] == 0
+    assert "1 statement file(s) in the root" in caplog.text
+    assert "2026-01-29.txt" not in run.text
+
+
+def test_batch_api_ignores_client_supplied_paths(api_main, tmp_path: Path) -> None:
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    with client:
+        _write_statement(Path(os.environ["BATCH_TEXT_SOURCE_DIR"]) / "user-1")
+        _register(client, "alice")
+        alice_run = client.post("/batch-imports/run", json={})
+        assert alice_run.status_code == 201, alice_run.text
+        alice_db = str(api_main._default_batch_sqlite_path_for_user(1))
+        alice_rows = client.get("/batch-imports/transactions").json()["transactions"]
+        assert alice_rows
+        _logout(client)
+        _register(client, "mallory")
+
+        # cannot read alice's rows
+        r = client.get("/batch-imports/transactions", params={"sqlite_path": alice_db})
+        assert r.status_code == 200
+        assert r.json()["transactions"] == []
+        r = client.get("/batch-imports/latest", params={"sqlite_path": alice_db})
+        assert r.status_code == 200
+        assert r.json()["run"] is None
+
+        # cannot delete alice's rows
+        r = client.delete(
+            f"/batch-imports/transactions/{alice_rows[0]['id']}",
+            params={"sqlite_path": alice_db},
+        )
+        assert r.status_code == 404
+
+        # cannot overwrite alice's database
+        r = client.post("/batch-imports/run", json={"csv_output_path": alice_db})
+        assert r.status_code == 201
+        assert Path(alice_db).read_bytes().startswith(b"SQLite format 3")
+        r = client.post(
+            "/batch-imports/import",
+            json={
+                "content": json.dumps(
+                    [{"date": "2026-02-01", "merchant": "MALLORY", "amount": 1.0}]
+                ),
+                "format": "json",
+                "sqlite_output_path": alice_db,
+            },
+        )
+        assert r.status_code == 201, r.text
+        mallory_db = api_main._default_batch_sqlite_path_for_user(2)
+        assert [row["merchant_raw"] for row in BatchImportStore(mallory_db).list_transactions()] == [
+            "MALLORY"
+        ]
+        r = client.post("/batch-imports/merge", json={"sqlite_output_path": alice_db})
+        assert r.status_code == 200, r.text
+        assert r.json()["merged_count"] == 1  # mallory's own row only
+
+        # cannot create directories anywhere on disk
+        outside = tmp_path / "outside" / "deep" / "x.sqlite3"
+        r = client.get("/batch-imports/latest", params={"sqlite_path": str(outside)})
+        assert r.status_code == 200
+        assert not outside.parent.exists()
+
+    alice_store = BatchImportStore(Path(alice_db))
+    assert len(alice_store.list_transactions(limit=500)) == len(alice_rows)
+    assert not any(alice_store.is_transaction_synced(row["id"]) for row in alice_rows)
 
 
 def test_batch_import_run_and_merge_use_sandboxed_paths(
@@ -90,3 +229,37 @@ def test_batch_import_run_and_merge_use_sandboxed_paths(
     assert second_merge.status_code == 200
     assert second_merge.json()["merged_count"] == 0
     assert second_merge.json()["skipped_count"] == 1
+
+
+def test_batch_endpoints_accept_no_file_or_directory_paths(api_main) -> None:
+    spec = api_main.app.openapi()
+    schemas = spec["components"]["schemas"]
+
+    def body_fields(op: dict) -> list[str]:
+        content = op.get("requestBody", {}).get("content", {})
+        fields: list[str] = []
+        for media in content.values():
+            schema = media.get("schema", {})
+            refs = [schema] + schema.get("anyOf", [])
+            for ref in refs:
+                if "$ref" in ref:
+                    name = ref["$ref"].rsplit("/", 1)[-1]
+                    fields.extend(schemas[name].get("properties", {}))
+        return fields
+
+    checked = 0
+    offenders: list[str] = []
+    for route, ops in spec["paths"].items():
+        if not route.startswith("/batch-imports"):
+            continue
+        for method, op in ops.items():
+            checked += 1
+            names = [p["name"] for p in op.get("parameters", [])] + body_fields(op)
+            offenders.extend(
+                f"{method.upper()} {route}: {name}"
+                for name in names
+                if "path" in name or "dir" in name
+            )
+
+    assert checked >= 12
+    assert offenders == []

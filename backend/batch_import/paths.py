@@ -90,11 +90,12 @@ def resolve_allowed_file(
 
     resolved = Path(path).expanduser().resolve()
     parent = resolved.parent
-    if not parent.exists():
-        parent.mkdir(parents=True, exist_ok=True)
 
+    # Check the root before touching the disk so a rejected path never
+    # leaves directories behind.
     for root in allowed_roots():
         if _is_within_root(resolved, root) or _is_within_root(parent, root):
+            parent.mkdir(parents=True, exist_ok=True)
             return resolved
 
     allowed = ", ".join(str(root) for root in allowed_roots())
