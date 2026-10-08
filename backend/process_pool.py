@@ -34,15 +34,28 @@ class _FifoLock:
         self._held = False
 
     def __enter__(self) -> None:
+        self.acquire()
+
+    def acquire(self, timeout: float | None = None) -> bool:
+        """Wait for the lock. Return False if ``timeout`` passes first."""
         with self._guard:
             if not self._held:
                 self._held = True
-                return
+                return True
             turn = threading.Event()
             self._waiters.append(turn)
-        turn.wait()  # release() hands the lock over before setting this
+        if turn.wait(timeout):  # release() hands the lock over before setting this
+            return True
+        with self._guard:
+            if turn.is_set():  # handed over just as the wait ran out
+                return True
+            self._waiters.remove(turn)
+            return False
 
     def __exit__(self, *exc_info: object) -> None:
+        self.release()
+
+    def release(self) -> None:
         with self._guard:
             if self._waiters:
                 self._waiters.popleft().set()
@@ -68,6 +81,10 @@ class PdfWorkerError(RuntimeError):
 
 class PdfWorkerTimeout(PdfWorkerError):
     """The work ran past PDF_PARSE_TIMEOUT_SECONDS and the worker was stopped."""
+
+
+class PdfWorkerBusy(PdfWorkerError):
+    """Other PDFs held the worker for longer than the caller would wait."""
 
 
 def pdf_parse_timeout_seconds() -> float:
@@ -117,18 +134,26 @@ def _discard_executor(executor: ProcessPoolExecutor, *, terminate: bool) -> None
     executor.shutdown(wait=False, cancel_futures=True)
 
 
-def run_cpu_bound(func: Callable[..., _T], /, *args: object) -> _T:
+def run_cpu_bound(
+    func: Callable[..., _T], /, *args: object, max_wait: float | None = None
+) -> _T:
     """Block until ``func(*args)`` finishes in the parser process.
 
     Call this from a worker thread. Calling it on the event loop would stall
     ``/health`` for the wait, even though the CPU work itself is elsewhere.
 
-    Raises ``PdfWorkerTimeout`` when the work runs past
-    ``PDF_PARSE_TIMEOUT_SECONDS`` and ``PdfWorkerError`` when the worker
-    process dies. Either way the next call gets a fresh worker.
+    Raises ``PdfWorkerBusy`` when other PDFs keep the worker longer than
+    ``max_wait`` seconds (no limit by default), ``PdfWorkerTimeout`` when the
+    work runs past ``PDF_PARSE_TIMEOUT_SECONDS`` and ``PdfWorkerError`` when
+    the worker process dies. After a timeout or crash the next call gets a
+    fresh worker.
     """
     timeout = pdf_parse_timeout_seconds()
-    with _run_lock:
+    if not _run_lock.acquire(max_wait):
+        raise PdfWorkerBusy(
+            f"Other PDFs kept the worker busy for more than {max_wait:g} s."
+        )
+    try:
         executor = _executor_instance()
         try:
             future = executor.submit(func, *args)
@@ -146,17 +171,22 @@ def run_cpu_bound(func: Callable[..., _T], /, *args: object) -> _T:
                 ) from exc
 
         try:
-            return future.result(timeout=timeout)
-        except FutureTimeoutError:
-            if future.done():
-                raise  # the task itself raised TimeoutError
-            _discard_executor(executor, terminate=True)
-            raise PdfWorkerTimeout(
-                f"PDF processing passed the {timeout:g} s limit."
-            ) from None
+            try:
+                return future.result(timeout=timeout)
+            except FutureTimeoutError:
+                if not future.done():
+                    _discard_executor(executor, terminate=True)
+                    raise PdfWorkerTimeout(
+                        f"PDF processing passed the {timeout:g} s limit."
+                    ) from None
+            # The task raised TimeoutError itself, or it finished right at the
+            # limit. Either way it is done, so return its real outcome.
+            return future.result()
         except BrokenProcessPool as exc:
             _discard_executor(executor, terminate=False)
             raise PdfWorkerError("The PDF worker process stopped unexpectedly.") from exc
+    finally:
+        _run_lock.release()
 
 
 def shutdown_process_pool() -> None:

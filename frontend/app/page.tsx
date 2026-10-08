@@ -1433,6 +1433,9 @@ export default function HomePage() {
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
   // Recent uploads load on their own, so they keep their own loading flag.
   const [isUploadsLoading, setIsUploadsLoading] = useState(true);
+  // Set once /uploads/recent succeeds. The dashboard view loads separately, so
+  // its snapshot cannot tell whether an empty upload list is real.
+  const [hasUploadsSnapshot, setHasUploadsSnapshot] = useState(false);
   // Wait for a pause in typing so each keystroke does not start a server scan.
   const debouncedSearchQuery = useDebouncedValue(
     searchQuery,
@@ -1697,6 +1700,7 @@ export default function HomePage() {
   useEffect(() => {
     if (authStatus !== "authenticated") {
       setRecentUploads([]);
+      setHasUploadsSnapshot(false);
       setDashboardError("");
       setIsUploadsLoading(authStatus === "loading");
       return;
@@ -1725,6 +1729,9 @@ export default function HomePage() {
           void refreshSession();
         }
         setRecentUploads(next.uploads);
+        if (part.status === "ok") {
+          setHasUploadsSnapshot(true);
+        }
         setDashboardError(next.error);
       })
       .catch((loadError: unknown) => {
@@ -1932,7 +1939,7 @@ export default function HomePage() {
 
           <RecentStatementsCard
             fm={fm}
-            hasSnapshot={dashboardView !== null}
+            hasSnapshot={hasUploadsSnapshot}
             intlLocale={intlLocale}
             isUploadsLoading={isUploadsLoading}
             locale={locale}

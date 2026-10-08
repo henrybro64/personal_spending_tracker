@@ -136,8 +136,10 @@ from backend.pdf_utils import (  # noqa: E402
     read_statement_pdf,
 )
 from backend.process_pool import (  # noqa: E402
+    PdfWorkerBusy,
     PdfWorkerError,
     PdfWorkerTimeout,
+    pdf_parse_timeout_seconds,
     shutdown_process_pool,
 )
 from backend.db import (  # noqa: E402
@@ -2175,7 +2177,11 @@ def _load_uploaded_statement(
     file_path: Path, password: str | None
 ) -> tuple[str, list[Transaction]]:
     # Tests replace this helper. Production runs PDF CPU in a child process.
-    return read_statement_pdf(file_path, password)
+    # Wait at most one parse limit for other PDFs, so the whole upload ends
+    # within twice PDF_PARSE_TIMEOUT_SECONDS. The frontend proxy relies on it.
+    return read_statement_pdf(
+        file_path, password, max_wait=pdf_parse_timeout_seconds()
+    )
 
 
 MAX_STATEMENT_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -2312,6 +2318,23 @@ def _open_uploaded_statement(
                 "encryption; try removing the password in a PDF app and "
                 "export a new file."
             ),
+        ) from None
+    except PdfWorkerBusy:
+        saved_path.unlink(missing_ok=True)
+        logger.warning("statement upload waited too long user_id=%s", user_id)
+        record_audit_event(
+            action="statement_upload_parse_failure",
+            status="rejected",
+            user_id=user_id,
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"file_name": original_name, "reason": "busy"},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Other statements are still being read. Try again in a few minutes.",
         ) from None
     except PdfWorkerError as exc:
         # PdfWorkerTimeout is a PdfWorkerError; the worker is already replaced.

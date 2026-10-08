@@ -12,11 +12,25 @@ const BACKEND =
  */
 const BATCH_IMPORT_TIMEOUT_MS = 30 * 60 * 1000;
 /**
- * The backend stops a PDF parse after PDF_PARSE_TIMEOUT_SECONDS (120 s by
- * default) and may first wait for another PDF to finish. Allow longer here so
- * the backend's own 504 message reaches the user instead of a proxy error.
+ * An upload waits at most PDF_PARSE_TIMEOUT_SECONDS for other PDFs (then 503)
+ * and parses for at most that long again (then 504). Read the same setting as
+ * the backend and allow a margin, so the backend's own answer reaches the user
+ * instead of a proxy error while the upload might still be saved.
  */
-const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_PDF_PARSE_TIMEOUT_SECONDS = 120;
+const UPLOAD_TIMEOUT_MARGIN_MS = 60_000;
+
+function pdfParseTimeoutSeconds(): number {
+  const value = Number(process.env.PDF_PARSE_TIMEOUT_SECONDS?.trim() || NaN);
+  return Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_PDF_PARSE_TIMEOUT_SECONDS;
+}
+
+function uploadTimeoutMs(): number {
+  return 2 * pdfParseTimeoutSeconds() * 1000 + UPLOAD_TIMEOUT_MARGIN_MS;
+}
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 async function proxyRequest(
@@ -34,7 +48,7 @@ async function proxyRequest(
   const timeoutMs = pathname.startsWith("batch-imports/")
     ? BATCH_IMPORT_TIMEOUT_MS
     : pathname === "upload"
-      ? UPLOAD_TIMEOUT_MS
+      ? uploadTimeoutMs()
       : DEFAULT_TIMEOUT_MS;
 
   let backendResponse: Response;

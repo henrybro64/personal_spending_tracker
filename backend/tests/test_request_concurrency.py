@@ -166,8 +166,8 @@ def test_pdf_cpu_work_is_scheduled_in_the_child_process(
 ) -> None:
     scheduled: list[str] = []
 
-    def fake_run(func, *args):
-        del args
+    def fake_run(func, *args, max_wait=None):
+        del args, max_wait
         scheduled.append(func.__name__)
         if func.__name__ == "_read_statement_pdf_in_process":
             return "statement", []
@@ -329,6 +329,7 @@ def test_pdf_parse_timeout_falls_back_to_default_for_bad_values(
     ("error_name", "status_code", "detail_snippet", "reason"),
     [
         ("PdfWorkerTimeout", 504, "took too long", "timeout"),
+        ("PdfWorkerBusy", 503, "still being read", "busy"),
         ("PdfWorkerError", 422, "could not be read", "worker_error"),
     ],
 )
@@ -667,3 +668,59 @@ def test_pdf_worker_lock_serves_waiters_in_arrival_order() -> None:
         thread.join(timeout=5)
 
     assert order == ["upload-1", "upload-2", "batch-next-file"]
+
+
+def test_pdf_worker_lock_gives_up_after_max_wait() -> None:
+    from backend.process_pool import _FifoLock
+
+    lock = _FifoLock()
+    lock.__enter__()  # another PDF holds the worker
+    assert lock.acquire(0.05) is False
+    assert lock.waiting_count() == 0  # the caller left the line
+    lock.__exit__(None, None, None)
+    assert lock.acquire(0.05) is True
+    lock.release()
+
+
+def test_pdf_worker_reports_busy_without_running_the_task() -> None:
+    from backend import process_pool
+
+    process_pool._run_lock.__enter__()  # another PDF holds the worker
+    try:
+        with pytest.raises(process_pool.PdfWorkerBusy):
+            process_pool.run_cpu_bound(os.getpid, max_wait=0.05)
+    finally:
+        process_pool._run_lock.__exit__(None, None, None)
+
+
+def test_pdf_worker_returns_a_result_that_lands_at_the_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import Future
+    from concurrent.futures import TimeoutError as FutureTimeoutError
+
+    from backend import process_pool
+
+    class FinishesAtTheLimit(Future):
+        def result(self, timeout=None):
+            if timeout is not None:
+                # The task completes just after the wait gave up.
+                self.set_result("parsed")
+                raise FutureTimeoutError()
+            return super().result()
+
+    discarded: list[bool] = []
+
+    class FakeExecutor:
+        def submit(self, *args, **kwargs):
+            return FinishesAtTheLimit()
+
+    monkeypatch.setattr(process_pool, "_executor_instance", FakeExecutor)
+    monkeypatch.setattr(
+        process_pool,
+        "_discard_executor",
+        lambda executor, *, terminate: discarded.append(terminate),
+    )
+
+    assert process_pool.run_cpu_bound(os.getpid) == "parsed"
+    assert discarded == []

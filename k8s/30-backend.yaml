@@ -103,6 +103,11 @@ spec:
                 configMapKeyRef:
                   name: spending-tracker-config
                   key: STATEMENT_RETENTION_DAYS
+            - name: PDF_PARSE_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: PDF_PARSE_TIMEOUT_SECONDS
             - name: LLM_SETTINGS_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
