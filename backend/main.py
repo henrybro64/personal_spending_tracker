@@ -135,7 +135,11 @@ from backend.pdf_utils import (  # noqa: E402
     PdfPasswordProtectedError,
     read_statement_pdf,
 )
-from backend.process_pool import shutdown_process_pool  # noqa: E402
+from backend.process_pool import (  # noqa: E402
+    PdfWorkerError,
+    PdfWorkerTimeout,
+    shutdown_process_pool,
+)
 from backend.db import (  # noqa: E402
     bind_request_context,
     clear_request_context,
@@ -311,7 +315,6 @@ class DashboardViewResponse(TypedDict):
     active_currency: DisplayCurrency
     exchange_rate: ExchangeRateMetadata
     summary: SummaryResponse
-    transactions: list[DashboardTransaction]
     sorted_transactions: list[DashboardTransaction]
     unconverted_transactions: list[UnconvertedTransaction]
     merchant_breakdown: list[MerchantBreakdownItem]
@@ -1541,7 +1544,6 @@ def _collect_limited_dashboard(
 ) -> DashboardViewResponse:
     normalized_search = search.strip().lower()
     merchant_filter = selected_merchant.strip()
-    model_rows: list[DashboardTransaction] = []
     unconverted_rows: list[UnconvertedTransaction] = []
     unconverted_currencies: set[str] = set()
     merchant_totals: dict[str, float] = {}
@@ -1572,7 +1574,6 @@ def _collect_limited_dashboard(
         amount_value = float(transaction["amount"])
         model_total += amount_value
         model_count += 1
-        _keep_limited_row(model_rows, transaction, limit)
         if not _transaction_matches_dashboard_filters(
             transaction,
             normalized_search=normalized_search,
@@ -1616,7 +1617,6 @@ def _collect_limited_dashboard(
             unconverted_count=unconverted_count,
             unconverted_currencies=sorted(unconverted_currencies),
         ),
-        "transactions": model_rows,
         "sorted_transactions": _sort_transactions(kept_rows, sort_option),
         "unconverted_transactions": unconverted_rows,
         "merchant_breakdown": merchant_breakdown,
@@ -2312,6 +2312,37 @@ def _open_uploaded_statement(
                 "encryption; try removing the password in a PDF app and "
                 "export a new file."
             ),
+        ) from None
+    except PdfWorkerError as exc:
+        # PdfWorkerTimeout is a PdfWorkerError; the worker is already replaced.
+        timed_out = isinstance(exc, PdfWorkerTimeout)
+        saved_path.unlink(missing_ok=True)
+        logger.warning(
+            "statement upload parse %s user_id=%s",
+            "timed out" if timed_out else "worker crashed",
+            user_id,
+        )
+        record_audit_event(
+            action="statement_upload_parse_failure",
+            status="rejected",
+            user_id=user_id,
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={
+                "file_name": original_name,
+                "reason": "timeout" if timed_out else "worker_error",
+            },
+        )
+        if timed_out:
+            raise HTTPException(
+                status_code=504,
+                detail="This PDF took too long to read. Try a smaller statement.",
+            ) from None
+        raise HTTPException(
+            status_code=422,
+            detail="This PDF could not be read. Please try again or use another file.",
         ) from None
 
 

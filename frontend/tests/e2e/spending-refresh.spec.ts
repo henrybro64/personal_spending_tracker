@@ -13,7 +13,6 @@ function dashboardPayload(merchant: string, total: number) {
       unconverted_transaction_count: 0,
       statement_count_scope: "all_time",
     },
-    transactions: [],
     sorted_transactions: [
       {
         date: "2025-04-21",

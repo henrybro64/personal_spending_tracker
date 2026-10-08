@@ -241,6 +241,136 @@ def test_password_error_round_trips_without_breaking_the_process_pool() -> None:
     assert second.value.had_password is True
 
 
+def test_pdf_worker_recovers_after_the_child_process_dies() -> None:
+    from backend import process_pool
+
+    process_pool.shutdown_process_pool()
+    try:
+        with pytest.raises(process_pool.PdfWorkerError):
+            process_pool.run_cpu_bound(os._exit, 137)  # the worker is killed
+        assert isinstance(process_pool.run_cpu_bound(os.getpid), int)
+    finally:
+        process_pool.shutdown_process_pool()
+
+
+def test_pdf_worker_replaces_a_worker_that_died_while_idle() -> None:
+    import signal
+    import time
+
+    from backend import process_pool
+
+    process_pool.shutdown_process_pool()
+    try:
+        first_pid = process_pool.run_cpu_bound(os.getpid)
+        os.kill(first_pid, signal.SIGKILL)
+        time.sleep(0.5)  # let the pool notice the dead worker
+        second_pid = process_pool.run_cpu_bound(os.getpid)
+        assert second_pid != first_pid
+    finally:
+        process_pool.shutdown_process_pool()
+
+
+def test_pdf_worker_times_out_and_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from backend import process_pool
+
+    monkeypatch.setenv("PDF_PARSE_TIMEOUT_SECONDS", "1")
+    process_pool.shutdown_process_pool()
+    try:
+        started = time.perf_counter()
+        with pytest.raises(process_pool.PdfWorkerTimeout):
+            process_pool.run_cpu_bound(time.sleep, 30)
+        assert time.perf_counter() - started < 10
+        assert isinstance(process_pool.run_cpu_bound(os.getpid), int)
+    finally:
+        process_pool.shutdown_process_pool()
+
+
+def test_pdf_worker_time_limit_does_not_count_time_spent_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from backend import process_pool
+
+    # Each task runs 1.2 s. The second waits for the first, so 2.4 s pass
+    # from its submission, but only its own run time counts toward 2 s.
+    monkeypatch.setenv("PDF_PARSE_TIMEOUT_SECONDS", "2")
+    process_pool.shutdown_process_pool()
+    try:
+        process_pool.run_cpu_bound(os.getpid)  # start the worker up front
+        with ThreadPoolExecutor(max_workers=2) as threads:
+            first = threads.submit(
+                process_pool.run_cpu_bound, process_pool.occupy_child_process, 1.2
+            )
+            second = threads.submit(
+                process_pool.run_cpu_bound, process_pool.occupy_child_process, 1.2
+            )
+            assert isinstance(first.result(timeout=10), int)
+            assert isinstance(second.result(timeout=10), int)
+    finally:
+        process_pool.shutdown_process_pool()
+
+
+def test_pdf_parse_timeout_falls_back_to_default_for_bad_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend import process_pool
+
+    for raw in ("", "abc", "0", "-5", "nan", "inf"):
+        monkeypatch.setenv("PDF_PARSE_TIMEOUT_SECONDS", raw)
+        assert process_pool.pdf_parse_timeout_seconds() == 120.0
+    monkeypatch.setenv("PDF_PARSE_TIMEOUT_SECONDS", "45")
+    assert process_pool.pdf_parse_timeout_seconds() == 45.0
+
+
+@pytest.mark.parametrize(
+    ("error_name", "status_code", "detail_snippet", "reason"),
+    [
+        ("PdfWorkerTimeout", 504, "took too long", "timeout"),
+        ("PdfWorkerError", 422, "could not be read", "worker_error"),
+    ],
+)
+def test_pdf_worker_failure_rejects_upload_and_removes_the_file(
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+    error_name: str,
+    status_code: int,
+    detail_snippet: str,
+    reason: str,
+) -> None:
+    from fastapi import HTTPException
+
+    from backend import process_pool
+
+    audits: list[dict] = []
+    monkeypatch.setattr(api_main, "record_audit_event", lambda **kwargs: audits.append(kwargs))
+
+    def failing_load(path, password):
+        del path, password
+        raise getattr(process_pool, error_name)("worker failed")
+
+    monkeypatch.setattr(api_main, "_load_uploaded_statement", failing_load)
+
+    audit_context = api_main.get_audit_request_context(_upload_request())
+    with pytest.raises(HTTPException) as caught:
+        api_main._store_uploaded_pdf(
+            upload_stream=BytesIO(b"%PDF-1.4 synthetic"),
+            original_name="statement.pdf",
+            content_type="application/pdf",
+            password=None,
+            user_id=1,
+            audit_context=audit_context,
+        )
+
+    assert caught.value.status_code == status_code
+    assert detail_snippet in caught.value.detail
+    assert list(api_main._get_upload_dir(1).glob("*")) == []
+    assert audits[-1]["action"] == "statement_upload_parse_failure"
+    assert audits[-1]["metadata"]["reason"] == reason
+
+
 def test_oversized_upload_is_rejected_without_keeping_the_file(
     api_main,
     monkeypatch: pytest.MonkeyPatch,

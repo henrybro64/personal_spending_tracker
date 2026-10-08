@@ -4,7 +4,7 @@ import {
   Dispatch,
   ReactNode,
   SetStateAction,
-  useDeferredValue,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -40,18 +40,25 @@ import { apiFetchJson } from "./api";
 import {
   DashboardRequestCoordinator,
   type DashboardFilters,
+  type DashboardReadFailures,
+  type DashboardReadPart,
   dashboardLoadKey,
   effectiveSearchQuery,
+  isAbortError,
   lastRefreshLabel,
+  loadDashboardView,
+  loadRecentUploads,
   merchantSlicerEmpty,
-  nextFailureIdAfterLoad,
+  recordDashboardRead,
   recoverableReadFailure,
-  loadDashboardSnapshot,
-  reduceDashboardLoad,
+  reduceDashboardView,
+  reduceRecentUploads,
   refreshAfterUpload,
   runGuardedDashboardLoad,
+  searchDebounceDelay,
   shouldReleaseSearchPin,
 } from "./dashboard-refresh";
+import { useDebouncedValue } from "./use-debounced-value";
 import { useReadRecovery } from "./read-recovery";
 import { useSpendingRevision } from "./server-state";
 import { AuthPage, AuthPanel, SessionCard } from "./auth-card";
@@ -148,7 +155,6 @@ type CategoryBreakdown = {
 type DashboardViewResponse = {
   active_currency: DisplayCurrency;
   summary: SummaryResponse;
-  transactions: Transaction[];
   sorted_transactions: Transaction[];
   merchant_breakdown: MerchantBreakdown[];
   category_breakdown: Array<{
@@ -1424,14 +1430,18 @@ export default function HomePage() {
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardStale, setDashboardStale] = useState(false);
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
-  const deferredSearchQuery = useDeferredValue(searchQuery);
+  // Wait for a pause in typing so each keystroke does not start a server scan.
+  const debouncedSearchQuery = useDebouncedValue(
+    searchQuery,
+    searchDebounceDelay(searchQuery)
+  );
   const [pinnedSearch, setPinnedSearch] = useState<string | null>(null);
   const requestCoordinatorRef = useRef(new DashboardRequestCoordinator());
   const localeRef = useRef(locale);
   localeRef.current = locale;
   const searchForRequest = effectiveSearchQuery(
     searchQuery,
-    deferredSearchQuery,
+    debouncedSearchQuery,
     pinnedSearch
   );
   const requestFilters = useMemo<DashboardFilters>(
@@ -1568,22 +1578,36 @@ export default function HomePage() {
   );
 
   useEffect(() => {
-    if (!shouldReleaseSearchPin(searchQuery, deferredSearchQuery, pinnedSearch)) {
+    if (!shouldReleaseSearchPin(searchQuery, debouncedSearchQuery, pinnedSearch)) {
       return;
     }
     setPinnedSearch(null);
-  }, [deferredSearchQuery, pinnedSearch, searchQuery]);
+  }, [debouncedSearchQuery, pinnedSearch, searchQuery]);
 
   useEffect(() => {
     resetCycle();
   }, [dashboardLoadToken, resetCycle]);
 
+  // The view and recent uploads load separately but share one retry cycle.
+  const readFailuresRef = useRef<DashboardReadFailures>({
+    view: false,
+    uploads: false,
+  });
+  const recordRead = useCallback((part: DashboardReadPart, failed: boolean) => {
+    const next = recordDashboardRead(readFailuresRef.current, part, failed);
+    readFailuresRef.current = next.failures;
+    if (next.failureAction === "bump") {
+      setFailureId((id) => id + 1);
+    } else if (next.failureAction === "clear") {
+      setFailureId(0);
+    }
+  }, []);
+
   useEffect(() => {
     if (authStatus !== "authenticated") {
+      readFailuresRef.current = { view: false, uploads: false };
       setDashboardView(null);
-      setRecentUploads([]);
       setError("");
-      setDashboardError("");
       setDashboardStale(false);
       setFailureId(0);
       setIsDashboardLoading(authStatus === "loading");
@@ -1600,7 +1624,7 @@ export default function HomePage() {
       generation: ticket.generation,
       signal: ticket.signal,
       load: () =>
-        loadDashboardSnapshot<RecentUploadsResponse, DashboardViewResponse>({
+        loadDashboardView<DashboardViewResponse>({
           filters,
           signal: ticket.signal,
           fetchJson: (path, signal) =>
@@ -1610,33 +1634,17 @@ export default function HomePage() {
               { signal }
             ),
         }),
-      apply: (snapshot) => {
-        const next = reduceDashboardLoad(
-          {
-            view: dashboardViewRef.current,
-            uploads: recentUploadsRef.current,
-          },
-          snapshot,
-          {
-            staleData: translate(localeRef.current, "dashboardStaleData"),
-            unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
-          }
-        );
-        if (nextFailureIdAfterLoad({
-          unauthorized: next.unauthorized,
-          failed: Boolean(next.error || next.uploadsError),
-        }) === "bump") {
-          setFailureId((id) => id + 1);
-        } else {
-          setFailureId(0);
-        }
+      apply: (part) => {
+        const next = reduceDashboardView(dashboardViewRef.current, part, {
+          staleData: translate(localeRef.current, "dashboardStaleData"),
+          unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
+        });
+        recordRead("view", Boolean(next.error));
         if (next.unauthorized) {
           void refreshSession();
         }
         setDashboardView(next.view);
-        setRecentUploads(next.uploads);
         setError(next.error);
-        setDashboardError(next.uploadsError);
         setDashboardStale(next.stale);
       },
       onError: (loadError) => {
@@ -1654,13 +1662,13 @@ export default function HomePage() {
           return;
         }
         if (outcome.action === "unauthorized") {
-          setFailureId(0);
+          recordRead("view", false);
           void refreshSession();
           return;
         }
         setError(outcome.message);
         setDashboardStale(hasView);
-        setFailureId((id) => id + 1);
+        recordRead("view", true);
       },
       onSettled: () => {
         setIsDashboardLoading(false);
@@ -1670,7 +1678,60 @@ export default function HomePage() {
     return () => {
       ticket.abort();
     };
-  }, [authStatus, dashboardLoadToken, recoveryTick, refreshSession, requestFilters]);
+  }, [
+    authStatus,
+    dashboardLoadToken,
+    recordRead,
+    recoveryTick,
+    refreshSession,
+    requestFilters,
+  ]);
+
+  // Recent uploads do not depend on the filters. Load them at sign-in, after
+  // data changes (the spending revision), and on a recovery retry.
+  useEffect(() => {
+    if (authStatus !== "authenticated") {
+      setRecentUploads([]);
+      setDashboardError("");
+      return;
+    }
+
+    const controller = new AbortController();
+    const copy = {
+      staleData: translate(localeRef.current, "dashboardStaleData"),
+      unableToRefresh: translate(localeRef.current, "errUnableToRefresh"),
+    };
+    void loadRecentUploads<RecentUploadsResponse>({
+      signal: controller.signal,
+      fetchJson: (path, signal) =>
+        apiFetchJson(path, translate(localeRef.current, "errRequestFailed"), {
+          signal,
+        }),
+    })
+      .then((part) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const next = reduceRecentUploads(recentUploadsRef.current, part, copy);
+        recordRead("uploads", Boolean(next.error));
+        if (next.unauthorized) {
+          void refreshSession();
+        }
+        setRecentUploads(next.uploads);
+        setDashboardError(next.error);
+      })
+      .catch((loadError: unknown) => {
+        if (controller.signal.aborted || isAbortError(loadError)) {
+          return;
+        }
+        recordRead("uploads", true);
+        setDashboardError(copy.unableToRefresh);
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [authStatus, recordRead, recoveryTick, refreshSession, spendingRevision]);
 
   function applyClearedSlicers(filters: DashboardFilters) {
     const nextFilters = refreshAfterUpload(filters);

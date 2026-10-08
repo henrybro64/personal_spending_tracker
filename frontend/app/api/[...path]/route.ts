@@ -11,6 +11,12 @@ const BACKEND =
  * Provider retries in the backend must finish inside this non-batch limit.
  */
 const BATCH_IMPORT_TIMEOUT_MS = 30 * 60 * 1000;
+/**
+ * The backend stops a PDF parse after PDF_PARSE_TIMEOUT_SECONDS (120 s by
+ * default) and may first wait for another PDF to finish. Allow longer here so
+ * the backend's own 504 message reaches the user instead of a proxy error.
+ */
+const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 async function proxyRequest(
@@ -27,7 +33,9 @@ async function proxyRequest(
   const hasBody = !["GET", "HEAD"].includes(request.method);
   const timeoutMs = pathname.startsWith("batch-imports/")
     ? BATCH_IMPORT_TIMEOUT_MS
-    : DEFAULT_TIMEOUT_MS;
+    : pathname === "upload"
+      ? UPLOAD_TIMEOUT_MS
+      : DEFAULT_TIMEOUT_MS;
 
   let backendResponse: Response;
   try {

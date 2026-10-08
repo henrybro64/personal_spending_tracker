@@ -635,3 +635,22 @@ def test_first_registered_user_claims_legacy_single_user_rows(
     assert uploads.status_code == 200
     assert uploads.json()["uploads"][0]["display_name"] == "Legacy Statement.pdf"
     assert Path(uploads.json()["uploads"][0]["file_name"]).name == "legacy-statement.pdf"
+
+
+def test_dashboard_view_does_not_return_the_unused_transactions_list(
+    client: TestClient,
+) -> None:
+    _register_user(client)
+    created = client.post(
+        "/transactions/manual",
+        json={"date": "2026-01-05", "merchant": "A", "amount": 10, "currency": "TWD"},
+    )
+    assert created.status_code == 201, created.text
+
+    view = client.get("/dashboard/view", params={"currency": "TWD"})
+
+    assert view.status_code == 200
+    payload = view.json()
+    assert "transactions" not in payload
+    assert len(payload["sorted_transactions"]) == 1
+    assert payload["summary"]["number_of_transactions"] == 1

@@ -56,56 +56,6 @@ function buildDashboardView(currency: DisplayCurrency) {
       original_currency: string;
       reason: string;
     }>,
-    transactions: [
-      {
-        date: "2025-04-19",
-        merchant: "STARBUCKS STORE 1234",
-        amount: starbucksAmount,
-        category: "Dining",
-        currency,
-        original_amount: 5.75,
-        original_currency: "USD",
-        display_amount: starbucksAmount,
-        display_currency: currency,
-        is_converted: isTwd,
-      },
-      {
-        date: "2025-04-20",
-        merchant: "UBER TRIP",
-        amount: uberAmount,
-        category: "Transport",
-        currency,
-        original_amount: 605,
-        original_currency: "TWD",
-        display_amount: uberAmount,
-        display_currency: currency,
-        is_converted: !isTwd,
-      },
-      {
-        date: "2025-04-21",
-        merchant: "OPENAI API",
-        amount: openaiAmount,
-        category: "Digital Services",
-        currency,
-        original_amount: 20,
-        original_currency: "USD",
-        display_amount: openaiAmount,
-        display_currency: currency,
-        is_converted: isTwd,
-      },
-      {
-        date: "2025-04-22",
-        merchant: "PAYMENT RECEIVED",
-        amount: paymentAmount,
-        category: "Refunds & Credits",
-        currency,
-        original_amount: -100,
-        original_currency: "USD",
-        display_amount: paymentAmount,
-        display_currency: currency,
-        is_converted: isTwd,
-      },
-    ],
     sorted_transactions: [
       {
         date: "2025-04-21",
@@ -475,6 +425,53 @@ test("clearing slicers requests the reset filters once and drops the previous se
   const requestsAfterClear = queries.slice(requestCountBeforeClear);
   expect(requestsAfterClear.length).toBeGreaterThan(0);
   expect(requestsAfterClear.every(isClearedMonthQuery)).toBe(true);
+});
+
+test("typing a search sends one dashboard request and does not reload recent uploads", async ({
+  page,
+}) => {
+  const searches: string[] = [];
+  let uploadsRequests = 0;
+
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/uploads/recent?limit=6", async (route) => {
+    uploadsRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ uploads: [] }),
+    });
+  });
+  await page.route("**/api/dashboard/view**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    searches.push(requestUrl.searchParams.get("search") ?? "");
+    const currency: DisplayCurrency =
+      requestUrl.searchParams.get("currency") === "TWD" ? "TWD" : "USD";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(buildDashboardView(currency)),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("US$4,321.09").first()).toBeVisible();
+
+  const filters = page.getByRole("complementary");
+  await filters.getByLabel("Search").click();
+  await page.keyboard.type("starbucks", { delay: 50 });
+
+  await expect.poll(() => searches.includes("starbucks")).toBe(true);
+  // Leave time for any late keystroke request to show up before counting.
+  await page.waitForTimeout(800);
+  expect(searches.filter((search) => search !== "")).toEqual(["starbucks"]);
+
+  // Other slicers still refresh the view at once, without reloading uploads.
+  const viewRequestsBeforeSlicer = searches.length;
+  await filters.getByRole("button", { name: "Spend", exact: true }).click();
+  await expect.poll(() => searches.length).toBeGreaterThan(viewRequestsBeforeSlicer);
+
+  expect(uploadsRequests).toBe(1);
 });
 
 test("dashboard warns when transactions cannot be converted", async ({ page }) => {

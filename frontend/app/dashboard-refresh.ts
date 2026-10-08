@@ -20,15 +20,6 @@ export type DashboardFailureCopy = {
   unableToRefresh: string;
 };
 
-export type DashboardLoadReduction<TView, TUploads> = {
-  view: TView | null;
-  uploads: TUploads[];
-  error: string;
-  uploadsError: string;
-  stale: boolean;
-  unauthorized: boolean;
-};
-
 const clearedSlicers = {
   searchQuery: "",
   amountFilter: "all",
@@ -66,32 +57,40 @@ export function dashboardLoadKey(
   return `${revision}\n${buildDashboardViewPath(filters)}`;
 }
 
+/** Typing waits this long after the last keystroke before the dashboard reloads. */
+export const SEARCH_DEBOUNCE_MS = 300;
+
+/** Clearing the search applies at once. Typing waits for a pause. */
+export function searchDebounceDelay(searchQuery: string): number {
+  return searchQuery === "" ? 0 : SEARCH_DEBOUNCE_MS;
+}
+
 /**
- * Search is deferred while typing. A mutation that clears it pins the canonical
- * query so a lagging deferred value cannot revive the pre-clear search. The pin
+ * Search is debounced while typing. A mutation that clears it pins the canonical
+ * query so a lagging debounced value cannot revive the pre-clear search. The pin
  * stays in place while the user types a new query, and it releases once the
- * deferred value matches the input.
+ * debounced value matches the input.
  */
 export function effectiveSearchQuery(
   searchQuery: string,
-  deferredSearchQuery: string,
+  debouncedSearchQuery: string,
   pinnedSearch: string | null
 ): string {
-  if (pinnedSearch !== null && deferredSearchQuery !== searchQuery) {
+  if (pinnedSearch !== null && debouncedSearchQuery !== searchQuery) {
     return pinnedSearch;
   }
-  return deferredSearchQuery;
+  return debouncedSearchQuery;
 }
 
 export function shouldReleaseSearchPin(
   searchQuery: string,
-  deferredSearchQuery: string,
+  debouncedSearchQuery: string,
   pinnedSearch: string | null
 ): boolean {
   if (pinnedSearch === null) {
     return false;
   }
-  return deferredSearchQuery === searchQuery;
+  return debouncedSearchQuery === searchQuery;
 }
 
 export function isAbortError(error: unknown): boolean {
@@ -100,16 +99,6 @@ export function isAbortError(error: unknown): boolean {
 
 export function isUnauthorizedError(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
-}
-
-export function nextFailureIdAfterLoad(options: {
-  unauthorized: boolean;
-  failed: boolean;
-}): "clear" | "bump" {
-  if (options.unauthorized || !options.failed) {
-    return "clear";
-  }
-  return "bump";
 }
 
 export function lastRefreshLabel(options: {
@@ -184,27 +173,7 @@ export function recoverableReadFailure(
   };
 }
 
-export function reduceDashboardLoad<TView, TUploads>(
-  current: { view: TView | null; uploads: TUploads[] },
-  snapshot: {
-    uploads: SnapshotPart<{ uploads: TUploads[] }>;
-    view: SnapshotPart<TView>;
-  },
-  copy: DashboardFailureCopy
-): DashboardLoadReduction<TView, TUploads> {
-  const viewResult = reduceView(current.view, snapshot.view, copy);
-  const uploadsResult = reduceUploads(current.uploads, snapshot.uploads, copy);
-  return {
-    view: viewResult.view,
-    uploads: uploadsResult.uploads,
-    error: viewResult.error,
-    uploadsError: uploadsResult.error,
-    stale: viewResult.stale,
-    unauthorized: viewResult.unauthorized || uploadsResult.unauthorized,
-  };
-}
-
-function reduceView<TView>(
+export function reduceDashboardView<TView>(
   current: TView | null,
   part: SnapshotPart<TView>,
   copy: DashboardFailureCopy
@@ -224,7 +193,7 @@ function reduceView<TView>(
   };
 }
 
-function reduceUploads<TUploads>(
+export function reduceRecentUploads<TUploads>(
   current: TUploads[],
   part: SnapshotPart<{ uploads: TUploads[] }>,
   copy: DashboardFailureCopy
@@ -269,32 +238,74 @@ export class DashboardRequestCoordinator {
   }
 }
 
-export async function loadDashboardSnapshot<TUploads, TView>(options: {
+export const RECENT_UPLOADS_PATH = "/uploads/recent?limit=6";
+
+type FetchJson = <T>(path: string, signal: AbortSignal) => Promise<T>;
+
+/** Read one path. An abort rethrows; any other failure becomes an error part. */
+async function readSnapshotPart<T>(
+  path: string,
+  signal: AbortSignal,
+  fetchJson: FetchJson
+): Promise<SnapshotPart<T>> {
+  try {
+    return { status: "ok", value: await fetchJson<T>(path, signal) };
+  } catch (error) {
+    if (isAbortError(error) || signal.aborted) {
+      throw error instanceof Error
+        ? error
+        : new DOMException("The operation was aborted.", "AbortError");
+    }
+    return { status: "error", error };
+  }
+}
+
+/** The dashboard view depends on the filters, so it reloads when they change. */
+export function loadDashboardView<TView>(options: {
   filters: DashboardFilters;
   signal: AbortSignal;
-  fetchJson: <T>(path: string, signal: AbortSignal) => Promise<T>;
-}): Promise<{ uploads: SnapshotPart<TUploads>; view: SnapshotPart<TView> }> {
-  async function read<T>(path: string): Promise<SnapshotPart<T>> {
-    try {
-      return {
-        status: "ok",
-        value: await options.fetchJson<T>(path, options.signal),
-      };
-    } catch (error) {
-      if (isAbortError(error) || options.signal.aborted) {
-        throw error instanceof Error
-          ? error
-          : new DOMException("The operation was aborted.", "AbortError");
-      }
-      return { status: "error", error };
-    }
-  }
+  fetchJson: FetchJson;
+}): Promise<SnapshotPart<TView>> {
+  return readSnapshotPart<TView>(
+    buildDashboardViewPath(options.filters),
+    options.signal,
+    options.fetchJson
+  );
+}
 
-  const [uploads, view] = await Promise.all([
-    read<TUploads>("/uploads/recent?limit=6"),
-    read<TView>(buildDashboardViewPath(options.filters)),
-  ]);
-  return { uploads, view };
+/** Recent uploads ignore the filters, so they reload only after data changes. */
+export function loadRecentUploads<TUploads>(options: {
+  signal: AbortSignal;
+  fetchJson: FetchJson;
+}): Promise<SnapshotPart<TUploads>> {
+  return readSnapshotPart<TUploads>(
+    RECENT_UPLOADS_PATH,
+    options.signal,
+    options.fetchJson
+  );
+}
+
+export type DashboardReadPart = "view" | "uploads";
+export type DashboardReadFailures = Record<DashboardReadPart, boolean>;
+
+/**
+ * The view and recent uploads load separately but share one retry cycle.
+ * A new failure bumps it. A success clears it only when the other read is
+ * healthy too, so one read's success cannot cancel the other's retry.
+ */
+export function recordDashboardRead(
+  failures: DashboardReadFailures,
+  part: DashboardReadPart,
+  failed: boolean
+): { failures: DashboardReadFailures; failureAction: "clear" | "bump" | "keep" } {
+  const next = { ...failures, [part]: failed };
+  if (failed) {
+    return { failures: next, failureAction: "bump" };
+  }
+  return {
+    failures: next,
+    failureAction: next.view || next.uploads ? "keep" : "clear",
+  };
 }
 
 export async function runGuardedDashboardLoad<T>(options: {
