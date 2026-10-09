@@ -31,6 +31,7 @@ class Transaction(TypedDict):
     base_currency: NotRequired[str]
     exchange_rate: NotRequired[float | None]
     exchange_rate_date: NotRequired[str | None]
+    card_last4: NotRequired[str | None]
 
 
 CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [

@@ -1,5 +1,6 @@
 import os
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Literal, TypedDict
 
 import psycopg
@@ -13,6 +14,10 @@ from backend.currency import (
     normalize_supported_currency_code,
 )
 from backend.parser import Transaction, categorize_merchant
+from backend.transaction_source import (
+    normalize_merchant_for_source_key,
+    source_keys_for_transactions,
+)
 
 
 class DuplicateUsernameError(Exception):
@@ -996,6 +1001,136 @@ def create_statement_upload(
     }
 
 
+def _quantized_amount(amount: float) -> str:
+    return f"{Decimal(str(amount)).quantize(Decimal('0.01')):.2f}"
+
+
+def _legacy_row_matches_transaction(
+    *,
+    legacy_date: str,
+    legacy_merchant: str,
+    legacy_amount: float,
+    legacy_currency: str,
+    transaction: Transaction,
+    original_currency: str,
+) -> bool:
+    if legacy_date != transaction["date"].strip():
+        return False
+    merchants_match = normalize_merchant_for_source_key(
+        legacy_merchant
+    ) == normalize_merchant_for_source_key(transaction["merchant"])
+    amounts_match = _quantized_amount(legacy_amount) == _quantized_amount(
+        float(transaction["amount"])
+    )
+    currencies_match = (
+        normalize_supported_currency_code(
+            legacy_currency,
+            default=DEFAULT_BASE_CURRENCY,
+        )
+        == original_currency
+    )
+    return merchants_match and amounts_match and currencies_match
+
+
+def _fetch_legacy_null_key_rows(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    dates: list[str],
+) -> list[tuple[Any, ...]]:
+    cursor.execute(
+        """
+        SELECT
+            id,
+            date,
+            merchant,
+            COALESCE(original_amount, amount) AS amount,
+            COALESCE(NULLIF(original_currency, ''), NULLIF(currency, ''), 'TWD')
+                AS currency
+        FROM transactions
+        WHERE user_id = %s
+          AND source_key IS NULL
+          AND date = ANY(%s)
+        ORDER BY date ASC, id ASC
+        """,
+        (user_id, dates),
+    )
+    return list(cursor.fetchall())
+
+
+def _try_claim_legacy_row(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    source_key: str,
+    legacy_id: int,
+) -> bool:
+    cursor.execute(
+        """
+        UPDATE transactions
+        SET source_key = %s
+        WHERE id = %s
+          AND user_id = %s
+          AND source_key IS NULL
+        """,
+        (source_key, legacy_id, user_id),
+    )
+    return int(cursor.rowcount or 0) > 0
+
+
+def _backfill_legacy_source_keys(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    transactions: list[Transaction],
+    source_keys: list[str],
+) -> set[str]:
+    """Attach keys to pre-migration NULL rows that match; return claimed keys."""
+
+    dates = sorted({transaction["date"].strip() for transaction in transactions})
+    if not dates:
+        return set()
+
+    legacy_rows = _fetch_legacy_null_key_rows(
+        cursor, user_id=user_id, dates=dates
+    )
+    if not legacy_rows:
+        return set()
+
+    claimed_keys: set[str] = set()
+    claimed_legacy_ids: set[int] = set()
+    for transaction, source_key in zip(transactions, source_keys, strict=True):
+        if source_key in claimed_keys:
+            continue
+        original_currency = normalize_supported_currency_code(
+            transaction.get("currency"),
+            default=DEFAULT_BASE_CURRENCY,
+        )
+        for row in legacy_rows:
+            legacy_id = int(row[0])
+            if legacy_id in claimed_legacy_ids:
+                continue
+            if not _legacy_row_matches_transaction(
+                legacy_date=str(row[1]),
+                legacy_merchant=str(row[2]),
+                legacy_amount=float(row[3]),
+                legacy_currency=str(row[4]),
+                transaction=transaction,
+                original_currency=original_currency,
+            ):
+                continue
+            if _try_claim_legacy_row(
+                cursor,
+                user_id=user_id,
+                source_key=source_key,
+                legacy_id=legacy_id,
+            ):
+                claimed_keys.add(source_key)
+                claimed_legacy_ids.add(legacy_id)
+            break
+    return claimed_keys
+
+
 def insert_transactions(
     transactions: list[Transaction],
     *,
@@ -1004,6 +1139,8 @@ def insert_transactions(
     file_fingerprint: str | None = None,
     original_file_name: str | None = None,
     statement_upload_id: int | None = None,
+    source_keys: list[str] | None = None,
+    statement_scope: str = "",
     database_url: str | None = None,
 ) -> int:
     if not transactions:
@@ -1011,8 +1148,15 @@ def insert_transactions(
 
     resolved_database_url = _resolve_database_url(database_url)
     display_name = original_file_name or file_name
-    insert_rows: list[tuple[object, ...]] = []
-    for transaction in transactions:
+    resolved_keys = source_keys or source_keys_for_transactions(
+        transactions,
+        statement_scope=statement_scope or (file_fingerprint or ""),
+    )
+    if len(resolved_keys) != len(transactions):
+        raise ValueError("source_keys length must match transactions")
+
+    prepared: list[tuple[Transaction, str, tuple[object, ...]]] = []
+    for transaction, source_key in zip(transactions, resolved_keys, strict=True):
         original_amount = float(transaction["amount"])
         original_currency = normalize_supported_currency_code(
             transaction.get("currency"),
@@ -1037,27 +1181,32 @@ def insert_transactions(
             "exchange_rate_date",
             transaction["date"] if normalized_exchange_rate is not None else None,
         )
-        insert_rows.append(
+        prepared.append(
             (
-                user_id,
-                statement_upload_id,
-                transaction["date"],
-                transaction["merchant"],
-                original_amount,
-                file_name,
-                display_name,
-                _normalize_category_for_storage(
-                    transaction.get("category"), original_amount
+                transaction,
+                source_key,
+                (
+                    user_id,
+                    statement_upload_id,
+                    transaction["date"],
+                    transaction["merchant"],
+                    original_amount,
+                    file_name,
+                    display_name,
+                    _normalize_category_for_storage(
+                        transaction.get("category"), original_amount
+                    ),
+                    file_fingerprint,
+                    None,
+                    original_currency,
+                    original_amount,
+                    original_currency,
+                    base_amount,
+                    normalized_base_currency,
+                    normalized_exchange_rate,
+                    exchange_rate_date,
+                    source_key,
                 ),
-                file_fingerprint,
-                None,
-                original_currency,
-                original_amount,
-                original_currency,
-                base_amount,
-                normalized_base_currency,
-                normalized_exchange_rate,
-                exchange_rate_date,
             )
         )
 
@@ -1067,37 +1216,55 @@ def insert_transactions(
         statement_timeout_ms=None,
     ) as connection:
         with connection.cursor() as cursor:
-            cursor.executemany(
-                """
-                INSERT INTO transactions (
-                    user_id,
-                    statement_upload_id,
-                    date,
-                    merchant,
-                    amount,
-                    file_name,
-                    original_file_name,
-                    category,
-                    file_fingerprint,
-                    payment_method,
-                    currency,
-                    original_amount,
-                    original_currency,
-                    base_amount,
-                    base_currency,
-                    exchange_rate,
-                    exchange_rate_date
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s
-                )
-                """,
-                insert_rows,
+            claimed_keys = _backfill_legacy_source_keys(
+                cursor,
+                user_id=user_id,
+                transactions=transactions,
+                source_keys=resolved_keys,
             )
+            insert_rows = [
+                row
+                for transaction, source_key, row in prepared
+                if source_key not in claimed_keys
+            ]
+            inserted = 0
+            if insert_rows:
+                cursor.executemany(
+                    """
+                    INSERT INTO transactions (
+                        user_id,
+                        statement_upload_id,
+                        date,
+                        merchant,
+                        amount,
+                        file_name,
+                        original_file_name,
+                        category,
+                        file_fingerprint,
+                        payment_method,
+                        currency,
+                        original_amount,
+                        original_currency,
+                        base_amount,
+                        base_currency,
+                        exchange_rate,
+                        exchange_rate_date,
+                        source_key
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (user_id, source_key)
+                        WHERE source_key IS NOT NULL
+                    DO NOTHING
+                    """,
+                    insert_rows,
+                )
+                inserted = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
         connection.commit()
 
-    return len(transactions)
+    return inserted
 
 
 def insert_manual_transaction(

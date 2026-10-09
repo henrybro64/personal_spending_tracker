@@ -125,6 +125,10 @@ from backend.currency import (  # noqa: E402
     normalize_supported_currency_code,
 )
 from backend.parser import Transaction  # noqa: E402
+from backend.transaction_source import (  # noqa: E402
+    statement_content_fingerprint,
+    with_statement_card_last4,
+)
 from backend.spending import (  # noqa: E402
     UnconvertedTransaction,
     iter_spending_partition,
@@ -1870,13 +1874,12 @@ def import_batch_content(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if payload.destination == "dashboard":
+        content_fingerprint = sha256(payload.content.encode("utf-8")).hexdigest()
         upload_record = create_statement_upload(
             user_id=current_user["id"],
             original_file_name=payload.source_name,
             stored_file_name=f"import-{uuid4().hex[:12]}.json",
-            file_fingerprint_sha256=sha256(
-                payload.content.encode("utf-8")
-            ).hexdigest(),
+            file_fingerprint_sha256=content_fingerprint,
             parse_status="imported",
             currency=payload.currency.upper(),
         )
@@ -1887,6 +1890,7 @@ def import_batch_content(
                 "amount": item.amount,
                 "category": item.category,
                 "currency": item.currency,
+                "card_last4": item.card_last4 or "",
             }
             for item in transactions
         ]
@@ -1894,9 +1898,10 @@ def import_batch_content(
             dashboard_rows,
             user_id=current_user["id"],
             file_name=upload_record["file_name"],
-            file_fingerprint=sha256(payload.content.encode("utf-8")).hexdigest(),
+            file_fingerprint=content_fingerprint,
             original_file_name=payload.source_name,
             statement_upload_id=upload_record["id"],
+            statement_scope=content_fingerprint,
         )
         return {
             "destination": "dashboard",
@@ -2402,16 +2407,17 @@ def _store_uploaded_pdf(
     upload_dir = _get_upload_dir(user_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
     temp_path = upload_dir / f".tmp-{uuid4().hex}.pdf"
-    sha256_fingerprint = _fingerprint_uploaded_pdf(
+    pdf_fingerprint = _fingerprint_uploaded_pdf(
         upload_stream,
         temp_path,
         user_id=user_id,
         original_name=original_name,
         audit_context=audit_context,
     )
+    # Exact same PDF bytes (legacy or re-upload) still short-circuit early.
     existing_upload = get_existing_upload_by_fingerprint(
         user_id=user_id,
-        file_fingerprint_sha256=sha256_fingerprint,
+        file_fingerprint_sha256=pdf_fingerprint,
     )
     if existing_upload:
         temp_path.unlink(missing_ok=True)
@@ -2433,6 +2439,25 @@ def _store_uploaded_pdf(
         audit_context=audit_context,
     )
     display_name = original_name or saved_name
+    transactions = with_statement_card_last4(
+        transactions,
+        extracted_text,
+        file_name=display_name,
+    )
+    # Shared with batch merge: fingerprint extracted text, not PDF bytes.
+    text_fingerprint = statement_content_fingerprint(extracted_text)
+    existing_by_text = get_existing_upload_by_fingerprint(
+        user_id=user_id,
+        file_fingerprint_sha256=text_fingerprint,
+    )
+    if existing_by_text:
+        saved_path.unlink(missing_ok=True)
+        _reject_duplicate_upload(
+            existing_upload=existing_by_text,
+            user_id=user_id,
+            original_name=original_name,
+            audit_context=audit_context,
+        )
 
     parse_reason: str | None = None
     parse_status = "parsed"
@@ -2447,7 +2472,7 @@ def _store_uploaded_pdf(
             user_id=user_id,
             original_file_name=display_name,
             stored_file_name=saved_name,
-            file_fingerprint_sha256=sha256_fingerprint,
+            file_fingerprint_sha256=text_fingerprint,
             parse_status=parse_status,
             parse_reason=parse_reason,
             currency=transactions[0].get("currency") if transactions else None,
@@ -2457,7 +2482,7 @@ def _store_uploaded_pdf(
         _reject_duplicate_upload(
             existing_upload=get_existing_upload_by_fingerprint(
                 user_id=user_id,
-                file_fingerprint_sha256=sha256_fingerprint,
+                file_fingerprint_sha256=text_fingerprint,
             ),
             user_id=user_id,
             original_name=original_name,
@@ -2467,9 +2492,10 @@ def _store_uploaded_pdf(
         transactions,
         user_id=user_id,
         file_name=saved_name,
-        file_fingerprint=sha256_fingerprint,
+        file_fingerprint=text_fingerprint,
         original_file_name=display_name,
         statement_upload_id=upload_record["id"],
+        statement_scope=text_fingerprint,
     )
     record_audit_event(
         action="statement_upload_success",

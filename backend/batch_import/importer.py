@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
+
+from backend.transaction_source import statement_content_fingerprint
 
 from .category import CategoryEngine
 from .models import BatchImportResult, NormalizedTransaction
@@ -64,6 +67,7 @@ class StatementImporter:
         for source_path in self._iter_source_files():
             try:
                 statement_text = self._load_statement_text(source_path)
+                content_sha256 = statement_content_fingerprint(statement_text)
                 parser = resolve_parser(source_path.name, statement_text)
                 if parser is None:
                     skipped_files.append(
@@ -102,7 +106,10 @@ class StatementImporter:
                     )
                     continue
 
-                transactions.extend(parsed_transactions)
+                transactions.extend(
+                    replace(transaction, statement_content_sha256=content_sha256)
+                    for transaction in parsed_transactions
+                )
                 parsed_files.append(source_path.name)
             except _PDF_READ_ERRORS as exc:
                 skipped_files.append(

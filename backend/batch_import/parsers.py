@@ -17,6 +17,7 @@ from backend.statement_parse_utils import (
     parse_ctbc_roc_statement_line,
     parse_esun_statement_line,
 )
+from backend.transaction_source import card_last4_from_statement
 
 from .category import CategoryEngine
 from .models import NormalizedTransaction
@@ -35,12 +36,8 @@ def _infer_us_short_date(
     )
 
 
-def _extract_last4(text: str, patterns: tuple[re.Pattern[str], ...]) -> str | None:
-    for pattern in patterns:
-        match = pattern.search(text)
-        if match:
-            return match.group("last4")
-    return None
+def _card_last4(text: str, *, file_name: str = "") -> str | None:
+    return card_last4_from_statement(text, file_name=file_name) or None
 
 
 def _normalize_line(line: str) -> str:
@@ -105,10 +102,6 @@ class AmexStatementParser(BaseStatementParser):
         r"(?P<merchant>.+?)\s+"
         r"(?P<amount>-?\$?\d[\d,]*(?:\.\d{2})?)$"
     )
-    _last4_patterns = (
-        re.compile(r"Card ending\s+(?P<last4>\d{4})", re.IGNORECASE),
-        re.compile(r"Account ending\s+(?P<last4>\d{4})", re.IGNORECASE),
-    )
     _skip_tokens = (
         "AMERICAN EXPRESS",
         "DATE DESCRIPTION AMOUNT",
@@ -136,7 +129,7 @@ class AmexStatementParser(BaseStatementParser):
     ) -> list[NormalizedTransaction]:
         normalized_text = normalize_statement_text(statement_text)
         statement_date = extract_us_statement_date(normalized_text)
-        card_last4 = _extract_last4(normalized_text, self._last4_patterns)
+        card_last4 = _card_last4(normalized_text, file_name=source_path.name)
         transactions: list[NormalizedTransaction] = []
 
         for raw_line in normalized_text.splitlines():
@@ -181,10 +174,6 @@ class ChaseStatementParser(BaseStatementParser):
         r"(?P<merchant>.+?)\s+"
         r"(?P<amount>-?\$?\d[\d,]*(?:\.\d{2})?)$"
     )
-    _last4_patterns = (
-        re.compile(r"ending in\s+(?P<last4>\d{4})", re.IGNORECASE),
-        re.compile(r"statements-(?P<last4>\d{4})-", re.IGNORECASE),
-    )
     _skip_tokens = (
         "JPMORGAN CHASE",
         "TRANS DATE POST DATE DESCRIPTION AMOUNT",
@@ -207,9 +196,7 @@ class ChaseStatementParser(BaseStatementParser):
     ) -> list[NormalizedTransaction]:
         normalized_text = normalize_statement_text(statement_text)
         statement_period = extract_us_statement_period(normalized_text)
-        card_last4 = _extract_last4(
-            f"{source_path.name}\n{normalized_text}", self._last4_patterns
-        )
+        card_last4 = _card_last4(normalized_text, file_name=source_path.name)
         transactions: list[NormalizedTransaction] = []
 
         for raw_line in normalized_text.splitlines():
@@ -245,10 +232,6 @@ class ChaseStatementParser(BaseStatementParser):
 
 
 class CtbcDailyStatementParser(BaseStatementParser):
-    _last4_patterns = (
-        re.compile(r"末四碼\s*(?P<last4>\d{4})"),
-        re.compile(r"卡號末四碼\s*(?P<last4>\d{4})"),
-    )
     _skip_tokens = (
         "DAILYSTMT",
         "中國信託",
@@ -270,7 +253,7 @@ class CtbcDailyStatementParser(BaseStatementParser):
         category_engine: CategoryEngine,
     ) -> list[NormalizedTransaction]:
         normalized_text = normalize_statement_text(statement_text)
-        card_last4 = _extract_last4(normalized_text, self._last4_patterns)
+        card_last4 = _card_last4(normalized_text, file_name=source_path.name)
         transactions: list[NormalizedTransaction] = []
 
         for raw_line in normalized_text.splitlines():
@@ -323,10 +306,6 @@ class DbsStatementParser(BaseStatementParser):
         r"(?P<merchant>.+?)\s+"
         r"(?P<amount>-?[\d,]+(?:\.\d{2})?)$"
     )
-    _last4_patterns = (
-        re.compile(r"Ending\s+(?P<last4>\d{4})", re.IGNORECASE),
-        re.compile(r"末四碼\s*(?P<last4>\d{4})"),
-    )
     _skip_tokens = (
         "DBS-ESTATEMENT",
         "CARD NUMBER",
@@ -348,7 +327,7 @@ class DbsStatementParser(BaseStatementParser):
         category_engine: CategoryEngine,
     ) -> list[NormalizedTransaction]:
         normalized_text = normalize_statement_text(statement_text)
-        card_last4 = _extract_last4(normalized_text, self._last4_patterns)
+        card_last4 = _card_last4(normalized_text, file_name=source_path.name)
         transactions: list[NormalizedTransaction] = []
 
         for raw_line in normalized_text.splitlines():
@@ -382,10 +361,6 @@ class DbsStatementParser(BaseStatementParser):
 
 
 class EsunStatementParser(BaseStatementParser):
-    _last4_patterns = (
-        re.compile(r"(?P<last4>\d{4})\s*[-－]\s*XXXX\s*[-－]\s*XXXX\s*[-－]\s*\d{4}"),
-        re.compile(r"末四碼\s*(?P<last4>\d{4})"),
-    )
     _skip_tokens = (
         "ESUN_ESTATEMENT",
         "玉山銀行",
@@ -418,7 +393,7 @@ class EsunStatementParser(BaseStatementParser):
         if roc_year is None:
             return []
 
-        card_last4 = _extract_last4(normalized_text, self._last4_patterns)
+        card_last4 = _card_last4(normalized_text, file_name=source_path.name)
         transactions: list[NormalizedTransaction] = []
 
         for raw_line in normalized_text.splitlines():

@@ -48,6 +48,12 @@ def _write_statement(folder: Path) -> None:
     (folder / "2026-01-29.txt").write_text(AMEX_STATEMENT, encoding="utf-8")
 
 
+def _statement_for_user(user_id: int, text: str = AMEX_STATEMENT) -> None:
+    folder = Path(os.environ["BATCH_TEXT_SOURCE_DIR"]) / f"user-{user_id}"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "2026-01-29.txt").write_text(text, encoding="utf-8")
+
+
 @pytest.fixture
 def batch_client(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     batch_root = tmp_path / "batch"
@@ -263,3 +269,131 @@ def test_batch_endpoints_accept_no_file_or_directory_paths(api_main) -> None:
 
     assert checked >= 12
     assert offenders == []
+
+
+def test_rerunning_batch_import_and_merging_again_does_not_duplicate(
+    client: TestClient,
+) -> None:
+    _statement_for_user(1)
+    _register(client, "alice")
+    merged_counts: list[int] = []
+    skipped_counts: list[int] = []
+    for _ in range(2):
+        run = client.post("/batch-imports/run", json={}).json()["run"]
+        merged = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert merged.status_code == 200, merged.text
+        merged_counts.append(merged.json()["merged_count"])
+        skipped_counts.append(merged.json()["skipped_count"])
+    rows = client.get("/transactions").json()["transactions"]
+    assert sorted(row["merchant"] for row in rows) == [
+        "IKEA",
+        "STARBUCKS",
+        "STARBUCKS",
+    ]
+    assert merged_counts == [3, 0]
+    assert skipped_counts == [0, 3]
+
+
+def test_remerge_after_upgrade_backfills_legacy_null_source_keys(
+    client: TestClient,
+    database_url: str,
+) -> None:
+    """Rows imported before source_key existed must not duplicate on re-merge."""
+    import psycopg
+
+    _statement_for_user(1)
+    _register(client, "alice")
+    run = client.post("/batch-imports/run", json={}).json()["run"]
+    merged = client.post("/batch-imports/merge", json={"run_id": run["run_id"]})
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["merged_count"] == 3
+
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE transactions SET source_key = NULL WHERE user_id = 1"
+            )
+        connection.commit()
+
+    run_again = client.post("/batch-imports/run", json={}).json()["run"]
+    rematch = client.post(
+        "/batch-imports/merge",
+        json={"run_id": run_again["run_id"]},
+    )
+    assert rematch.status_code == 200, rematch.text
+    assert rematch.json()["merged_count"] == 0
+    rows = client.get("/transactions").json()["transactions"]
+    assert sorted(row["merchant"] for row in rows) == [
+        "IKEA",
+        "STARBUCKS",
+        "STARBUCKS",
+    ]
+
+
+def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
+    client: TestClient,
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _statement_for_user(1)
+    _register(client, "alice")
+
+    def fake_load(path, password=None):
+        del path, password
+        return AMEX_STATEMENT, [
+            {
+                "date": "2026-01-05",
+                "merchant": "STARBUCKS",
+                "amount": 5.75,
+                "category": "Dining / Food",
+                "currency": "USD",
+            },
+            {
+                "date": "2026-01-05",
+                "merchant": "STARBUCKS",
+                "amount": 5.75,
+                "category": "Dining / Food",
+                "currency": "USD",
+            },
+            {
+                "date": "2026-01-09",
+                "merchant": "IKEA",
+                "amount": 80.0,
+                "category": "Shopping",
+                "currency": "USD",
+            },
+        ]
+
+    monkeypatch.setattr(api_main, "_load_uploaded_statement", fake_load)
+    uploaded = client.post(
+        "/upload",
+        files={
+            "file": (
+                "statement.pdf",
+                b"%PDF-1.4 synthetic",
+                "application/pdf",
+            )
+        },
+    )
+    assert uploaded.status_code == 201, uploaded.text
+
+    run = client.post("/batch-imports/run", json={})
+    assert run.status_code == 201, run.text
+    merged = client.post(
+        "/batch-imports/merge",
+        json={"run_id": run.json()["run"]["run_id"]},
+    )
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["merged_count"] == 0
+    assert merged.json()["skipped_count"] == 3
+    rows = client.get("/transactions").json()["transactions"]
+    assert sorted(row["merchant"] for row in rows) == [
+        "IKEA",
+        "STARBUCKS",
+        "STARBUCKS",
+    ]
+    # Shared text fingerprint means batch reuses the upload record.
+    assert len(client.get("/uploads/recent").json()["uploads"]) == 1
