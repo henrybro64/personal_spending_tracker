@@ -9,6 +9,7 @@ occurrence number.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from decimal import Decimal
 from hashlib import sha256
 
@@ -16,6 +17,8 @@ from backend.currency import DEFAULT_BASE_CURRENCY, normalize_supported_currency
 from backend.parser import Transaction
 from backend.statement_parse_utils import normalize_statement_text
 from backend.transaction_exclusions import PAYMENT_CATEGORY
+
+AmountTextFn = Callable[..., str]
 
 # Shared across upload stamping and every batch parser so the same statement
 # text yields the same card last4 on every import path.
@@ -138,7 +141,7 @@ def _identity(
     transaction: Transaction,
     *,
     statement_scope: str = "",
-    amount_text_fn=_amount_text,
+    amount_text_fn: AmountTextFn = _amount_text,
 ) -> tuple[str, str, str, str, str, str]:
     category = str(transaction.get("category") or "")
     return (
@@ -155,7 +158,7 @@ def _keys_for_transactions(
     transactions: list[Transaction],
     *,
     statement_scope: str = "",
-    amount_text_fn=_amount_text,
+    amount_text_fn: AmountTextFn = _amount_text,
 ) -> list[str]:
     seen: dict[tuple[str, str, str, str, str, str], int] = {}
     keys: list[str] = []

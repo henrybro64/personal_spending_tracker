@@ -1270,5 +1270,99 @@ def test_legacy_payment_row_leaves_statement_amount_null(tmp_path):
     assert updated["amount"] == 25.0
 
 
+def test_coerced_payment_statement_amount_is_cleared_on_upgrade(tmp_path):
+    """First #74 backfill copied amount into statement_amount for payments."""
+    import sqlite3
+
+    from backend.batch_import.models import NormalizedTransaction
+
+    store = BatchImportStore(tmp_path / "batch.sqlite3")
+    store.initialize()
+    run_id, _, _ = store.record_import_run(
+        [
+            NormalizedTransaction(
+                statement_file="s.txt",
+                bank="Chase",
+                card_last4=None,
+                transaction_date="2026-01-09",
+                posted_date=None,
+                merchant_raw="APPLE PAYMENT SERVICE",
+                amount=-25.0,
+                currency="USD",
+                transaction_type="payment_or_credit",
+                category="Payment / Credit",
+                exclude_from_spending=True,
+                needs_review=True,
+                # Simulate the bad first-upgrade backfill / omitted printed amount.
+                statement_amount=None,
+            )
+        ],
+        pdf_source_dir="",
+        text_source_dir="",
+        csv_output_path="",
+        statement_count=1,
+    )
+    with sqlite3.connect(tmp_path / "batch.sqlite3") as connection:
+        connection.execute(
+            """
+            UPDATE imported_transactions
+            SET statement_amount = amount
+            WHERE transaction_type = 'payment_or_credit'
+            """
+        )
+        connection.commit()
+
+    store.initialize()
+    with sqlite3.connect(tmp_path / "batch.sqlite3") as connection:
+        row = connection.execute(
+            "SELECT statement_amount FROM imported_transactions"
+        ).fetchone()
+    assert row == (None,)
+
+    row_id = store.list_transactions(run_id=run_id)[0]["id"]
+    updated = store.update_transaction_review(
+        row_id,
+        category="Shopping / Online Retail",
+        exclude_from_spending=False,
+        save_rule=False,
+    )
+    assert updated["amount"] == 25.0
+
+
+def test_payment_without_printed_amount_does_not_freeze_coerced_sign(tmp_path):
+    from backend.batch_import.models import NormalizedTransaction
+    import sqlite3
+
+    store = BatchImportStore(tmp_path / "batch.sqlite3")
+    store.initialize()
+    store.record_import_run(
+        [
+            NormalizedTransaction(
+                statement_file="s.txt",
+                bank="Amex",
+                card_last4="1001",
+                transaction_date="2026-01-05",
+                posted_date=None,
+                merchant_raw="THANK YOU PAYMENT",
+                amount=-100.0,
+                currency="USD",
+                transaction_type="payment_or_credit",
+                category="Payment / Credit",
+                exclude_from_spending=True,
+                needs_review=False,
+            )
+        ],
+        pdf_source_dir="",
+        text_source_dir="",
+        csv_output_path="",
+        statement_count=1,
+    )
+    with sqlite3.connect(tmp_path / "batch.sqlite3") as connection:
+        row = connection.execute(
+            "SELECT amount, statement_amount FROM imported_transactions"
+        ).fetchone()
+    assert row == (-100.0, None)
+
+
 if __name__ == "__main__":
     unittest.main()

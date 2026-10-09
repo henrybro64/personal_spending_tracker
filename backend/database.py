@@ -1138,6 +1138,7 @@ def _claim_pre_sign_fix_source_keys(
     user_id: int,
     source_keys: list[str],
     legacy_keys: list[str],
+    already_claimed: set[str] | None = None,
 ) -> set[str]:
     """Treat pre-#74 amount hashes as duplicates of the new signed keys.
 
@@ -1145,24 +1146,37 @@ def _claim_pre_sign_fix_source_keys(
     inserting a second copy under the signed amount. Migrates the stored key
     forward when safe.
     """
-    claimed_keys: set[str] = set()
-    for new_key, legacy_key in zip(source_keys, legacy_keys, strict=True):
-        if new_key in claimed_keys or new_key == legacy_key:
-            continue
-        cursor.execute(
-            """
-            SELECT source_key
-            FROM transactions
-            WHERE user_id = %s
-              AND source_key = ANY(%s)
-            """,
-            (user_id, [new_key, legacy_key]),
-        )
-        existing = {str(row[0]) for row in cursor.fetchall()}
-        if not existing:
+    claimed_keys: set[str] = set(already_claimed or ())
+    pairs = [
+        (new_key, legacy_key)
+        for new_key, legacy_key in zip(source_keys, legacy_keys, strict=True)
+        if new_key not in claimed_keys and new_key != legacy_key
+    ]
+    if not pairs:
+        return set()
+
+    candidates = list({key for new_key, legacy_key in pairs for key in (new_key, legacy_key)})
+    cursor.execute(
+        """
+        SELECT source_key
+        FROM transactions
+        WHERE user_id = %s
+          AND source_key = ANY(%s)
+        """,
+        (user_id, candidates),
+    )
+    existing = {str(row[0]) for row in cursor.fetchall()}
+    if not existing:
+        return set()
+
+    newly_claimed: set[str] = set()
+    for new_key, legacy_key in pairs:
+        if new_key in newly_claimed or new_key in claimed_keys:
             continue
         if new_key in existing:
-            claimed_keys.add(new_key)
+            newly_claimed.add(new_key)
+            continue
+        if legacy_key not in existing:
             continue
         cursor.execute(
             """
@@ -1179,22 +1193,12 @@ def _claim_pre_sign_fix_source_keys(
             """,
             (new_key, user_id, legacy_key, user_id, new_key),
         )
-        if int(cursor.rowcount or 0) > 0:
-            claimed_keys.add(new_key)
-            continue
-        # Legacy row still blocks a duplicate insert even if migrate failed.
-        cursor.execute(
-            """
-            SELECT 1
-            FROM transactions
-            WHERE user_id = %s
-              AND source_key = %s
-            """,
-            (user_id, legacy_key),
-        )
-        if cursor.fetchone() is not None:
-            claimed_keys.add(new_key)
-    return claimed_keys
+        # Claim either way: migrate succeeded, or the legacy row still
+        # represents this transaction and must block a duplicate insert.
+        newly_claimed.add(new_key)
+        existing.discard(legacy_key)
+        existing.add(new_key)
+    return newly_claimed
 
 
 def insert_transactions(
@@ -1298,6 +1302,7 @@ def insert_transactions(
                 user_id=user_id,
                 source_keys=resolved_keys,
                 legacy_keys=legacy_keys,
+                already_claimed=claimed_keys,
             )
             insert_rows = [
                 row

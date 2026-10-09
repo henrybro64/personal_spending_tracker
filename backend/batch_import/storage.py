@@ -30,6 +30,17 @@ def _statement_amount(row: sqlite3.Row) -> float | None:
     return None
 
 
+def _stored_statement_amount(transaction: NormalizedTransaction) -> float | None:
+    """Persist the printed amount; never freeze a coerced payment sign."""
+    if transaction.statement_amount is not None:
+        return float(transaction.statement_amount)
+    # Payments are stored negative in ``amount``. Without an explicit printed
+    # value, leave statement_amount NULL so review can restore abs() later.
+    if transaction.transaction_type == "payment_or_credit":
+        return None
+    return float(transaction.amount)
+
+
 def _signed_amount_from_row(row: sqlite3.Row, transaction_type: str) -> float:
     """Apply sign rules using the printed amount when available.
 
@@ -189,6 +200,18 @@ class BatchImportStore:
               AND transaction_type != 'payment_or_credit'
             """
         )
+        # First #74 upgrade copied coerced payment amounts into
+        # statement_amount. Clear those; keep rows where printed differed
+        # from the stored signed amount (for example Amex +100 → -100).
+        connection.execute(
+            """
+            UPDATE imported_transactions
+            SET statement_amount = NULL
+            WHERE transaction_type = 'payment_or_credit'
+              AND statement_amount IS NOT NULL
+              AND statement_amount = amount
+            """
+        )
 
     def load_learned_rules(self) -> list[CategoryRule]:
         with self._connect() as connection:
@@ -292,11 +315,7 @@ class BatchImportStore:
                         transaction.merchant_raw,
                         normalize_merchant_key(transaction.merchant_raw),
                         transaction.amount,
-                        (
-                            transaction.statement_amount
-                            if transaction.statement_amount is not None
-                            else transaction.amount
-                        ),
+                        _stored_statement_amount(transaction),
                         transaction.currency,
                         transaction.transaction_type,
                         transaction.category,
