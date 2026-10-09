@@ -136,6 +136,7 @@ class BatchImportStore:
                     exclude_from_spending INTEGER NOT NULL,
                     needs_review INTEGER NOT NULL,
                     postgres_synced INTEGER NOT NULL DEFAULT 0,
+                    postgres_source_key TEXT,
                     statement_content_sha256 TEXT NOT NULL DEFAULT ''
                 );
 
@@ -188,6 +189,13 @@ class BatchImportStore:
                 """
                 ALTER TABLE imported_transactions
                 ADD COLUMN statement_amount REAL
+                """
+            )
+        if "postgres_source_key" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE imported_transactions
+                ADD COLUMN postgres_source_key TEXT
                 """
             )
         # Trust stored amount as printed only for non-payment rows. Old parsers
@@ -1023,6 +1031,43 @@ class BatchImportStore:
         if row is None:
             return None
         return self._row_to_transaction(row)
+
+    def set_postgres_source_keys(self, keys_by_id: dict[int, str]) -> None:
+        """Remember which dashboard row each merged batch row created."""
+        pairs = [
+            (source_key, row_id)
+            for row_id, source_key in keys_by_id.items()
+            if source_key.strip()
+        ]
+        if not pairs:
+            return
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                UPDATE imported_transactions
+                SET postgres_source_key = ?
+                WHERE id = ?
+                """,
+                pairs,
+            )
+
+    def get_postgres_source_key(self, transaction_id: int) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT postgres_source_key
+                FROM imported_transactions
+                WHERE id = ?
+                """,
+                (transaction_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        source_key = row["postgres_source_key"]
+        if source_key is None:
+            return None
+        text = str(source_key).strip()
+        return text or None
 
     def delete_imported_transaction(self, transaction_id: int) -> int | None:
         """Delete one batch row and refresh run counts. Returns import_run_id or None."""

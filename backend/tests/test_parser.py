@@ -160,6 +160,47 @@ def test_us_card_payment_is_not_counted_as_spending():
     )
 
 
+def test_us_statement_mentioning_taiwan_words_stays_usd():
+    for merchant in ("CATHAY PACIFIC AIR", "OMEGA WATCHES"):
+        text = (
+            "CHASE\nOpening/Closing Date 01/01/26 - 01/31/26\n"
+            f"01/05 TRADER JOE S 45.10\n01/07 {merchant} 812.00\n"
+        )
+        currencies = {row["currency"] for row in parse_transactions(text)}
+        assert currencies == {"USD"}, merchant
+
+
+def test_ambiguous_taiwan_bank_tokens_need_a_bank_qualifier():
+    bare = (
+        "CATHAY\nOpening/Closing Date 01/01/26 - 01/31/26\n"
+        "01/05 TRADER JOE S 45.10\n"
+    )
+    assert {row["currency"] for row in parse_transactions(bare)} == {"USD"}
+
+    mega_bare = (
+        "MEGA\nOpening/Closing Date 01/01/26 - 01/31/26\n"
+        "01/05 TRADER JOE S 45.10\n"
+    )
+    assert {row["currency"] for row in parse_transactions(mega_bare)} == {
+        "USD"
+    }
+
+    qualified = (
+        "CATHAY UNITED BANK\n"
+        "01/05 星巴克 TWD 45\n"
+    )
+    rows = parse_transactions(qualified)
+    assert rows
+    assert {row["currency"] for row in rows} == {"TWD"}
+
+
+def test_ctbc_header_keeps_the_statement_in_twd():
+    text = "中國信託\n01/05 星巴克 45.10\n"
+    rows = parse_transactions(text)
+    assert rows
+    assert {row["currency"] for row in rows} == {"TWD"}
+
+
 def test_payment_phrases_do_not_match_merchant_names_that_contain_payment():
     for name in ("APPLE PAYMENT SERVICE", "PAYMENTUS"):
         assert categorize_merchant(name, 12.0) != "Payment / Credit"

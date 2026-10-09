@@ -1238,6 +1238,14 @@ def test_old_batch_sqlite_backfills_statement_amount(tmp_path):
             "SELECT statement_amount FROM imported_transactions"
         ).fetchone()
     assert row == (-40.0,)
+    with sqlite3.connect(path) as connection:
+        columns = {
+            info[1]
+            for info in connection.execute(
+                "PRAGMA table_info(imported_transactions)"
+            )
+        }
+    assert "postgres_source_key" in columns
 
 
 def test_legacy_payment_row_leaves_statement_amount_null(tmp_path):

@@ -8,7 +8,7 @@ from pathlib import Path
 from backend.statement_parse_utils import (
     extract_us_statement_date,
     extract_us_statement_period,
-    infer_esun_statement_roc_year,
+    infer_esun_billing_period,
     infer_us_transaction_date,
     normalize_statement_text,
     parse_amount,
@@ -386,11 +386,13 @@ class EsunStatementParser(BaseStatementParser):
         category_engine: CategoryEngine,
     ) -> list[NormalizedTransaction]:
         normalized_text = normalize_statement_text(statement_text)
-        roc_year = infer_esun_statement_roc_year(
-            normalized_text, source_path.name
+        billing_period = infer_esun_billing_period(
+            normalized_text,
+            source_path.name,
         )
-        if roc_year is None:
+        if billing_period is None:
             return []
+        billing_year, billing_month = billing_period
 
         card_last4 = _card_last4(normalized_text, file_name=source_path.name)
         transactions: list[NormalizedTransaction] = []
@@ -400,7 +402,11 @@ class EsunStatementParser(BaseStatementParser):
             if not line or any(token in line for token in self._skip_tokens):
                 continue
 
-            parsed_line = parse_esun_statement_line(line, roc_year)
+            parsed_line = parse_esun_statement_line(
+                line,
+                billing_year,
+                billing_month,
+            )
             if parsed_line is None:
                 continue
 

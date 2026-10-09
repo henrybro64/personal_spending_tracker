@@ -1,6 +1,6 @@
 from backend.statement_parse_utils import (
     MERCHANT_NOT_IN_PDF,
-    infer_esun_statement_roc_year,
+    infer_esun_billing_period,
     parse_ctbc_gregorian_statement_line,
     parse_ctbc_roc_statement_line,
     parse_esun_statement_line,
@@ -148,10 +148,10 @@ def test_parse_ctbc_gregorian_daily_statement_line() -> None:
 
 
 def test_parse_esun_statement_line() -> None:
-    roc_year = 115
     parsed = parse_esun_statement_line(
         "04/14 04/15 全聯實業股份有限公司－台北信義分公司 TWD 155",
-        roc_year,
+        2026,
+        4,
     )
     assert parsed is not None
     assert parsed.transaction_date == "2026-04-14"
@@ -161,22 +161,94 @@ def test_parse_esun_statement_line() -> None:
 
     payment = parse_esun_statement_line(
         "04/28 感謝您辦理本行自動轉帳繳款！ TWD -9,961",
-        roc_year,
+        2026,
+        4,
     )
     assert payment is not None
     assert payment.transaction_date == "2026-04-28"
     assert payment.amount == -9961.0
 
     assert (
-        parse_esun_statement_line("04/14 04/15 500 TWD 155", roc_year) is None
+        parse_esun_statement_line("04/14 04/15 500 TWD 155", 2026, 4) is None
     )
 
 
-def test_infer_esun_statement_roc_year() -> None:
-    assert infer_esun_statement_roc_year("115年04月 帳單", "") == 115
-    assert (
-        infer_esun_statement_roc_year("", "ESUN_Estatement_11504.pdf") == 115
+def test_infer_esun_billing_period() -> None:
+    assert infer_esun_billing_period("115年04月 帳單", "") == (2026, 4)
+    assert infer_esun_billing_period(
+        "",
+        "ESUN_Estatement_11504.pdf",
+    ) == (2026, 4)
+    labeled = "100年1月 其他\n帳單月份 115年6月"
+    assert infer_esun_billing_period(labeled, "") == (2026, 6)
+
+
+def test_esun_january_statement_dates_december_purchases_in_previous_year():
+    from pathlib import Path
+
+    from backend.batch_import.category import CategoryEngine
+    from backend.batch_import.parsers import EsunStatementParser
+    from backend.parser import parse_transactions
+
+    text = (
+        "玉山銀行 信用卡帳單 115年1月\n"
+        "12/28 12/30 全聯實業 TWD 500\n"
+        "12/31 01/02 家樂福 TWD 300\n"
+        "01/03 01/05 全聯實業 TWD 200\n"
     )
+    parser = EsunStatementParser(name="esun", bank="ESUN", currency="TWD")
+    rows = parser.parse(
+        Path("ESUN_ESTATEMENT_11501.txt"),
+        text,
+        CategoryEngine(),
+    )
+    assert [(row.transaction_date, row.posted_date) for row in rows] == [
+        ("2025-12-28", "2025-12-30"),
+        ("2025-12-31", "2026-01-02"),
+        ("2026-01-03", "2026-01-05"),
+    ]
+    assert [row["date"] for row in parse_transactions(text)] == [
+        "2025-12-28",
+        "2025-12-31",
+        "2026-01-03",
+    ]
+
+
+def test_esun_june_statement_keeps_may_and_june_purchases() -> None:
+    from pathlib import Path
+
+    from backend.batch_import.category import CategoryEngine
+    from backend.batch_import.parsers import EsunStatementParser
+
+    text = (
+        "玉山銀行 信用卡帳單 115年6月\n"
+        "05/30 05/31 全聯實業 TWD 500\n"
+        "06/02 06/03 家樂福 TWD 300\n"
+    )
+    parser = EsunStatementParser(name="esun", bank="ESUN", currency="TWD")
+    rows = parser.parse(
+        Path("ESUN_ESTATEMENT_11506.txt"),
+        text,
+        CategoryEngine(),
+    )
+    assert [(row.transaction_date, row.posted_date) for row in rows] == [
+        ("2026-05-30", "2026-05-31"),
+        ("2026-06-02", "2026-06-03"),
+    ]
+
+
+def test_esun_upload_uses_file_name_when_text_omits_billing_period() -> None:
+    from backend.parser import parse_transactions
+
+    text = (
+        "12/28 12/30 全聯實業 TWD 500\n"
+        "01/03 01/05 全聯實業 TWD 200\n"
+    )
+    rows = parse_transactions(
+        text,
+        file_name="ESUN_ESTATEMENT_11501.txt",
+    )
+    assert [row["date"] for row in rows] == ["2025-12-28", "2026-01-03"]
 
 
 def test_parse_ctbc_roc_line_with_location_suffix_before_amount() -> None:

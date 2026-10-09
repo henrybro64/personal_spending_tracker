@@ -394,36 +394,123 @@ ESUN_LINE_ONE_DATE = re.compile(
 )
 
 
-def infer_esun_statement_roc_year(statement_text: str, file_name: str = "") -> int | None:
-    """ROC calendar year for ESUN e-statements (e.g. 115 -> 2026)."""
-    match = ESUN_BILLING_PERIOD.search(statement_text)
-    if match:
-        return int(match.group("roc_year"))
-    file_match = re.search(
-        r"ESUN_ESTATEMENT_(\d{2,3})\d{2}",
-        file_name,
-        re.IGNORECASE,
-    )
-    if file_match:
-        return int(file_match.group(1))
+_ESUN_BILLING_LABELS = (
+    "帳單月份",
+    "本期帳單",
+    "信用卡帳單",
+    "帳單",
+)
+_ESUN_FILE_PERIOD = re.compile(
+    r"ESUN_ESTATEMENT_(\d{2,3})(\d{2})",
+    re.IGNORECASE,
+)
+
+
+def _gregorian_billing_period(match: re.Match[str]) -> tuple[int, int] | None:
+    month = int(match.group("month"))
+    if month < 1 or month > 12:
+        return None
+    return int(match.group("roc_year")) + 1911, month
+
+
+def _closest_billing_period(
+    window: str,
+    label: str,
+) -> tuple[int, int] | None:
+    label_at = window.find(label)
+    if label_at < 0:
+        return None
+    best: tuple[int, int] | None = None
+    best_distance: int | None = None
+    for match in ESUN_BILLING_PERIOD.finditer(window):
+        period = _gregorian_billing_period(match)
+        if period is None:
+            continue
+        if match.start() >= label_at + len(label):
+            distance = match.start() - (label_at + len(label))
+        else:
+            distance = label_at - match.end()
+        if distance < 0:
+            distance = 0
+        if best_distance is None or distance < best_distance:
+            best = period
+            best_distance = distance
+    return best
+
+
+def _billing_period_near_label(statement_text: str) -> tuple[int, int] | None:
+    for label in _ESUN_BILLING_LABELS:
+        start = 0
+        while True:
+            index = statement_text.find(label, start)
+            if index < 0:
+                break
+            window_end = index + len(label) + 16
+            window = statement_text[max(0, index - 16) : window_end]
+            period = _closest_billing_period(window, label)
+            if period is not None:
+                return period
+            start = index + len(label)
     return None
 
 
-def _esun_mmdd_to_iso(mmdd: str, roc_year: int, *, reference_month: int | None = None) -> str | None:
+def infer_esun_billing_period(
+    statement_text: str,
+    file_name: str = "",
+) -> tuple[int, int] | None:
+    """Gregorian billing year and month for an E.SUN statement."""
+    period = _billing_period_near_label(statement_text)
+    if period is not None:
+        return period
+
+    match = ESUN_BILLING_PERIOD.search(statement_text)
+    if match:
+        period = _gregorian_billing_period(match)
+        if period is not None:
+            return period
+
+    file_match = _ESUN_FILE_PERIOD.search(file_name)
+    if file_match is None:
+        return None
+    roc_year = int(file_match.group(1))
+    month = int(file_match.group(2))
+    if month < 1 or month > 12:
+        return None
+    return roc_year + 1911, month
+
+
+def _esun_mmdd_to_iso(
+    mmdd: str,
+    billing_year: int,
+    billing_month: int,
+) -> str | None:
     parts = mmdd.split("/")
     if len(parts) != 2:
         return None
     try:
         month, day = int(parts[0]), int(parts[1])
-        gregorian_year = roc_year + 1911
-        if reference_month is not None and month < reference_month:
-            gregorian_year += 1
-        return date(gregorian_year, month, day).isoformat()
+        year = billing_year - 1 if month > billing_month else billing_year
+        return date(year, month, day).isoformat()
     except ValueError:
         return None
 
 
-def parse_esun_statement_line(line: str, roc_year: int) -> CtbcRocLineParts | None:
+def _esun_posted_not_before_purchase(spent_iso: str, posted_iso: str) -> str:
+    spent = date.fromisoformat(spent_iso)
+    posted = date.fromisoformat(posted_iso)
+    if posted >= spent:
+        return posted_iso
+    try:
+        return posted.replace(year=posted.year + 1).isoformat()
+    except ValueError:
+        return date(posted.year + 1, posted.month, 28).isoformat()
+
+
+def parse_esun_statement_line(
+    line: str,
+    billing_year: int,
+    billing_month: int,
+) -> CtbcRocLineParts | None:
     """Parse 玉山 ESUN lines: MM/DD MM/DD merchant TWD amount."""
     normalized_line = " ".join(line.split())
     if not normalized_line or "TWD" not in normalized_line:
@@ -431,26 +518,30 @@ def parse_esun_statement_line(line: str, roc_year: int) -> CtbcRocLineParts | No
 
     two_dates = ESUN_LINE_TWO_DATES.match(normalized_line)
     if two_dates:
-        spent_parts = two_dates.group("spent").split("/")
-        try:
-            spent_month = int(spent_parts[0])
-        except (IndexError, ValueError):
-            spent_month = None
-        spent_iso = _esun_mmdd_to_iso(two_dates.group("spent"), roc_year)
+        spent_iso = _esun_mmdd_to_iso(
+            two_dates.group("spent"),
+            billing_year,
+            billing_month,
+        )
         posted_iso = _esun_mmdd_to_iso(
             two_dates.group("posted"),
-            roc_year,
-            reference_month=spent_month,
+            billing_year,
+            billing_month,
         )
         if spent_iso is None or posted_iso is None:
             return None
+        posted_iso = _esun_posted_not_before_purchase(spent_iso, posted_iso)
         merchant = " ".join(two_dates.group("merchant").split())
         amount = parse_amount(two_dates.group("amount"))
     else:
         one_date = ESUN_LINE_ONE_DATE.match(normalized_line)
         if not one_date:
             return None
-        spent_iso = _esun_mmdd_to_iso(one_date.group("spent"), roc_year)
+        spent_iso = _esun_mmdd_to_iso(
+            one_date.group("spent"),
+            billing_year,
+            billing_month,
+        )
         if spent_iso is None:
             return None
         posted_iso = spent_iso

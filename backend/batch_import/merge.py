@@ -107,6 +107,7 @@ def merge_run_to_postgres(
     merged_count = 0
     skipped_count = 0
     synced_ids: list[int] = []
+    source_keys_by_id: dict[int, str] = {}
 
     for statement_file, statement_transactions in transactions_by_statement.items():
         fingerprint = _batch_statement_fingerprint(statement_transactions)
@@ -168,7 +169,7 @@ def merge_run_to_postgres(
             if existing_upload is None:
                 raise
             statement_upload_id = existing_upload["id"]
-        inserted = insert_transactions(
+        insert_result = insert_transactions(
             upload_transactions,
             user_id=user_id,
             file_name=file_name,
@@ -178,12 +179,18 @@ def merge_run_to_postgres(
             source_keys=eligible_keys,
             statement_scope=fingerprint,
         )
-        merged_count += inserted
-        skipped_count += len(eligible_transactions) - inserted
-        synced_ids.extend(
-            transaction["id"] for transaction in eligible_transactions
-        )
+        merged_count += insert_result.inserted_count
+        skipped_count += len(eligible_transactions) - insert_result.inserted_count
+        for transaction in eligible_transactions:
+            synced_ids.append(transaction["id"])
+            # Only link rows this merge actually inserted. Deduped / claimed
+            # rows already exist on the dashboard and must not be deleted when
+            # the user removes this batch copy (#76).
+            key = key_by_id[transaction["id"]]
+            if key in insert_result.inserted_source_keys:
+                source_keys_by_id[transaction["id"]] = key
 
+    store.set_postgres_source_keys(source_keys_by_id)
     store.mark_transactions_synced(synced_ids)
 
     return {

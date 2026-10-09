@@ -147,7 +147,9 @@ def _read_statement_pdf_in_process(
 
     try:
         text = _extract_pdf_text_unlocked(file_path, password)
-        return text, list(parse_transactions(text))
+        return text, list(
+            parse_transactions(text, file_name=Path(file_path).name)
+        )
     except Exception as exc:
         return _pdf_worker_failure(exc)
 

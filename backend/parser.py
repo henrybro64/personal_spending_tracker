@@ -7,7 +7,7 @@ from backend.statement_parse_utils import (
     MERCHANT_NOT_IN_PDF,
     extract_us_statement_date,
     extract_us_statement_period,
-    infer_esun_statement_roc_year,
+    infer_esun_billing_period,
     infer_us_transaction_date,
     parse_amount,
     parse_ctbc_gregorian_statement_line,
@@ -461,6 +461,9 @@ _TRANSACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     TRANSACTION_PATTERN_ISO,
 )
 
+# Prefer unambiguous names. Short Latin tokens such as MEGA / CATHAY / DBS /
+# CHB and bare 新光 must appear with a bank qualifier so merchant names do not
+# flip a US statement to TWD (#79).
 TWD_STATEMENT_MARKERS: tuple[str, ...] = (
     "中國信託",
     "CTBC",
@@ -468,17 +471,19 @@ TWD_STATEMENT_MARKERS: tuple[str, ...] = (
     "E SUN",
     "ESUN",
     "星展",
-    "DBS",
+    "DBS BANK",
+    "DBS-ESTATEMENT",
     "台新",
     "TAISHIN",
     "國泰",
-    "CATHAY",
+    "CATHAY UNITED",
+    "CATHAY BANK",
     "富邦",
     "FUBON",
     "永豐",
     "SINOPAC",
     "兆豐",
-    "MEGA",
+    "MEGA BANK",
     "第一銀行",
     "FIRST BANK",
     "華南",
@@ -487,9 +492,9 @@ TWD_STATEMENT_MARKERS: tuple[str, ...] = (
     "土地銀行",
     "聯邦",
     "UNION BANK OF TAIWAN",
-    "新光",
+    "新光銀行",
     "彰化銀行",
-    "CHB",
+    "CHB BANK",
 )
 
 USD_STATEMENT_MARKERS: tuple[str, ...] = (
@@ -708,9 +713,13 @@ def _parse_amount(amount_text: str) -> float:
     return parse_amount(amount_text)
 
 
-def _parse_esun_tw_line(line: str, roc_year: int) -> Transaction | None:
+def _parse_esun_tw_line(
+    line: str,
+    billing_period: tuple[int, int],
+) -> Transaction | None:
     """玉山 ESUN: MM/DD MM/DD merchant TWD amount."""
-    parsed_line = parse_esun_statement_line(line, roc_year)
+    billing_year, billing_month = billing_period
+    parsed_line = parse_esun_statement_line(line, billing_year, billing_month)
     if parsed_line is None:
         return None
 
@@ -767,7 +776,97 @@ def _parse_ctbc_tw_line(line: str) -> Transaction | None:
     }
 
 
-def parse_transactions(text: str) -> list[Transaction]:
+def _line_looks_like_transaction(line: str) -> bool:
+    if any(pattern.match(line) for pattern in _TRANSACTION_PATTERNS):
+        return True
+    if parse_ctbc_roc_statement_line(line) is not None:
+        return True
+    if parse_ctbc_gregorian_statement_line(line) is not None:
+        return True
+    return bool(
+        re.match(r"^\d{1,2}/\d{1,2}\s+.+\s+TWD\s+-?[\d,]+$", line)
+    )
+
+
+def _statement_header(text: str, *, max_nonempty: int = 15) -> str:
+    """Text before the first transaction line, capped at a short header."""
+    header_lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if (
+            _line_looks_like_transaction(line)
+            or len(header_lines) >= max_nonempty
+        ):
+            break
+        header_lines.append(line)
+    return "\n".join(header_lines)
+
+
+def _marker_in_header(marker: str, header: str, header_upper: str) -> bool:
+    if re.search(r"[A-Za-z]", marker):
+        pattern = rf"(?<![A-Z0-9]){re.escape(marker.upper())}(?![A-Z0-9])"
+        return re.search(pattern, header_upper) is not None
+    return marker in header
+
+
+def _header_has_marker(
+    header: str,
+    header_upper: str,
+    markers: tuple[str, ...],
+) -> bool:
+    return any(
+        _marker_in_header(marker, header, header_upper) for marker in markers
+    )
+
+
+def _header_has_twd_token(header: str, header_upper: str) -> bool:
+    if any(token in header for token in ("新台幣", "台幣")):
+        return True
+    return any(
+        re.search(
+            rf"(?<![A-Z0-9]){re.escape(token)}(?![A-Z0-9])",
+            header_upper,
+        )
+        for token in ("NT$", "NTD", "TWD")
+    )
+
+
+def _header_has_usd_token(header: str, header_upper: str) -> bool:
+    if re.search(r"(?<![A-Z0-9])USD(?![A-Z0-9])", header_upper):
+        return True
+    has_us_period = (
+        "OPENING/CLOSING DATE" in header_upper
+        or "STATEMENT DATE" in header_upper
+    )
+    return has_us_period and "$" in header
+
+
+def _statement_currency(text: str) -> str:
+    """Currency from the statement header, not from merchant names."""
+    header = _statement_header(text)
+    header_upper = header.upper()
+    tw_token = _header_has_twd_token(header, header_upper)
+    us_token = _header_has_usd_token(header, header_upper)
+    has_tw = _header_has_marker(header, header_upper, TWD_STATEMENT_MARKERS)
+    has_us = _header_has_marker(header, header_upper, USD_STATEMENT_MARKERS)
+    if tw_token and not us_token:
+        return "TWD"
+    if us_token and not tw_token:
+        return "USD"
+    if has_tw and not has_us:
+        return "TWD"
+    if has_us and not has_tw:
+        return "USD"
+    if tw_token:
+        return "TWD"
+    if us_token:
+        return "USD"
+    return "USD"
+
+
+def parse_transactions(text: str, *, file_name: str = "") -> list[Transaction]:
     transactions: list[Transaction] = []
     normalized = (
         text.replace("\ufeff", "")
@@ -778,43 +877,23 @@ def parse_transactions(text: str) -> list[Transaction]:
     statement_period = _extract_statement_period(normalized)
     statement_date = _extract_statement_date(normalized)
     statement_upper = normalized.upper()
-    has_tw_bank_marker = any(marker in statement_upper for marker in TWD_STATEMENT_MARKERS)
-    has_us_bank_marker = any(marker in statement_upper for marker in USD_STATEMENT_MARKERS)
-    has_twd_token = any(
-        token in normalized
-        for token in (
-            "新台幣",
-            "台幣",
-            "NT$",
-            "NTD",
-            "TWD",
-        )
-    ) or any(
-        token in statement_upper
-        for token in (
-            "NT$",
-            "NTD",
-            "TWD",
-        )
-    )
-    if has_tw_bank_marker:
-        statement_currency = "TWD"
-    elif has_us_bank_marker:
-        statement_currency = "USD"
-    else:
-        statement_currency = "TWD" if has_twd_token else "USD"
+    statement_currency = _statement_currency(normalized)
 
-    esun_roc_year: int | None = None
-    if "ESUN" in statement_upper or "玉山" in normalized:
-        esun_roc_year = infer_esun_statement_roc_year(normalized, "")
+    esun_period: tuple[int, int] | None = None
+    if (
+        "ESUN" in statement_upper
+        or "玉山" in normalized
+        or "ESUN" in file_name.upper()
+    ):
+        esun_period = infer_esun_billing_period(normalized, file_name)
 
     for raw_line in normalized.splitlines():
         line = raw_line.strip()
         if not line:
             continue
 
-        if esun_roc_year is not None:
-            esun_transaction = _parse_esun_tw_line(line, esun_roc_year)
+        if esun_period is not None:
+            esun_transaction = _parse_esun_tw_line(line, esun_period)
             if esun_transaction:
                 transactions.append(esun_transaction)
                 continue

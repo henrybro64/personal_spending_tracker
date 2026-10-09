@@ -844,7 +844,20 @@ export default function BatchReviewPage() {
         delete nextDrafts[transaction.id];
         return nextDrafts;
       });
-      setMessage(`Deleted ${transaction.merchant_raw}.`);
+      let deletedMessage = `Deleted ${transaction.merchant_raw}.`;
+      if (response.status !== 204) {
+        const payload = (await response.json().catch(() => ({}))) as {
+          dashboard_row_deleted?: boolean;
+          detail?: string;
+        };
+        if (
+          payload.dashboard_row_deleted === false &&
+          typeof payload.detail === "string"
+        ) {
+          deletedMessage = payload.detail;
+        }
+      }
+      setMessage(deletedMessage);
       await loadBatchState(needsReviewOnly);
     } catch (deleteError) {
       setError(
