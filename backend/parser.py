@@ -821,13 +821,13 @@ def _header_has_marker(
     )
 
 
-def _header_has_twd_token(header: str, header_upper: str) -> bool:
-    if any(token in header for token in ("新台幣", "台幣")):
+def _text_has_twd_token(text: str, text_upper: str) -> bool:
+    if any(token in text for token in ("新台幣", "台幣")):
         return True
     return any(
         re.search(
             rf"(?<![A-Z0-9]){re.escape(token)}(?![A-Z0-9])",
-            header_upper,
+            text_upper,
         )
         for token in ("NT$", "NTD", "TWD")
     )
@@ -844,10 +844,15 @@ def _header_has_usd_token(header: str, header_upper: str) -> bool:
 
 
 def _statement_currency(text: str) -> str:
-    """Currency from the statement header, not from merchant names."""
+    """Currency from the statement header, not from merchant bank substrings.
+
+    Bank markers are header-only (#79). Explicit TWD/NTD/NT$ tokens may appear
+    on transaction lines when the bank heading is missing, so those fall back
+    to a full-text scan after header resolution.
+    """
     header = _statement_header(text)
     header_upper = header.upper()
-    tw_token = _header_has_twd_token(header, header_upper)
+    tw_token = _text_has_twd_token(header, header_upper)
     us_token = _header_has_usd_token(header, header_upper)
     has_tw = _header_has_marker(header, header_upper, TWD_STATEMENT_MARKERS)
     has_us = _header_has_marker(header, header_upper, USD_STATEMENT_MARKERS)
@@ -863,6 +868,9 @@ def _statement_currency(text: str) -> str:
         return "TWD"
     if us_token:
         return "USD"
+    # No reliable header signal: honor explicit TWD labels in the body.
+    if _text_has_twd_token(text, text.upper()):
+        return "TWD"
     return "USD"
 
 

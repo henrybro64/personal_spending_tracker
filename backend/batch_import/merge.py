@@ -106,8 +106,6 @@ def merge_run_to_postgres(
 
     merged_count = 0
     skipped_count = 0
-    synced_ids: list[int] = []
-    source_keys_by_id: dict[int, str] = {}
 
     for statement_file, statement_transactions in transactions_by_statement.items():
         fingerprint = _batch_statement_fingerprint(statement_transactions)
@@ -181,17 +179,17 @@ def merge_run_to_postgres(
         )
         merged_count += insert_result.inserted_count
         skipped_count += len(eligible_transactions) - insert_result.inserted_count
-        for transaction in eligible_transactions:
-            synced_ids.append(transaction["id"])
-            # Only link rows this merge actually inserted. Deduped / claimed
-            # rows already exist on the dashboard and must not be deleted when
-            # the user removes this batch copy (#76).
-            key = key_by_id[transaction["id"]]
-            if key in insert_result.inserted_source_keys:
-                source_keys_by_id[transaction["id"]] = key
-
-    store.set_postgres_source_keys(source_keys_by_id)
-    store.mark_transactions_synced(synced_ids)
+        # Persist links and synced flags per statement so a later failure does
+        # not leave inserted rows without delete targets on retry (#76).
+        statement_links = {
+            transaction["id"]: key_by_id[transaction["id"]]
+            for transaction in eligible_transactions
+            if key_by_id[transaction["id"]] in insert_result.inserted_source_keys
+        }
+        store.set_postgres_source_keys(statement_links)
+        store.mark_transactions_synced(
+            [transaction["id"] for transaction in eligible_transactions]
+        )
 
     return {
         "run_id": effective_run_id,

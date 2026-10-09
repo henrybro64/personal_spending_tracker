@@ -2193,13 +2193,19 @@ def auto_categorize_batch_import_review(
 
 
 def _load_uploaded_statement(
-    file_path: Path, password: str | None
+    file_path: Path,
+    password: str | None,
+    *,
+    original_file_name: str = "",
 ) -> tuple[str, list[Transaction]]:
     # Tests replace this helper. Production runs PDF CPU in a child process.
     # Wait at most one parse limit for other PDFs, so the whole upload ends
     # within twice PDF_PARSE_TIMEOUT_SECONDS. The frontend proxy relies on it.
     return read_statement_pdf(
-        file_path, password, max_wait=pdf_parse_timeout_seconds()
+        file_path,
+        password,
+        max_wait=pdf_parse_timeout_seconds(),
+        original_file_name=original_file_name,
     )
 
 
@@ -2292,7 +2298,11 @@ def _open_uploaded_statement(
     audit_context: AuditRequestContext,
 ) -> tuple[str, list[Transaction]]:
     try:
-        return _load_uploaded_statement(saved_path, password)
+        return _load_uploaded_statement(
+            saved_path,
+            password,
+            original_file_name=original_name,
+        )
     except PdfPasswordProtectedError as exc:
         saved_path.unlink(missing_ok=True)
         record_audit_event(

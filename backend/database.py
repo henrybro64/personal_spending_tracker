@@ -1293,7 +1293,6 @@ def insert_transactions(
             )
         )
 
-    inserted_keys: set[str] = set()
     with db_connection(
         resolved_database_url,
         operation="insert_transactions",
@@ -1313,52 +1312,69 @@ def insert_transactions(
                 legacy_keys=legacy_keys,
                 already_claimed=claimed_keys,
             )
-            for _transaction, source_key, row in prepared:
-                if source_key in claimed_keys:
-                    continue
-                # One row at a time so RETURNING tells us what this merge created.
-                cursor.execute(
-                    """
-                    INSERT INTO transactions (
-                        user_id,
-                        statement_upload_id,
-                        date,
-                        merchant,
-                        amount,
-                        file_name,
-                        original_file_name,
-                        category,
-                        file_fingerprint,
-                        payment_method,
-                        currency,
-                        original_amount,
-                        original_currency,
-                        base_amount,
-                        base_currency,
-                        exchange_rate,
-                        exchange_rate_date,
-                        source_key
-                    )
-                    VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s
-                    )
-                    ON CONFLICT (user_id, source_key)
-                        WHERE source_key IS NOT NULL
-                    DO NOTHING
-                    RETURNING source_key
-                    """,
-                    row,
-                )
-                returned = cursor.fetchone()
-                if returned is not None:
-                    inserted_keys.add(str(returned[0]))
+            insert_rows = [
+                row
+                for _transaction, source_key, row in prepared
+                if source_key not in claimed_keys
+            ]
+            inserted_keys = _insert_transaction_rows(cursor, insert_rows)
         connection.commit()
 
     return InsertTransactionsResult(
         inserted_count=len(inserted_keys),
         inserted_source_keys=frozenset(inserted_keys),
     )
+
+
+_TRANSACTION_INSERT_COLUMNS = (
+    "user_id",
+    "statement_upload_id",
+    "date",
+    "merchant",
+    "amount",
+    "file_name",
+    "original_file_name",
+    "category",
+    "file_fingerprint",
+    "payment_method",
+    "currency",
+    "original_amount",
+    "original_currency",
+    "base_amount",
+    "base_currency",
+    "exchange_rate",
+    "exchange_rate_date",
+    "source_key",
+)
+
+
+def _insert_transaction_rows(
+    cursor: psycopg.Cursor[Any],
+    insert_rows: list[tuple[object, ...]],
+) -> set[str]:
+    """Batch-insert rows and return the source_keys that were newly created."""
+    if not insert_rows:
+        return set()
+
+    column_count = len(_TRANSACTION_INSERT_COLUMNS)
+    row_placeholder = "(" + ", ".join(["%s"] * column_count) + ")"
+    values_sql = ", ".join(row_placeholder for _ in insert_rows)
+    flat_params = [value for row in insert_rows for value in row]
+    columns_sql = ", ".join(_TRANSACTION_INSERT_COLUMNS)
+    cursor.execute(
+        f"""
+        INSERT INTO transactions (
+            {columns_sql}
+        )
+        VALUES {values_sql}
+        ON CONFLICT (user_id, source_key)
+            WHERE source_key IS NOT NULL
+        DO NOTHING
+        RETURNING source_key
+        """,
+        flat_params,
+    )
+    return {str(row[0]) for row in cursor.fetchall()}
 
 
 def insert_manual_transaction(

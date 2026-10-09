@@ -201,6 +201,13 @@ def test_ctbc_header_keeps_the_statement_in_twd():
     assert {row["currency"] for row in rows} == {"TWD"}
 
 
+def test_explicit_twd_on_transaction_lines_wins_without_bank_header():
+    text = "UNRECOGNIZED BANK\n01/05 星巴克 TWD 45\n"
+    rows = parse_transactions(text)
+    assert rows
+    assert {row["currency"] for row in rows} == {"TWD"}
+
+
 def test_payment_phrases_do_not_match_merchant_names_that_contain_payment():
     for name in ("APPLE PAYMENT SERVICE", "PAYMENTUS"):
         assert categorize_merchant(name, 12.0) != "Payment / Credit"

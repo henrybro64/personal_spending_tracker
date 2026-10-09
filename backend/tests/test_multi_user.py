@@ -125,7 +125,7 @@ async def test_duplicate_statement_detection_is_scoped_per_user(
     monkeypatch.setattr(
         api_main,
         "_load_uploaded_statement",
-        lambda path, password=None: (
+        lambda path, password=None, **_kwargs: (
             "synthetic statement text",
             [
                 {

@@ -442,39 +442,43 @@ def test_reimport_does_not_duplicate_pre_sign_fix_refund_keys(
     assert rows[0][1] == 1
 
 
-def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
+def _amex_upload_transactions() -> list[dict[str, object]]:
+    return [
+        {
+            "date": "2026-01-05",
+            "merchant": "STARBUCKS",
+            "amount": 5.75,
+            "category": "Dining / Food",
+            "currency": "USD",
+        },
+        {
+            "date": "2026-01-05",
+            "merchant": "STARBUCKS",
+            "amount": 5.75,
+            "category": "Dining / Food",
+            "currency": "USD",
+        },
+        {
+            "date": "2026-01-09",
+            "merchant": "IKEA",
+            "amount": 80.0,
+            "category": "Shopping",
+            "currency": "USD",
+        },
+    ]
+
+
+def _upload_amex_then_merge(
     client: TestClient,
     api_main,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+) -> dict[str, object]:
     _statement_for_user(1)
     _register(client, "alice")
 
-    def fake_load(path, password=None):
+    def fake_load(path, password=None, **_kwargs):
         del path, password
-        return AMEX_STATEMENT, [
-            {
-                "date": "2026-01-05",
-                "merchant": "STARBUCKS",
-                "amount": 5.75,
-                "category": "Dining / Food",
-                "currency": "USD",
-            },
-            {
-                "date": "2026-01-05",
-                "merchant": "STARBUCKS",
-                "amount": 5.75,
-                "category": "Dining / Food",
-                "currency": "USD",
-            },
-            {
-                "date": "2026-01-09",
-                "merchant": "IKEA",
-                "amount": 80.0,
-                "category": "Shopping",
-                "currency": "USD",
-            },
-        ]
+        return AMEX_STATEMENT, _amex_upload_transactions()
 
     monkeypatch.setattr(api_main, "_load_uploaded_statement", fake_load)
     uploaded = client.post(
@@ -496,8 +500,17 @@ def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
         json={"run_id": run.json()["run"]["run_id"]},
     )
     assert merged.status_code == 200, merged.text
-    assert merged.json()["merged_count"] == 0
-    assert merged.json()["skipped_count"] == 3
+    return merged.json()
+
+
+def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
+    client: TestClient,
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merged = _upload_amex_then_merge(client, api_main, monkeypatch)
+    assert merged["merged_count"] == 0
+    assert merged["skipped_count"] == 3
     rows = client.get("/transactions").json()["transactions"]
     assert sorted(row["merchant"] for row in rows) == [
         "IKEA",
@@ -514,56 +527,8 @@ def test_deleting_deduped_batch_row_leaves_upload_dashboard_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Merge that inserts nothing must not link batch rows for delete (#76)."""
-    _statement_for_user(1)
-    _register(client, "alice")
-
-    def fake_load(path, password=None):
-        del path, password
-        return AMEX_STATEMENT, [
-            {
-                "date": "2026-01-05",
-                "merchant": "STARBUCKS",
-                "amount": 5.75,
-                "category": "Dining / Food",
-                "currency": "USD",
-            },
-            {
-                "date": "2026-01-05",
-                "merchant": "STARBUCKS",
-                "amount": 5.75,
-                "category": "Dining / Food",
-                "currency": "USD",
-            },
-            {
-                "date": "2026-01-09",
-                "merchant": "IKEA",
-                "amount": 80.0,
-                "category": "Shopping",
-                "currency": "USD",
-            },
-        ]
-
-    monkeypatch.setattr(api_main, "_load_uploaded_statement", fake_load)
-    uploaded = client.post(
-        "/upload",
-        files={
-            "file": (
-                "statement.pdf",
-                b"%PDF-1.4 synthetic",
-                "application/pdf",
-            )
-        },
-    )
-    assert uploaded.status_code == 201, uploaded.text
-
-    run = client.post("/batch-imports/run", json={})
-    assert run.status_code == 201, run.text
-    merged = client.post(
-        "/batch-imports/merge",
-        json={"run_id": run.json()["run"]["run_id"]},
-    )
-    assert merged.status_code == 200, merged.text
-    assert merged.json()["merged_count"] == 0
+    merged = _upload_amex_then_merge(client, api_main, monkeypatch)
+    assert merged["merged_count"] == 0
 
     before = client.get("/transactions").json()["transactions"]
     assert len(before) == 3
