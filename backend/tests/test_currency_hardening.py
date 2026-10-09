@@ -183,7 +183,17 @@ def test_migrations_apply_on_empty_database(database_url: str) -> None:
                 "SELECT version FROM schema_migrations ORDER BY version ASC"
             )
             versions = [row[0] for row in cursor.fetchall()]
+            cursor.execute(
+                """
+                SELECT is_nullable
+                FROM information_schema.columns
+                WHERE table_name = 'transactions'
+                  AND column_name = 'source_key'
+                """
+            )
+            source_key_nullable = cursor.fetchone()
 
+    assert source_key_nullable == ("YES",)
     assert versions == [
         "001_initial_schema",
         "002_backfill_statement_uploads",
@@ -191,6 +201,7 @@ def test_migrations_apply_on_empty_database(database_url: str) -> None:
         "004_ai_provider_settings",
         "005_transaction_original_base_amounts",
         "006_one_selected_ai_provider",
+        "007_transaction_source_key",
     ]
 
 

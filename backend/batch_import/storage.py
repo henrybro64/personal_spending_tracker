@@ -36,6 +36,7 @@ class BatchStoredTransaction(TypedDict):
     category: str
     exclude_from_spending: bool
     needs_review: bool
+    statement_content_sha256: str
 
 
 class BatchImportRunSummary(TypedDict):
@@ -96,7 +97,8 @@ class BatchImportStore:
                     category TEXT NOT NULL,
                     exclude_from_spending INTEGER NOT NULL,
                     needs_review INTEGER NOT NULL,
-                    postgres_synced INTEGER NOT NULL DEFAULT 0
+                    postgres_synced INTEGER NOT NULL DEFAULT 0,
+                    statement_content_sha256 TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS merchant_rules (
@@ -120,9 +122,11 @@ class BatchImportStore:
                 );
                 """
             )
-            self._ensure_postgres_synced_column(connection)
+            self._ensure_imported_transaction_columns(connection)
 
-    def _ensure_postgres_synced_column(self, connection: sqlite3.Connection) -> None:
+    def _ensure_imported_transaction_columns(
+        self, connection: sqlite3.Connection
+    ) -> None:
         columns = {
             str(row[1])
             for row in connection.execute("PRAGMA table_info(imported_transactions)")
@@ -132,6 +136,13 @@ class BatchImportStore:
                 """
                 ALTER TABLE imported_transactions
                 ADD COLUMN postgres_synced INTEGER NOT NULL DEFAULT 0
+                """
+            )
+        if "statement_content_sha256" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE imported_transactions
+                ADD COLUMN statement_content_sha256 TEXT NOT NULL DEFAULT ''
                 """
             )
 
@@ -220,9 +231,10 @@ class BatchImportStore:
                     transaction_type,
                     category,
                     exclude_from_spending,
-                    needs_review
+                    needs_review,
+                    statement_content_sha256
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -240,6 +252,7 @@ class BatchImportStore:
                         transaction.category,
                         int(transaction.exclude_from_spending),
                         int(transaction.needs_review),
+                        transaction.statement_content_sha256,
                     )
                     for transaction in transactions
                 ],
@@ -408,7 +421,8 @@ class BatchImportStore:
                     transaction_type,
                     category,
                     exclude_from_spending,
-                    needs_review
+                    needs_review,
+                    statement_content_sha256
                 FROM imported_transactions
                 WHERE import_run_id = ?
                 {review_clause}
@@ -453,7 +467,8 @@ class BatchImportStore:
                     transaction_type,
                     category,
                     exclude_from_spending,
-                    needs_review
+                    needs_review,
+                    statement_content_sha256
                 FROM imported_transactions
                 WHERE {where_clause}
                 ORDER BY statement_file, transaction_date, id
@@ -900,7 +915,8 @@ class BatchImportStore:
                     transaction_type,
                     category,
                     exclude_from_spending,
-                    needs_review
+                    needs_review,
+                    statement_content_sha256
                 FROM imported_transactions
                 WHERE id = ?
                 """,
@@ -927,7 +943,8 @@ class BatchImportStore:
                     transaction_type,
                     category,
                     exclude_from_spending,
-                    needs_review
+                    needs_review,
+                    statement_content_sha256
                 FROM imported_transactions
                 WHERE id = ?
                 """,
@@ -1000,6 +1017,13 @@ class BatchImportStore:
     def _row_to_transaction(
         self, row: sqlite3.Row
     ) -> BatchStoredTransaction:
+        keys = set(row.keys())
+        content_sha256 = (
+            str(row["statement_content_sha256"])
+            if "statement_content_sha256" in keys
+            and row["statement_content_sha256"] is not None
+            else ""
+        )
         return {
             "id": int(row["id"]),
             "import_run_id": int(row["import_run_id"]),
@@ -1019,4 +1043,5 @@ class BatchImportStore:
             "category": str(row["category"]),
             "exclude_from_spending": bool(row["exclude_from_spending"]),
             "needs_review": bool(row["needs_review"]),
+            "statement_content_sha256": content_sha256,
         }

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from backend.merchant_noise import merchant_raw_is_parse_noise
 from backend.parser import parse_transactions
+from backend.transaction_source import card_last4_from_statement
 
 from .category import CategoryEngine
 from .models import NormalizedTransaction
@@ -18,14 +19,6 @@ UPLOAD_FALLBACK_PARSER_NAMES = frozenset(
 )
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-_LAST4_PATTERNS = (
-    re.compile(r"末四碼\s*(?P<last4>\d{4})"),
-    re.compile(r"卡號末四碼\s*(?P<last4>\d{4})"),
-    re.compile(r"ending in\s+(?P<last4>\d{4})", re.IGNORECASE),
-    re.compile(r"Ending\s+(?P<last4>\d{4})", re.IGNORECASE),
-    re.compile(r"statements-(?P<last4>\d{4})-", re.IGNORECASE),
-)
 
 
 def upload_fallback_supported(parser_name: str) -> bool:
@@ -69,12 +62,9 @@ def _is_valid_iso_date(date_text: str) -> bool:
 
 
 def _infer_card_last4(source_path: Path, statement_text: str) -> str | None:
-    haystack = f"{source_path.name}\n{statement_text}"
-    for pattern in _LAST4_PATTERNS:
-        match = pattern.search(haystack)
-        if match:
-            return match.group("last4")
-    return None
+    return (
+        card_last4_from_statement(statement_text, file_name=source_path.name) or None
+    )
 
 
 def transactions_from_upload_parser(

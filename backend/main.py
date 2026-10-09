@@ -125,6 +125,7 @@ from backend.currency import (  # noqa: E402
     normalize_supported_currency_code,
 )
 from backend.parser import Transaction  # noqa: E402
+from backend.transaction_source import with_statement_card_last4  # noqa: E402
 from backend.spending import (  # noqa: E402
     UnconvertedTransaction,
     iter_spending_partition,
@@ -2433,6 +2434,11 @@ def _store_uploaded_pdf(
         audit_context=audit_context,
     )
     display_name = original_name or saved_name
+    transactions = with_statement_card_last4(
+        transactions,
+        extracted_text,
+        file_name=display_name,
+    )
 
     parse_reason: str | None = None
     parse_status = "parsed"

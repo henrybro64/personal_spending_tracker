@@ -2,22 +2,51 @@ from __future__ import annotations
 
 from hashlib import sha256
 
-from backend.database import create_statement_upload, insert_transactions
+from backend.database import (
+    DuplicateStatementUploadError,
+    create_statement_upload,
+    get_existing_upload_by_fingerprint,
+    insert_transactions,
+)
 from backend.parser import Transaction
 
 from .storage import BatchImportStore, BatchStoredTransaction
 
 
-def _batch_fingerprint(transaction: BatchStoredTransaction) -> str:
-    payload = (
-        f"{transaction['import_run_id']}:"
-        f"{transaction['statement_file']}:"
-        f"{transaction['transaction_date']}:"
-        f"{transaction['merchant_raw']}:"
-        f"{transaction['amount']}:"
-        f"{transaction['currency']}"
-    )
-    return sha256(payload.encode("utf-8")).hexdigest()
+def _batch_statement_fingerprint(
+    statement_transactions: list[BatchStoredTransaction],
+) -> str:
+    """Identity of one statement's contents across later imports.
+
+    Prefer the SHA-256 of the raw statement text stored at import time. Fall
+    back to a payload hash for legacy SQLite rows that predate that column.
+    """
+    stored = (statement_transactions[0].get("statement_content_sha256") or "").strip()
+    if stored:
+        return stored
+
+    lines: list[str] = []
+    for transaction in sorted(
+        statement_transactions,
+        key=lambda item: (
+            item["transaction_date"],
+            item["merchant_raw"],
+            float(item["amount"]),
+            item["id"],
+        ),
+    ):
+        lines.append(
+            "|".join(
+                (
+                    transaction["transaction_date"],
+                    transaction["merchant_raw"],
+                    f"{float(transaction['amount']):.2f}",
+                    transaction["currency"],
+                    transaction["card_last4"] or "",
+                )
+            )
+        )
+    return sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
 def batch_transaction_to_upload(transaction: BatchStoredTransaction) -> Transaction:
@@ -27,6 +56,7 @@ def batch_transaction_to_upload(transaction: BatchStoredTransaction) -> Transact
         "amount": transaction["amount"],
         "category": transaction["category"],
         "currency": transaction["currency"],
+        "card_last4": transaction["card_last4"] or "",
     }
 
 
@@ -75,25 +105,38 @@ def merge_run_to_postgres(
         ]
         file_name = f"batch-import/{statement_file}"
         display_name = f"Batch import: {statement_file}"
-        fingerprint = _batch_fingerprint(statement_transactions[0])
-        upload_record = create_statement_upload(
-            user_id=user_id,
-            original_file_name=display_name,
-            stored_file_name=file_name,
-            file_fingerprint_sha256=fingerprint,
-            parse_status="parsed",
-            currency=statement_transactions[0]["currency"],
-        )
-        insert_transactions(
+        fingerprint = _batch_statement_fingerprint(statement_transactions)
+        try:
+            upload_record = create_statement_upload(
+                user_id=user_id,
+                original_file_name=display_name,
+                stored_file_name=file_name,
+                file_fingerprint_sha256=fingerprint,
+                parse_status="parsed",
+                currency=statement_transactions[0]["currency"],
+            )
+            statement_upload_id = upload_record["id"]
+        except DuplicateStatementUploadError:
+            existing_upload = get_existing_upload_by_fingerprint(
+                user_id=user_id,
+                file_fingerprint_sha256=fingerprint,
+            )
+            if existing_upload is None:
+                raise
+            statement_upload_id = existing_upload["id"]
+        inserted = insert_transactions(
             upload_transactions,
             user_id=user_id,
             file_name=file_name,
             original_file_name=display_name,
             file_fingerprint=fingerprint,
-            statement_upload_id=upload_record["id"],
+            statement_upload_id=statement_upload_id,
         )
-        merged_count += len(statement_transactions)
-        synced_ids.extend(transaction["id"] for transaction in statement_transactions)
+        merged_count += inserted
+        skipped_count += len(statement_transactions) - inserted
+        synced_ids.extend(
+            transaction["id"] for transaction in statement_transactions
+        )
 
     store.mark_transactions_synced(synced_ids)
 

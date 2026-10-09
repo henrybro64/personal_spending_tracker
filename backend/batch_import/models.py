@@ -23,6 +23,7 @@ class NormalizedTransaction:
     category: str
     exclude_from_spending: bool
     needs_review: bool
+    statement_content_sha256: str = ""
 
     def to_record(self) -> dict[str, Any]:
         return asdict(self)

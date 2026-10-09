@@ -13,6 +13,7 @@ from backend.currency import (
     normalize_supported_currency_code,
 )
 from backend.parser import Transaction, categorize_merchant
+from backend.transaction_source import source_keys_for_transactions
 
 
 class DuplicateUsernameError(Exception):
@@ -1011,8 +1012,9 @@ def insert_transactions(
 
     resolved_database_url = _resolve_database_url(database_url)
     display_name = original_file_name or file_name
+    source_keys = source_keys_for_transactions(transactions)
     insert_rows: list[tuple[object, ...]] = []
-    for transaction in transactions:
+    for transaction, source_key in zip(transactions, source_keys, strict=True):
         original_amount = float(transaction["amount"])
         original_currency = normalize_supported_currency_code(
             transaction.get("currency"),
@@ -1058,6 +1060,7 @@ def insert_transactions(
                 normalized_base_currency,
                 normalized_exchange_rate,
                 exchange_rate_date,
+                source_key,
             )
         )
 
@@ -1086,18 +1089,25 @@ def insert_transactions(
                     base_amount,
                     base_currency,
                     exchange_rate,
-                    exchange_rate_date
+                    exchange_rate_date,
+                    source_key
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s
                 )
+                ON CONFLICT (user_id, source_key)
+                    WHERE source_key IS NOT NULL
+                DO NOTHING
                 """,
                 insert_rows,
             )
+            inserted = cursor.rowcount
         connection.commit()
 
-    return len(transactions)
+    if inserted is None or inserted < 0:
+        return 0
+    return inserted
 
 
 def insert_manual_transaction(
