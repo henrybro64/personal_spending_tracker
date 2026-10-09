@@ -9,6 +9,7 @@ from backend.database import (
     insert_transactions,
 )
 from backend.parser import Transaction
+from backend.transaction_source import source_keys_for_transactions
 
 from .storage import BatchImportStore, BatchStoredTransaction
 
@@ -18,8 +19,8 @@ def _batch_statement_fingerprint(
 ) -> str:
     """Identity of one statement's contents across later imports.
 
-    Prefer the SHA-256 of the raw statement text stored at import time. Fall
-    back to a payload hash for legacy SQLite rows that predate that column.
+    Prefer the SHA-256 of the statement text stored at import time. Fall back
+    to a payload hash for legacy SQLite rows that predate that column.
     """
     stored = (statement_transactions[0].get("statement_content_sha256") or "").strip()
     if stored:
@@ -60,6 +61,19 @@ def batch_transaction_to_upload(transaction: BatchStoredTransaction) -> Transact
     }
 
 
+def _passes_merge_filters(
+    transaction: BatchStoredTransaction,
+    *,
+    include_needs_review: bool,
+    include_excluded: bool,
+) -> bool:
+    if not include_needs_review and transaction["needs_review"]:
+        return False
+    if not include_excluded and transaction["exclude_from_spending"]:
+        return False
+    return True
+
+
 def merge_run_to_postgres(
     store: BatchImportStore,
     *,
@@ -76,36 +90,66 @@ def merge_run_to_postgres(
             "skipped_count": 0,
         }
 
-    transactions = store.list_transactions_for_merge(
+    # Load every row in the run so occurrence numbers are assigned against the
+    # full statement before include_needs_review / synced filters remove rows.
+    all_transactions = store.list_transactions_for_merge(
         run_id=effective_run_id,
-        include_needs_review=include_needs_review,
-        include_excluded=include_excluded,
+        include_needs_review=True,
+        include_excluded=True,
     )
 
-    eligible_transactions = [
-        transaction
-        for transaction in transactions
-        if not store.is_transaction_synced(transaction["id"])
-    ]
-    skipped_count = len(transactions) - len(eligible_transactions)
-
     transactions_by_statement: dict[str, list[BatchStoredTransaction]] = {}
-    for transaction in eligible_transactions:
+    for transaction in all_transactions:
         transactions_by_statement.setdefault(
             transaction["statement_file"], []
         ).append(transaction)
 
     merged_count = 0
+    skipped_count = 0
     synced_ids: list[int] = []
 
     for statement_file, statement_transactions in transactions_by_statement.items():
-        upload_transactions = [
+        fingerprint = _batch_statement_fingerprint(statement_transactions)
+        all_upload_rows = [
             batch_transaction_to_upload(transaction)
             for transaction in statement_transactions
         ]
+        statement_keys = source_keys_for_transactions(
+            all_upload_rows,
+            statement_scope=fingerprint,
+        )
+        key_by_id = {
+            statement_transactions[index]["id"]: statement_keys[index]
+            for index in range(len(statement_transactions))
+        }
+
+        filtered_transactions = [
+            transaction
+            for transaction in statement_transactions
+            if _passes_merge_filters(
+                transaction,
+                include_needs_review=include_needs_review,
+                include_excluded=include_excluded,
+            )
+        ]
+        eligible_transactions = [
+            transaction
+            for transaction in filtered_transactions
+            if not store.is_transaction_synced(transaction["id"])
+        ]
+        skipped_count += len(filtered_transactions) - len(eligible_transactions)
+        if not eligible_transactions:
+            continue
+
+        upload_transactions = [
+            batch_transaction_to_upload(transaction)
+            for transaction in eligible_transactions
+        ]
+        eligible_keys = [
+            key_by_id[transaction["id"]] for transaction in eligible_transactions
+        ]
         file_name = f"batch-import/{statement_file}"
         display_name = f"Batch import: {statement_file}"
-        fingerprint = _batch_statement_fingerprint(statement_transactions)
         try:
             upload_record = create_statement_upload(
                 user_id=user_id,
@@ -131,11 +175,13 @@ def merge_run_to_postgres(
             original_file_name=display_name,
             file_fingerprint=fingerprint,
             statement_upload_id=statement_upload_id,
+            source_keys=eligible_keys,
+            statement_scope=fingerprint,
         )
         merged_count += inserted
-        skipped_count += len(statement_transactions) - inserted
+        skipped_count += len(eligible_transactions) - inserted
         synced_ids.extend(
-            transaction["id"] for transaction in statement_transactions
+            transaction["id"] for transaction in eligible_transactions
         )
 
     store.mark_transactions_synced(synced_ids)

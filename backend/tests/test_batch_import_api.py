@@ -297,6 +297,42 @@ def test_rerunning_batch_import_and_merging_again_does_not_duplicate(
     assert skipped_counts == [0, 3]
 
 
+def test_remerge_after_upgrade_backfills_legacy_null_source_keys(
+    client: TestClient,
+    database_url: str,
+) -> None:
+    """Rows imported before source_key existed must not duplicate on re-merge."""
+    import psycopg
+
+    _statement_for_user(1)
+    _register(client, "alice")
+    run = client.post("/batch-imports/run", json={}).json()["run"]
+    merged = client.post("/batch-imports/merge", json={"run_id": run["run_id"]})
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["merged_count"] == 3
+
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE transactions SET source_key = NULL WHERE user_id = 1"
+            )
+        connection.commit()
+
+    run_again = client.post("/batch-imports/run", json={}).json()["run"]
+    rematch = client.post(
+        "/batch-imports/merge",
+        json={"run_id": run_again["run_id"]},
+    )
+    assert rematch.status_code == 200, rematch.text
+    assert rematch.json()["merged_count"] == 0
+    rows = client.get("/transactions").json()["transactions"]
+    assert sorted(row["merchant"] for row in rows) == [
+        "IKEA",
+        "STARBUCKS",
+        "STARBUCKS",
+    ]
+
+
 def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
     client: TestClient,
     api_main,
@@ -359,3 +395,5 @@ def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
         "STARBUCKS",
         "STARBUCKS",
     ]
+    # Shared text fingerprint means batch reuses the upload record.
+    assert len(client.get("/uploads/recent").json()["uploads"]) == 1

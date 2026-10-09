@@ -1,9 +1,11 @@
 from hashlib import sha256
 
 from backend.batch_import.merge import _batch_statement_fingerprint
+from backend.transaction_exclusions import PAYMENT_CATEGORY
 from backend.transaction_source import (
     card_last4_from_statement,
     source_keys_for_transactions,
+    statement_content_fingerprint,
     with_statement_card_last4,
 )
 
@@ -14,12 +16,13 @@ def _row(
     *,
     last4: str = "1001",
     currency: str = "USD",
+    category: str = "Dining / Food",
 ) -> dict:
     return {
         "date": "2026-01-05",
         "merchant": merchant,
         "amount": amount,
-        "category": "Dining / Food",
+        "category": category,
         "currency": currency,
         "card_last4": last4,
     }
@@ -65,6 +68,52 @@ def test_empty_currency_matches_default_twd_persistence() -> None:
     )
 
 
+def test_unknown_card_keeps_distinct_statements_separate() -> None:
+    row = _row("STARBUCKS", last4="")
+    first = source_keys_for_transactions([row], statement_scope="stmt-a")
+    second = source_keys_for_transactions([row], statement_scope="stmt-b")
+    assert first != second
+
+
+def test_unknown_card_same_statement_reuses_key() -> None:
+    row = _row("STARBUCKS", last4="")
+    first = source_keys_for_transactions([row], statement_scope="stmt-a")
+    second = source_keys_for_transactions([row], statement_scope="stmt-a")
+    assert first == second
+
+
+def test_payment_sign_is_normalized_for_cross_path_keys() -> None:
+    upload_style = _row(
+        "THANK YOU PAYMENT",
+        amount=100.0,
+        category=PAYMENT_CATEGORY,
+        last4="1001",
+    )
+    batch_style = _row(
+        "THANK YOU PAYMENT",
+        amount=-100.0,
+        category=PAYMENT_CATEGORY,
+        last4="1001",
+    )
+    assert source_keys_for_transactions([upload_style]) == source_keys_for_transactions(
+        [batch_style]
+    )
+
+
+def test_occurrence_uses_full_statement_order() -> None:
+    rows = [_row("STARBUCKS"), _row("STARBUCKS")]
+    full_keys = source_keys_for_transactions(rows)
+    # Second pass that only sees the second row must not restart at occurrence 1.
+    second_only = source_keys_for_transactions(
+        [rows[1]],
+        statement_scope="",
+    )
+    # Without the full list, occurrence restarts — documenting why merge passes
+    # precomputed keys from the complete statement.
+    assert second_only[0] == full_keys[0]
+    assert second_only[0] != full_keys[1]
+
+
 def test_card_last4_patterns_are_shared_across_banks() -> None:
     assert card_last4_from_statement("Card ending 1001") == "1001"
     assert card_last4_from_statement("Account ending in 2222") == "2222"
@@ -91,6 +140,12 @@ def test_upload_stamping_uses_shared_last4_helper() -> None:
         file_name="statements-9999-feb.pdf",
     )
     assert stamped[0]["card_last4"] == "9999"
+
+
+def test_statement_content_fingerprint_normalizes_whitespace() -> None:
+    assert statement_content_fingerprint("a\xa0b") == statement_content_fingerprint(
+        "a b"
+    )
 
 
 def test_batch_statement_fingerprint_uses_content_not_basename() -> None:

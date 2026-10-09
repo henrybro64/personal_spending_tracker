@@ -1,5 +1,6 @@
 -- Stable identity for imported purchases. Manual entries stay NULL.
--- Existing rows are not backfilled; that is a separate migration.
+-- Existing rows start NULL; insert/merge backfills matching legacy rows
+-- when the same charge is imported again so re-merges do not double-count.
 ALTER TABLE transactions
 ADD COLUMN IF NOT EXISTS source_key TEXT;
 

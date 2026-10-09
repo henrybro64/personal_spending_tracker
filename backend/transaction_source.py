@@ -14,6 +14,8 @@ from hashlib import sha256
 
 from backend.currency import DEFAULT_BASE_CURRENCY, normalize_supported_currency_code
 from backend.parser import Transaction
+from backend.statement_parse_utils import normalize_statement_text
+from backend.transaction_exclusions import PAYMENT_CATEGORY
 
 # Shared across upload stamping and every batch parser so the same statement
 # text yields the same card last4 on every import path.
@@ -30,6 +32,20 @@ CARD_LAST4_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
 )
+
+_CREDIT_CATEGORIES = frozenset(
+    {
+        PAYMENT_CATEGORY,
+        "Refunds & Credits",
+    }
+)
+_UNKNOWN_OR_OTHER = frozenset({"Unknown / Needs Review", "Other Spending"})
+
+
+def statement_content_fingerprint(statement_text: str) -> str:
+    """Canonical fingerprint for upload and batch statement identity."""
+    normalized = normalize_statement_text(statement_text)
+    return sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _normalize_merchant(merchant: str) -> str:
@@ -67,8 +83,15 @@ def with_statement_card_last4(
     return stamped
 
 
-def _amount_text(amount: float) -> str:
-    quantized = Decimal(str(amount)).quantize(Decimal("0.01"))
+def _amount_text(amount: float, *, category: str) -> str:
+    """Match batch sign rules so upload and batch keys agree."""
+    raw = float(amount)
+    absolute = abs(raw)
+    is_payment_or_credit = category in _CREDIT_CATEGORIES or (
+        category in _UNKNOWN_OR_OTHER and raw < 0
+    )
+    signed = -absolute if is_payment_or_credit else absolute
+    quantized = Decimal(str(signed)).quantize(Decimal("0.01"))
     return f"{quantized:.2f}"
 
 
@@ -80,25 +103,50 @@ def _currency_text(transaction: Transaction) -> str:
     )
 
 
+def _statement_scope(transaction: Transaction, statement_scope: str) -> str:
+    """Scope unknown-card rows to one statement so unrelated charges stay distinct.
+
+    When card_last4 is known, scope is empty so the same purchase on the same
+    card can collapse across daily/monthly statements (issue #73 intent).
+    """
+    if str(transaction.get("card_last4") or "").strip():
+        return ""
+    explicit = str(transaction.get("statement_scope") or "").strip()
+    return explicit or statement_scope.strip()
+
+
 def _identity(
     transaction: Transaction,
-) -> tuple[str, str, str, str, str]:
+    *,
+    statement_scope: str = "",
+) -> tuple[str, str, str, str, str, str]:
+    category = str(transaction.get("category") or "")
     return (
         transaction["date"].strip(),
         _normalize_merchant(transaction["merchant"]),
-        _amount_text(float(transaction["amount"])),
+        _amount_text(float(transaction["amount"]), category=category),
         _currency_text(transaction),
         str(transaction.get("card_last4") or "").strip(),
+        _statement_scope(transaction, statement_scope),
     )
 
 
-def source_keys_for_transactions(transactions: list[Transaction]) -> list[str]:
-    """One key per row. Occurrence counts identical rows in this statement."""
-    seen: dict[tuple[str, str, str, str, str], int] = {}
+def source_keys_for_transactions(
+    transactions: list[Transaction],
+    *,
+    statement_scope: str = "",
+) -> list[str]:
+    """One key per row. Occurrence counts identical rows in this statement list."""
+    seen: dict[tuple[str, str, str, str, str, str], int] = {}
     keys: list[str] = []
     for transaction in transactions:
-        identity = _identity(transaction)
+        identity = _identity(transaction, statement_scope=statement_scope)
         seen[identity] = seen.get(identity, 0) + 1
         payload = "|".join((*identity, str(seen[identity])))
         keys.append(sha256(payload.encode("utf-8")).hexdigest())
     return keys
+
+
+def normalize_merchant_for_source_key(merchant: str) -> str:
+    """Public helper for matching legacy NULL-key rows during insert."""
+    return _normalize_merchant(merchant)
