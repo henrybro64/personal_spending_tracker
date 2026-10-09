@@ -333,6 +333,110 @@ def test_remerge_after_upgrade_backfills_legacy_null_source_keys(
     ]
 
 
+def test_reimport_does_not_duplicate_pre_sign_fix_refund_keys(
+    client: TestClient,
+    database_url: str,
+) -> None:
+    """Refunds hashed with abs(amount) before #74 must not insert again."""
+    import psycopg
+
+    from backend.database import create_statement_upload, insert_transactions
+    from backend.transaction_source import (
+        legacy_source_keys_for_transactions,
+        source_keys_for_transactions,
+    )
+
+    _register(client, "alice")
+    refund = {
+        "date": "2026-01-09",
+        "merchant": "AMAZON",
+        "amount": -25.0,
+        "category": "Shopping / Online Retail",
+        "currency": "USD",
+        "card_last4": "1001",
+    }
+    legacy_key = legacy_source_keys_for_transactions([refund])[0]
+    new_key = source_keys_for_transactions([refund])[0]
+    assert legacy_key != new_key
+
+    upload = create_statement_upload(
+        user_id=1,
+        original_file_name="refund.pdf",
+        stored_file_name="refund.pdf",
+        file_fingerprint_sha256="pre-sign-fix-refund",
+        parse_status="parsed",
+        currency="USD",
+        database_url=database_url,
+    )
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO transactions (
+                    user_id,
+                    statement_upload_id,
+                    date,
+                    merchant,
+                    amount,
+                    file_name,
+                    original_file_name,
+                    category,
+                    currency,
+                    original_amount,
+                    original_currency,
+                    base_amount,
+                    base_currency,
+                    source_key
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                (
+                    1,
+                    upload["id"],
+                    refund["date"],
+                    refund["merchant"],
+                    refund["amount"],
+                    upload["file_name"],
+                    upload["display_name"],
+                    refund["category"],
+                    "USD",
+                    refund["amount"],
+                    "USD",
+                    refund["amount"],
+                    "USD",
+                    legacy_key,
+                ),
+            )
+        connection.commit()
+
+    inserted = insert_transactions(
+        [refund],
+        user_id=1,
+        file_name=upload["file_name"],
+        original_file_name=upload["display_name"],
+        statement_upload_id=upload["id"],
+        database_url=database_url,
+    )
+    assert inserted == 0
+
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT source_key, COUNT(*)
+                FROM transactions
+                WHERE user_id = 1 AND merchant = 'AMAZON'
+                GROUP BY source_key
+                """
+            )
+            rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == new_key
+    assert rows[0][1] == 1
+
+
 def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
     client: TestClient,
     api_main,

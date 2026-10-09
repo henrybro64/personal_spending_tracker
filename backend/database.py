@@ -15,6 +15,7 @@ from backend.currency import (
 )
 from backend.parser import Transaction, categorize_merchant
 from backend.transaction_source import (
+    legacy_source_keys_for_transactions,
     normalize_merchant_for_source_key,
     source_keys_for_transactions,
 )
@@ -1131,6 +1132,71 @@ def _backfill_legacy_source_keys(
     return claimed_keys
 
 
+def _claim_pre_sign_fix_source_keys(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    source_keys: list[str],
+    legacy_keys: list[str],
+) -> set[str]:
+    """Treat pre-#74 amount hashes as duplicates of the new signed keys.
+
+    Refunds that previously hashed ``abs(amount)`` keep that row instead of
+    inserting a second copy under the signed amount. Migrates the stored key
+    forward when safe.
+    """
+    claimed_keys: set[str] = set()
+    for new_key, legacy_key in zip(source_keys, legacy_keys, strict=True):
+        if new_key in claimed_keys or new_key == legacy_key:
+            continue
+        cursor.execute(
+            """
+            SELECT source_key
+            FROM transactions
+            WHERE user_id = %s
+              AND source_key = ANY(%s)
+            """,
+            (user_id, [new_key, legacy_key]),
+        )
+        existing = {str(row[0]) for row in cursor.fetchall()}
+        if not existing:
+            continue
+        if new_key in existing:
+            claimed_keys.add(new_key)
+            continue
+        cursor.execute(
+            """
+            UPDATE transactions
+            SET source_key = %s
+            WHERE user_id = %s
+              AND source_key = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM transactions AS other
+                  WHERE other.user_id = %s
+                    AND other.source_key = %s
+              )
+            """,
+            (new_key, user_id, legacy_key, user_id, new_key),
+        )
+        if int(cursor.rowcount or 0) > 0:
+            claimed_keys.add(new_key)
+            continue
+        # Legacy row still blocks a duplicate insert even if migrate failed.
+        cursor.execute(
+            """
+            SELECT 1
+            FROM transactions
+            WHERE user_id = %s
+              AND source_key = %s
+            """,
+            (user_id, legacy_key),
+        )
+        if cursor.fetchone() is not None:
+            claimed_keys.add(new_key)
+    return claimed_keys
+
+
 def insert_transactions(
     transactions: list[Transaction],
     *,
@@ -1148,12 +1214,17 @@ def insert_transactions(
 
     resolved_database_url = _resolve_database_url(database_url)
     display_name = original_file_name or file_name
+    resolved_scope = statement_scope or (file_fingerprint or "")
     resolved_keys = source_keys or source_keys_for_transactions(
         transactions,
-        statement_scope=statement_scope or (file_fingerprint or ""),
+        statement_scope=resolved_scope,
     )
     if len(resolved_keys) != len(transactions):
         raise ValueError("source_keys length must match transactions")
+    legacy_keys = legacy_source_keys_for_transactions(
+        transactions,
+        statement_scope=resolved_scope,
+    )
 
     prepared: list[tuple[Transaction, str, tuple[object, ...]]] = []
     for transaction, source_key in zip(transactions, resolved_keys, strict=True):
@@ -1221,6 +1292,12 @@ def insert_transactions(
                 user_id=user_id,
                 transactions=transactions,
                 source_keys=resolved_keys,
+            )
+            claimed_keys |= _claim_pre_sign_fix_source_keys(
+                cursor,
+                user_id=user_id,
+                source_keys=resolved_keys,
+                legacy_keys=legacy_keys,
             )
             insert_rows = [
                 row

@@ -4,6 +4,7 @@ from backend.batch_import.merge import _batch_statement_fingerprint
 from backend.transaction_exclusions import PAYMENT_CATEGORY
 from backend.transaction_source import (
     card_last4_from_statement,
+    legacy_source_keys_for_transactions,
     source_keys_for_transactions,
     statement_content_fingerprint,
     with_statement_card_last4,
@@ -87,6 +88,18 @@ def test_refund_does_not_share_a_key_with_the_purchase() -> None:
     refund = _row("AMAZON", -25.0, category="Shopping / Online Retail")
     assert source_keys_for_transactions([purchase]) != (
         source_keys_for_transactions([refund])
+    )
+
+
+def test_legacy_refund_key_differs_from_signed_refund_key() -> None:
+    refund = _row("AMAZON", -25.0, category="Shopping / Online Retail")
+    assert source_keys_for_transactions([refund]) != (
+        legacy_source_keys_for_transactions([refund])
+    )
+    # Pre-#74 folded the refund to abs(), same as the purchase.
+    purchase = _row("AMAZON", 25.0, category="Shopping / Online Retail")
+    assert legacy_source_keys_for_transactions([refund]) == (
+        source_keys_for_transactions([purchase])
     )
 
 

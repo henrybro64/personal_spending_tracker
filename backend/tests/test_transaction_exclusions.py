@@ -47,6 +47,8 @@ class TransactionExclusionTests(unittest.TestCase):
         for merchant in (
             "Payment Thank You-Mobile",
             "AUTOMATIC PAYMENT - THANK YOU",
+            "PAYMENT - THANK YOU",
+            "PAYMENT, THANK YOU",
             "PAYMENT RECEIVED",
             "ONLINE PAYMENT 1234",
         ):

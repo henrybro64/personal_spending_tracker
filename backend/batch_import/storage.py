@@ -22,12 +22,29 @@ from .paths import default_sqlite_output_path
 DEFAULT_BATCH_DATABASE_PATH = default_sqlite_output_path()
 
 
-def _statement_amount(row: sqlite3.Row) -> float:
-    """Printed amount. Older rows are backfilled from the stored amount."""
+def _statement_amount(row: sqlite3.Row) -> float | None:
+    """Printed amount when known. Legacy payment rows may be NULL."""
     keys = row.keys()
     if "statement_amount" in keys and row["statement_amount"] is not None:
         return float(row["statement_amount"])
-    return float(row["amount"])
+    return None
+
+
+def _signed_amount_from_row(row: sqlite3.Row, transaction_type: str) -> float:
+    """Apply sign rules using the printed amount when available.
+
+    Pre-upgrade ``payment_or_credit`` rows may have had their sign forced to
+    negative even when the statement printed a positive purchase (for example
+    ``APPLE PAYMENT SERVICE``). Those rows keep a NULL statement_amount so
+    reclassifying them as a purchase restores a positive amount via abs().
+    """
+    printed = _statement_amount(row)
+    if printed is not None:
+        return signed_amount(printed, transaction_type)
+    magnitude = abs(float(row["amount"]))
+    if transaction_type == "payment_or_credit":
+        return -magnitude
+    return magnitude
 
 
 class BatchStoredTransaction(TypedDict):
@@ -162,11 +179,14 @@ class BatchImportStore:
                 ADD COLUMN statement_amount REAL
                 """
             )
+        # Trust stored amount as printed only for non-payment rows. Old parsers
+        # forced payment_or_credit amounts negative, so leave those NULL.
         connection.execute(
             """
             UPDATE imported_transactions
             SET statement_amount = amount
             WHERE statement_amount IS NULL
+              AND transaction_type != 'payment_or_credit'
             """
         )
 
@@ -586,10 +606,7 @@ class BatchImportStore:
 
             updates: list[tuple[float, str, int, int, str, int]] = []
             for row in rows:
-                normalized_amount = signed_amount(
-                    _statement_amount(row),
-                    transaction_type,
-                )
+                normalized_amount = _signed_amount_from_row(row, transaction_type)
                 updates.append(
                     (
                         normalized_amount,
@@ -680,7 +697,7 @@ class BatchImportStore:
                 if not merchant_raw_is_parse_noise(str(row["merchant_raw"])):
                     continue
                 # Keep the printed sign; do not force abs() on refunds.
-                amount = signed_amount(_statement_amount(row), "purchase")
+                amount = _signed_amount_from_row(row, "purchase")
                 updates.append(
                     (
                         amount,
@@ -749,9 +766,14 @@ class BatchImportStore:
                     continue
 
                 printed_amount = _statement_amount(row)
+                categorize_amount = (
+                    printed_amount
+                    if printed_amount is not None
+                    else float(row["amount"])
+                )
                 category_match = category_engine.categorize(
                     merchant_raw,
-                    printed_amount,
+                    categorize_amount,
                 )
                 if category_match.needs_review:
                     continue
@@ -760,8 +782,8 @@ class BatchImportStore:
                     category_match.category,
                     category_match.exclude_from_spending,
                 )
-                normalized_amount = signed_amount(
-                    printed_amount,
+                normalized_amount = _signed_amount_from_row(
+                    row,
                     transaction_type,
                 )
                 updates.append(
@@ -879,10 +901,7 @@ class BatchImportStore:
                 category,
                 exclude_from_spending,
             )
-            normalized_amount = signed_amount(
-                _statement_amount(row),
-                transaction_type,
-            )
+            normalized_amount = _signed_amount_from_row(row, transaction_type)
             needs_review = False
 
             connection.execute(

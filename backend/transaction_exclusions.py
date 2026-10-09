@@ -32,7 +32,14 @@ _CARD_PAYMENT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 
 
 def normalize_payment_merchant(merchant: str) -> str:
-    return " ".join(merchant.upper().split())
+    """Fold case, spacing, and punctuation so ``PAYMENT - THANK YOU`` matches.
+
+    Alphanumeric and CJK characters stay; other characters become spaces so
+    token boundaries still protect names such as ``PAYMENTUS``.
+    """
+    upper = merchant.upper()
+    cleaned = re.sub(r"[^0-9A-Z\u4e00-\u9fff]+", " ", upper)
+    return " ".join(cleaned.split())
 
 
 def is_credit_card_bill_payment(merchant: str) -> bool:

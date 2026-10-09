@@ -1145,7 +1145,15 @@ def test_reviewing_a_purchase_as_a_payment_makes_it_negative(tmp_path):
     assert updated["amount"] == -40.0
 
 
-def test_old_batch_sqlite_backfills_statement_amount(tmp_path):
+def _legacy_sqlite_without_statement_amount(
+    tmp_path,
+    *,
+    merchant: str,
+    amount: float,
+    transaction_type: str,
+    category: str,
+    exclude_from_spending: int,
+):
     import sqlite3
 
     path = tmp_path / "old.sqlite3"
@@ -1196,18 +1204,32 @@ def test_old_batch_sqlite_backfills_statement_amount(tmp_path):
             "s.txt",
             "Chase",
             "2026-01-09",
-            "SOME SHOP",
-            "SOME SHOP",
-            -40.0,
+            merchant,
+            merchant,
+            amount,
             "USD",
-            "purchase",
-            "Other Spending",
-            0,
+            transaction_type,
+            category,
+            exclude_from_spending,
             1,
         ),
     )
     connection.commit()
     connection.close()
+    return path
+
+
+def test_old_batch_sqlite_backfills_statement_amount(tmp_path):
+    import sqlite3
+
+    path = _legacy_sqlite_without_statement_amount(
+        tmp_path,
+        merchant="SOME SHOP",
+        amount=-40.0,
+        transaction_type="purchase",
+        category="Other Spending",
+        exclude_from_spending=0,
+    )
 
     store = BatchImportStore(path)
     store.initialize()
@@ -1216,6 +1238,36 @@ def test_old_batch_sqlite_backfills_statement_amount(tmp_path):
             "SELECT statement_amount FROM imported_transactions"
         ).fetchone()
     assert row == (-40.0,)
+
+
+def test_legacy_payment_row_leaves_statement_amount_null(tmp_path):
+    import sqlite3
+
+    path = _legacy_sqlite_without_statement_amount(
+        tmp_path,
+        merchant="APPLE PAYMENT SERVICE",
+        amount=-25.0,
+        transaction_type="payment_or_credit",
+        category="Payment / Credit",
+        exclude_from_spending=1,
+    )
+
+    store = BatchImportStore(path)
+    store.initialize()
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT statement_amount FROM imported_transactions"
+        ).fetchone()
+    assert row == (None,)
+
+    row_id = store.list_transactions(run_id=1)[0]["id"]
+    updated = store.update_transaction_review(
+        row_id,
+        category="Shopping / Online Retail",
+        exclude_from_spending=False,
+        save_rule=False,
+    )
+    assert updated["amount"] == 25.0
 
 
 if __name__ == "__main__":

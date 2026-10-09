@@ -74,6 +74,23 @@ def with_statement_card_last4(
     return stamped
 
 
+# Amount folding used before refund signs were kept in source keys (pre-#74).
+_LEGACY_CREDIT_CATEGORIES = frozenset(
+    {
+        PAYMENT_CATEGORY,
+        "Refunds & Credits",
+    }
+)
+_LEGACY_UNKNOWN_OR_OTHER = frozenset(
+    {"Unknown / Needs Review", "Other Spending"}
+)
+
+
+def _quantize_amount_text(signed: float) -> str:
+    quantized = Decimal(str(signed)).quantize(Decimal("0.01"))
+    return f"{quantized:.2f}"
+
+
 def _amount_text(amount: float, *, category: str) -> str:
     """Keep the statement sign. Card payments are always negative.
 
@@ -83,8 +100,18 @@ def _amount_text(amount: float, *, category: str) -> str:
     """
     raw = float(amount)
     signed = -abs(raw) if category == PAYMENT_CATEGORY else raw
-    quantized = Decimal(str(signed)).quantize(Decimal("0.01"))
-    return f"{quantized:.2f}"
+    return _quantize_amount_text(signed)
+
+
+def _legacy_amount_text(amount: float, *, category: str) -> str:
+    """Reproduce pre-#74 amount folding so existing hashed keys still match."""
+    raw = float(amount)
+    absolute = abs(raw)
+    is_payment_or_credit = category in _LEGACY_CREDIT_CATEGORIES or (
+        category in _LEGACY_UNKNOWN_OR_OTHER and raw < 0
+    )
+    signed = -absolute if is_payment_or_credit else absolute
+    return _quantize_amount_text(signed)
 
 
 def _currency_text(transaction: Transaction) -> str:
@@ -111,16 +138,37 @@ def _identity(
     transaction: Transaction,
     *,
     statement_scope: str = "",
+    amount_text_fn=_amount_text,
 ) -> tuple[str, str, str, str, str, str]:
     category = str(transaction.get("category") or "")
     return (
         transaction["date"].strip(),
         _normalize_merchant(transaction["merchant"]),
-        _amount_text(float(transaction["amount"]), category=category),
+        amount_text_fn(float(transaction["amount"]), category=category),
         _currency_text(transaction),
         str(transaction.get("card_last4") or "").strip(),
         _statement_scope(transaction, statement_scope),
     )
+
+
+def _keys_for_transactions(
+    transactions: list[Transaction],
+    *,
+    statement_scope: str = "",
+    amount_text_fn=_amount_text,
+) -> list[str]:
+    seen: dict[tuple[str, str, str, str, str, str], int] = {}
+    keys: list[str] = []
+    for transaction in transactions:
+        identity = _identity(
+            transaction,
+            statement_scope=statement_scope,
+            amount_text_fn=amount_text_fn,
+        )
+        seen[identity] = seen.get(identity, 0) + 1
+        payload = "|".join((*identity, str(seen[identity])))
+        keys.append(sha256(payload.encode("utf-8")).hexdigest())
+    return keys
 
 
 def source_keys_for_transactions(
@@ -129,14 +177,24 @@ def source_keys_for_transactions(
     statement_scope: str = "",
 ) -> list[str]:
     """One key per row. Occurrence counts identical rows in this statement list."""
-    seen: dict[tuple[str, str, str, str, str, str], int] = {}
-    keys: list[str] = []
-    for transaction in transactions:
-        identity = _identity(transaction, statement_scope=statement_scope)
-        seen[identity] = seen.get(identity, 0) + 1
-        payload = "|".join((*identity, str(seen[identity])))
-        keys.append(sha256(payload.encode("utf-8")).hexdigest())
-    return keys
+    return _keys_for_transactions(
+        transactions,
+        statement_scope=statement_scope,
+        amount_text_fn=_amount_text,
+    )
+
+
+def legacy_source_keys_for_transactions(
+    transactions: list[Transaction],
+    *,
+    statement_scope: str = "",
+) -> list[str]:
+    """Keys as hashed before refund signs were kept; used only for dedupe."""
+    return _keys_for_transactions(
+        transactions,
+        statement_scope=statement_scope,
+        amount_text_fn=_legacy_amount_text,
+    )
 
 
 def normalize_merchant_for_source_key(merchant: str) -> str:
