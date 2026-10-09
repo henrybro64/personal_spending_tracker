@@ -82,6 +82,14 @@ def test_unknown_card_same_statement_reuses_key() -> None:
     assert first == second
 
 
+def test_refund_does_not_share_a_key_with_the_purchase() -> None:
+    purchase = _row("AMAZON", 25.0, category="Shopping / Online Retail")
+    refund = _row("AMAZON", -25.0, category="Shopping / Online Retail")
+    assert source_keys_for_transactions([purchase]) != (
+        source_keys_for_transactions([refund])
+    )
+
+
 def test_payment_sign_is_normalized_for_cross_path_keys() -> None:
     upload_style = _row(
         "THANK YOU PAYMENT",

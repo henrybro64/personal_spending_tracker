@@ -33,15 +33,6 @@ CARD_LAST4_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
-_CREDIT_CATEGORIES = frozenset(
-    {
-        PAYMENT_CATEGORY,
-        "Refunds & Credits",
-    }
-)
-_UNKNOWN_OR_OTHER = frozenset({"Unknown / Needs Review", "Other Spending"})
-
-
 def statement_content_fingerprint(statement_text: str) -> str:
     """Canonical fingerprint for upload and batch statement identity."""
     normalized = normalize_statement_text(statement_text)
@@ -84,13 +75,14 @@ def with_statement_card_last4(
 
 
 def _amount_text(amount: float, *, category: str) -> str:
-    """Match batch sign rules so upload and batch keys agree."""
+    """Keep the statement sign. Card payments are always negative.
+
+    A refund must not share a key with the purchase it reverses. Payments
+    stay negative so a positive upload amount and a negative batch amount
+    for the same payment still match.
+    """
     raw = float(amount)
-    absolute = abs(raw)
-    is_payment_or_credit = category in _CREDIT_CATEGORIES or (
-        category in _UNKNOWN_OR_OTHER and raw < 0
-    )
-    signed = -absolute if is_payment_or_credit else absolute
+    signed = -abs(raw) if category == PAYMENT_CATEGORY else raw
     quantized = Decimal(str(signed)).quantize(Decimal("0.01"))
     return f"{quantized:.2f}"
 

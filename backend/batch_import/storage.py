@@ -8,6 +8,7 @@ from typing import Any, TypedDict
 
 from backend.merchant_noise import merchant_raw_is_parse_noise
 
+from .amounts import signed_amount
 from .category import (
     CategoryEngine,
     CategoryRule,
@@ -19,6 +20,14 @@ from .paths import default_sqlite_output_path
 
 
 DEFAULT_BATCH_DATABASE_PATH = default_sqlite_output_path()
+
+
+def _statement_amount(row: sqlite3.Row) -> float:
+    """Printed amount. Older rows are backfilled from the stored amount."""
+    keys = row.keys()
+    if "statement_amount" in keys and row["statement_amount"] is not None:
+        return float(row["statement_amount"])
+    return float(row["amount"])
 
 
 class BatchStoredTransaction(TypedDict):
@@ -92,6 +101,7 @@ class BatchImportStore:
                     merchant_raw TEXT NOT NULL,
                     merchant_key TEXT NOT NULL,
                     amount REAL NOT NULL,
+                    statement_amount REAL,
                     currency TEXT NOT NULL,
                     transaction_type TEXT NOT NULL,
                     category TEXT NOT NULL,
@@ -145,6 +155,20 @@ class BatchImportStore:
                 ADD COLUMN statement_content_sha256 TEXT NOT NULL DEFAULT ''
                 """
             )
+        if "statement_amount" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE imported_transactions
+                ADD COLUMN statement_amount REAL
+                """
+            )
+        connection.execute(
+            """
+            UPDATE imported_transactions
+            SET statement_amount = amount
+            WHERE statement_amount IS NULL
+            """
+        )
 
     def load_learned_rules(self) -> list[CategoryRule]:
         with self._connect() as connection:
@@ -227,6 +251,7 @@ class BatchImportStore:
                     merchant_raw,
                     merchant_key,
                     amount,
+                    statement_amount,
                     currency,
                     transaction_type,
                     category,
@@ -234,7 +259,7 @@ class BatchImportStore:
                     needs_review,
                     statement_content_sha256
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -247,6 +272,11 @@ class BatchImportStore:
                         transaction.merchant_raw,
                         normalize_merchant_key(transaction.merchant_raw),
                         transaction.amount,
+                        (
+                            transaction.statement_amount
+                            if transaction.statement_amount is not None
+                            else transaction.amount
+                        ),
                         transaction.currency,
                         transaction.transaction_type,
                         transaction.category,
@@ -543,7 +573,7 @@ class BatchImportStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, amount
+                SELECT id, amount, statement_amount
                 FROM imported_transactions
                 WHERE import_run_id = ?
                   AND merchant_raw = ?
@@ -556,10 +586,9 @@ class BatchImportStore:
 
             updates: list[tuple[float, str, int, int, str, int]] = []
             for row in rows:
-                normalized_amount = (
-                    -abs(float(row["amount"]))
-                    if transaction_type == "payment_or_credit"
-                    else abs(float(row["amount"]))
+                normalized_amount = signed_amount(
+                    _statement_amount(row),
+                    transaction_type,
                 )
                 updates.append(
                     (
@@ -638,7 +667,7 @@ class BatchImportStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, amount, merchant_raw
+                SELECT id, amount, statement_amount, merchant_raw
                 FROM imported_transactions
                 WHERE import_run_id = ?
                   AND needs_review = 1
@@ -650,7 +679,8 @@ class BatchImportStore:
             for row in rows:
                 if not merchant_raw_is_parse_noise(str(row["merchant_raw"])):
                     continue
-                amount = abs(float(row["amount"]))
+                # Keep the printed sign; do not force abs() on refunds.
+                amount = signed_amount(_statement_amount(row), "purchase")
                 updates.append(
                     (
                         amount,
@@ -704,7 +734,7 @@ class BatchImportStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, merchant_raw, amount
+                SELECT id, merchant_raw, amount, statement_amount
                 FROM imported_transactions
                 WHERE import_run_id = ?
                   AND needs_review = 1
@@ -718,8 +748,11 @@ class BatchImportStore:
                 if merchant_raw_is_parse_noise(merchant_raw):
                     continue
 
-                amount = float(row["amount"])
-                category_match = category_engine.categorize(merchant_raw, amount)
+                printed_amount = _statement_amount(row)
+                category_match = category_engine.categorize(
+                    merchant_raw,
+                    printed_amount,
+                )
                 if category_match.needs_review:
                     continue
 
@@ -727,10 +760,9 @@ class BatchImportStore:
                     category_match.category,
                     category_match.exclude_from_spending,
                 )
-                normalized_amount = (
-                    -abs(amount)
-                    if transaction_type == "payment_or_credit"
-                    else abs(amount)
+                normalized_amount = signed_amount(
+                    printed_amount,
+                    transaction_type,
                 )
                 updates.append(
                     (
@@ -824,6 +856,7 @@ class BatchImportStore:
                     posted_date,
                     merchant_raw,
                     amount,
+                    statement_amount,
                     currency
                 FROM imported_transactions
                 WHERE id = ?
@@ -846,10 +879,9 @@ class BatchImportStore:
                 category,
                 exclude_from_spending,
             )
-            normalized_amount = (
-                -abs(float(row["amount"]))
-                if transaction_type == "payment_or_credit"
-                else abs(float(row["amount"]))
+            normalized_amount = signed_amount(
+                _statement_amount(row),
+                transaction_type,
             )
             needs_review = False
 

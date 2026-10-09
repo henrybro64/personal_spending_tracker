@@ -44,6 +44,22 @@ class CategoryEngineTests(unittest.TestCase):
         self.assertTrue(payment_match.exclude_from_spending)
         self.assertEqual("payment_or_credit", payment_match.transaction_type)
 
+        # Whole phrases only — same guards as upload (#75).
+        for merchant in ("APPLE PAYMENT SERVICE", "PAYMENTUS"):
+            match = engine.categorize(merchant, 25.00)
+            self.assertNotEqual(
+                "Payment / Credit",
+                match.category,
+                merchant,
+            )
+            self.assertFalse(match.exclude_from_spending, merchant)
+
+        mystery_refund = engine.categorize("MYSTERY REFUND", -40.00)
+        self.assertEqual("Refunds & Credits", mystery_refund.category)
+        self.assertFalse(mystery_refund.exclude_from_spending)
+        self.assertTrue(mystery_refund.needs_review)
+        self.assertEqual("purchase", mystery_refund.transaction_type)
+
         uber_zh_match = engine.categorize("優步 台灣", 220.00)
         self.assertEqual("Transportation", uber_zh_match.category)
 
@@ -294,7 +310,8 @@ class ParserFixtureTests(unittest.TestCase):
                 "Chase",
                 "6814",
                 2,
-                ["Shopping / Online Retail", "Payment / Credit"],
+                # Merchant refund keeps Shopping; "REFUND" alone is not a card payment.
+                ["Shopping / Online Retail", "Shopping / Online Retail"],
             ),
             (
                 "ctbc_daily_statement.txt",
@@ -1013,6 +1030,192 @@ class MerchantDigitNoiseTests(unittest.TestCase):
             )
             self.assertEqual("Dining / Food", foodpanda["category"])
             self.assertFalse(foodpanda["needs_review"])
+
+
+def test_batch_refund_keeps_its_minus_sign():
+    parser = ChaseStatementParser(name="chase", bank="Chase", currency="USD")
+    text = (
+        "JPMORGAN CHASE BANK\n"
+        "Opening/Closing Date 01/01/26 - 01/31/26\n"
+        "01/05 01/06 AMAZON MKTP US 25.00\n"
+        "01/09 01/10 AMAZON MKTP US -25.00\n"
+        "01/12 01/13 SOME UNKNOWN SHOP -40.00\n"
+    )
+    rows = parser.parse(Path("statements-1234-.txt"), text, CategoryEngine())
+    assert [row.amount for row in rows] == [25.0, -25.0, -40.0]
+    assert [row.exclude_from_spending for row in rows] == [False, False, False]
+    assert rows[2].needs_review is True
+    assert rows[2].category == "Refunds & Credits"
+    assert rows[1].category == "Shopping / Online Retail"
+
+
+def test_amex_thank_you_payment_stays_negative_and_excluded():
+    from backend.batch_import.parsers import AmexStatementParser
+
+    parser = AmexStatementParser(name="amex", bank="Amex", currency="USD")
+    text = (FIXTURE_DIR / "amex_statement.txt").read_text(encoding="utf-8")
+    rows = parser.parse(Path("2026-01-29.txt"), text, CategoryEngine())
+    payment = next(
+        row for row in rows if row.merchant_raw == "THANK YOU PAYMENT"
+    )
+    assert payment.amount == -100.0
+    assert payment.exclude_from_spending is True
+    assert payment.transaction_type == "payment_or_credit"
+
+
+def _store_refund(tmp_path: Path, merchant: str, amount: float):
+    from backend.batch_import.models import NormalizedTransaction
+
+    store = BatchImportStore(tmp_path / "b.sqlite3")
+    store.initialize()
+    refund = NormalizedTransaction(
+        statement_file="s.txt",
+        bank="Chase",
+        card_last4=None,
+        transaction_date="2026-01-09",
+        posted_date=None,
+        merchant_raw=merchant,
+        amount=amount,
+        currency="USD",
+        transaction_type="purchase",
+        category="Other Spending",
+        exclude_from_spending=False,
+        needs_review=True,
+        statement_amount=amount,
+    )
+    run_id, _, _ = store.record_import_run(
+        [refund],
+        pdf_source_dir="",
+        text_source_dir="",
+        csv_output_path="",
+        statement_count=1,
+    )
+    return store, run_id
+
+
+def test_reviewing_a_refund_keeps_its_minus_sign(tmp_path):
+    store, run_id = _store_refund(tmp_path, "SOME SHOP", -40.0)
+    row_id = store.list_transactions(run_id=run_id)[0]["id"]
+    updated = store.update_transaction_review(
+        row_id,
+        category="Shopping / Retail",
+        exclude_from_spending=False,
+        save_rule=False,
+    )
+    assert updated["amount"] == -40.0
+
+
+def test_bulk_review_of_a_refund_keeps_its_minus_sign(tmp_path):
+    store, run_id = _store_refund(tmp_path, "SOME SHOP", -40.0)
+    updated = store.bulk_update_merchant_review(
+        run_id=run_id,
+        merchant_raw="SOME SHOP",
+        category="Shopping / Retail",
+        exclude_from_spending=False,
+        save_rule=False,
+    )
+    assert updated == 1
+    row = store.list_transactions(run_id=run_id)[0]
+    assert row["amount"] == -40.0
+    assert row["category"] == "Shopping / Retail"
+
+
+def test_auto_apply_default_categories_keeps_refund_sign(tmp_path):
+    store, run_id = _store_refund(tmp_path, "AMAZON MKTP US", -25.0)
+    updated = store.auto_apply_default_categories(
+        run_id=run_id,
+        category_engine=CategoryEngine(),
+    )
+    assert updated == 1
+    row = store.list_transactions(run_id=run_id)[0]
+    assert row["amount"] == -25.0
+    assert row["category"] == "Shopping / Online Retail"
+    assert row["needs_review"] is False
+
+
+def test_reviewing_a_purchase_as_a_payment_makes_it_negative(tmp_path):
+    store, run_id = _store_refund(tmp_path, "SOME SHOP", 40.0)
+    row_id = store.list_transactions(run_id=run_id)[0]["id"]
+    updated = store.update_transaction_review(
+        row_id,
+        category="Payment / Credit",
+        exclude_from_spending=True,
+        save_rule=False,
+    )
+    assert updated["amount"] == -40.0
+
+
+def test_old_batch_sqlite_backfills_statement_amount(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE imported_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_run_id INTEGER NOT NULL,
+            statement_file TEXT NOT NULL,
+            bank TEXT NOT NULL,
+            card_last4 TEXT,
+            transaction_date TEXT NOT NULL,
+            posted_date TEXT,
+            merchant_raw TEXT NOT NULL,
+            merchant_key TEXT NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL,
+            transaction_type TEXT NOT NULL,
+            category TEXT NOT NULL,
+            exclude_from_spending INTEGER NOT NULL,
+            needs_review INTEGER NOT NULL,
+            postgres_synced INTEGER NOT NULL DEFAULT 0,
+            statement_content_sha256 TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO imported_transactions (
+            import_run_id,
+            statement_file,
+            bank,
+            transaction_date,
+            merchant_raw,
+            merchant_key,
+            amount,
+            currency,
+            transaction_type,
+            category,
+            exclude_from_spending,
+            needs_review
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,
+            "s.txt",
+            "Chase",
+            "2026-01-09",
+            "SOME SHOP",
+            "SOME SHOP",
+            -40.0,
+            "USD",
+            "purchase",
+            "Other Spending",
+            0,
+            1,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    store = BatchImportStore(path)
+    store.initialize()
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT statement_amount FROM imported_transactions"
+        ).fetchone()
+    assert row == (-40.0,)
 
 
 if __name__ == "__main__":
