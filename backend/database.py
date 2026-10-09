@@ -1,5 +1,6 @@
 import os
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Literal, TypedDict
 
 import psycopg
@@ -1001,47 +1002,42 @@ def create_statement_upload(
 
 
 def _quantized_amount(amount: float) -> str:
-    from decimal import Decimal
-
     return f"{Decimal(str(amount)).quantize(Decimal('0.01')):.2f}"
 
 
 def _legacy_row_matches_transaction(
     *,
+    legacy_date: str,
     legacy_merchant: str,
     legacy_amount: float,
     legacy_currency: str,
     transaction: Transaction,
     original_currency: str,
 ) -> bool:
-    if normalize_merchant_for_source_key(legacy_merchant) != (
-        normalize_merchant_for_source_key(transaction["merchant"])
-    ):
+    if legacy_date != transaction["date"].strip():
         return False
-    if _quantized_amount(legacy_amount) != _quantized_amount(
+    merchants_match = normalize_merchant_for_source_key(
+        legacy_merchant
+    ) == normalize_merchant_for_source_key(transaction["merchant"])
+    amounts_match = _quantized_amount(legacy_amount) == _quantized_amount(
         float(transaction["amount"])
-    ):
-        return False
-    legacy_currency_code = normalize_supported_currency_code(
-        legacy_currency,
-        default=DEFAULT_BASE_CURRENCY,
     )
-    return legacy_currency_code == original_currency
+    currencies_match = (
+        normalize_supported_currency_code(
+            legacy_currency,
+            default=DEFAULT_BASE_CURRENCY,
+        )
+        == original_currency
+    )
+    return merchants_match and amounts_match and currencies_match
 
 
-def _backfill_legacy_source_keys(
+def _fetch_legacy_null_key_rows(
     cursor: psycopg.Cursor[Any],
     *,
     user_id: int,
-    transactions: list[Transaction],
-    source_keys: list[str],
-) -> set[str]:
-    """Attach keys to pre-migration NULL rows that match; return claimed keys."""
-
-    dates = sorted({transaction["date"].strip() for transaction in transactions})
-    if not dates:
-        return set()
-
+    dates: list[str],
+) -> list[tuple[Any, ...]]:
     cursor.execute(
         """
         SELECT
@@ -1059,7 +1055,45 @@ def _backfill_legacy_source_keys(
         """,
         (user_id, dates),
     )
-    legacy_rows = list(cursor.fetchall())
+    return list(cursor.fetchall())
+
+
+def _try_claim_legacy_row(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    source_key: str,
+    legacy_id: int,
+) -> bool:
+    cursor.execute(
+        """
+        UPDATE transactions
+        SET source_key = %s
+        WHERE id = %s
+          AND user_id = %s
+          AND source_key IS NULL
+        """,
+        (source_key, legacy_id, user_id),
+    )
+    return int(cursor.rowcount or 0) > 0
+
+
+def _backfill_legacy_source_keys(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    transactions: list[Transaction],
+    source_keys: list[str],
+) -> set[str]:
+    """Attach keys to pre-migration NULL rows that match; return claimed keys."""
+
+    dates = sorted({transaction["date"].strip() for transaction in transactions})
+    if not dates:
+        return set()
+
+    legacy_rows = _fetch_legacy_null_key_rows(
+        cursor, user_id=user_id, dates=dates
+    )
     if not legacy_rows:
         return set()
 
@@ -1076,9 +1110,8 @@ def _backfill_legacy_source_keys(
             legacy_id = int(row[0])
             if legacy_id in claimed_legacy_ids:
                 continue
-            if str(row[1]) != transaction["date"].strip():
-                continue
             if not _legacy_row_matches_transaction(
+                legacy_date=str(row[1]),
                 legacy_merchant=str(row[2]),
                 legacy_amount=float(row[3]),
                 legacy_currency=str(row[4]),
@@ -1086,17 +1119,12 @@ def _backfill_legacy_source_keys(
                 original_currency=original_currency,
             ):
                 continue
-            cursor.execute(
-                """
-                UPDATE transactions
-                SET source_key = %s
-                WHERE id = %s
-                  AND user_id = %s
-                  AND source_key IS NULL
-                """,
-                (source_key, legacy_id, user_id),
-            )
-            if cursor.rowcount:
+            if _try_claim_legacy_row(
+                cursor,
+                user_id=user_id,
+                source_key=source_key,
+                legacy_id=legacy_id,
+            ):
                 claimed_keys.add(source_key)
                 claimed_legacy_ids.add(legacy_id)
             break

@@ -1,6 +1,6 @@
 -- Stable identity for imported purchases. Manual entries stay NULL.
--- Existing rows start NULL; insert/merge backfills matching legacy rows
--- when the same charge is imported again so re-merges do not double-count.
+-- Pre-existing dashboard rows keep a null key until a later import of the
+-- same charge attaches the stable key and avoids duplicates.
 ALTER TABLE transactions
 ADD COLUMN IF NOT EXISTS source_key TEXT;
 
