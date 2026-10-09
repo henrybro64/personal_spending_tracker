@@ -6,6 +6,7 @@ from backend.statement_parse_utils import (
     MERCHANT_MISSING_FROM_PDF_CATEGORY,
     MERCHANT_NOT_IN_PDF,
 )
+from backend.transaction_exclusions import is_card_payment_merchant
 
 from .models import TransactionType
 
@@ -48,25 +49,8 @@ def transaction_type_for_category(
 
 
 DEFAULT_RULES: tuple[CategoryRule, ...] = (
-    CategoryRule(
-        patterns=(
-            "繳款",
-            "網路繳款",
-            "帳戶繳款",
-            "本行帳戶繳款",
-        ),
-        category=PAYMENT_CATEGORY,
-        exclude_from_spending=True,
-        transaction_type="payment_or_credit",
-        priority=50,
-    ),
-    CategoryRule(
-        patterns=("PAYMENT", "THANK YOU", "REFUND", "CREDIT"),
-        category=PAYMENT_CATEGORY,
-        exclude_from_spending=True,
-        transaction_type="payment_or_credit",
-        priority=100,
-    ),
+    # Card payments use is_card_payment_merchant (whole phrases), not substring
+    # rules, so APPLE PAYMENT SERVICE / PAYMENTUS / MYSTERY REFUND stay purchases.
     CategoryRule(
         patterns=(
             "MEASUREUP",
@@ -457,6 +441,15 @@ class CategoryEngine:
                 needs_review=False,
             )
 
+        # Same phrase list as upload / should_exclude_from_spending (#75).
+        if is_card_payment_merchant(merchant_raw):
+            return CategoryMatch(
+                category=PAYMENT_CATEGORY,
+                exclude_from_spending=True,
+                transaction_type="payment_or_credit",
+                needs_review=False,
+            )
+
         merchant_upper = " ".join(merchant_raw.upper().split())
         merchant_key = normalize_merchant_key(merchant_raw)
 
@@ -469,10 +462,18 @@ class CategoryEngine:
                     needs_review=False,
                 )
 
+        if amount < 0:
+            return CategoryMatch(
+                category="Refunds & Credits",
+                exclude_from_spending=False,
+                transaction_type="purchase",
+                needs_review=True,
+            )
+
         return CategoryMatch(
             category="Other Spending",
-            exclude_from_spending=amount < 0,
-            transaction_type="payment_or_credit" if amount < 0 else "purchase",
+            exclude_from_spending=False,
+            transaction_type="purchase",
             needs_review=True,
         )
 

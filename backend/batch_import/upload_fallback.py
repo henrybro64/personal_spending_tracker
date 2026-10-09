@@ -8,6 +8,7 @@ from backend.merchant_noise import merchant_raw_is_parse_noise
 from backend.parser import parse_transactions
 from backend.transaction_source import card_last4_from_statement
 
+from .amounts import signed_amount
 from .category import CategoryEngine
 from .models import NormalizedTransaction
 
@@ -88,12 +89,6 @@ def transactions_from_upload_parser(
 
         raw_amount = float(row["amount"])
         category_match = category_engine.categorize(merchant, raw_amount)
-        absolute_amount = abs(raw_amount)
-        normalized_amount = (
-            -absolute_amount
-            if category_match.transaction_type == "payment_or_credit"
-            else absolute_amount
-        )
         transactions.append(
             NormalizedTransaction(
                 statement_file=source_path.name,
@@ -102,12 +97,16 @@ def transactions_from_upload_parser(
                 transaction_date=row["date"],
                 posted_date=None,
                 merchant_raw=merchant,
-                amount=normalized_amount,
+                amount=signed_amount(
+                    raw_amount,
+                    category_match.transaction_type,
+                ),
                 currency=row["currency"],
                 transaction_type=category_match.transaction_type,
                 category=category_match.category,
                 exclude_from_spending=category_match.exclude_from_spending,
                 needs_review=category_match.needs_review,
+                statement_amount=raw_amount,
             )
         )
 

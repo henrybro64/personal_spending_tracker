@@ -506,3 +506,43 @@ def test_insights_api_rejects_a_period_with_only_unconverted_rows(
     response = client.post("/ai/insights", json={"range": "year", "language": "en"})
     assert response.status_code == 400
     assert "USD or TWD" in response.json()["detail"]
+
+
+def test_us_card_payment_does_not_cancel_purchase_spending(
+    client: TestClient,
+    database_url: str,
+) -> None:
+    user = _register_user(client, "us-card-payment")
+    _store_upload(
+        database_url,
+        user["id"],
+        name="chase-payment",
+        transactions=[
+            {
+                "date": "2026-01-05",
+                "merchant": "TRADER JOE S",
+                "amount": 45.10,
+                "category": "Groceries",
+                "currency": "USD",
+            },
+            {
+                "date": "2026-01-20",
+                "merchant": "Payment Thank You-Mobile",
+                "amount": -45.10,
+                "category": "Refunds & Credits",
+                "currency": "USD",
+            },
+        ],
+    )
+
+    summary = client.get("/summary?currency=USD")
+    dashboard = client.get("/dashboard/view?currency=USD")
+    assert summary.status_code == 200
+    assert dashboard.status_code == 200
+    assert summary.json()["total_spending"] == pytest.approx(45.10)
+    assert dashboard.json()["summary"]["total_spending"] == pytest.approx(
+        45.10
+    )
+    assert [
+        row["merchant"] for row in dashboard.json()["sorted_transactions"]
+    ] == ["TRADER JOE S"]

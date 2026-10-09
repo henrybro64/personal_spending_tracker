@@ -3,5 +3,5 @@ Opening/Closing Date 12/24/2023 - 01/23/2024
 Account ending in 6814
 Trans Date Post Date Description Amount
 01/05 01/06 AMAZON MARKETPLACE 42.10
-01/12 01/13 REFUND AMAZON 15.00
+01/12 01/13 REFUND AMAZON -15.00
 New Balance 27.10

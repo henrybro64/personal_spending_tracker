@@ -19,6 +19,7 @@ from backend.statement_parse_utils import (
 )
 from backend.transaction_source import card_last4_from_statement
 
+from .amounts import signed_amount
 from .category import CategoryEngine
 from .models import NormalizedTransaction
 
@@ -73,12 +74,6 @@ class BaseStatementParser:
     ) -> NormalizedTransaction:
         normalized_merchant = _normalize_line(merchant_raw)
         category_match = category_engine.categorize(normalized_merchant, raw_amount)
-        absolute_amount = abs(raw_amount)
-        normalized_amount = (
-            -absolute_amount
-            if category_match.transaction_type == "payment_or_credit"
-            else absolute_amount
-        )
         return NormalizedTransaction(
             statement_file=source_path.name,
             bank=self.bank,
@@ -86,12 +81,16 @@ class BaseStatementParser:
             transaction_date=transaction_date,
             posted_date=posted_date,
             merchant_raw=normalized_merchant,
-            amount=normalized_amount,
+            amount=signed_amount(
+                raw_amount,
+                category_match.transaction_type,
+            ),
             currency=self.currency,
             transaction_type=category_match.transaction_type,
             category=category_match.category,
             exclude_from_spending=category_match.exclude_from_spending,
             needs_review=category_match.needs_review,
+            statement_amount=raw_amount,
         )
 
 

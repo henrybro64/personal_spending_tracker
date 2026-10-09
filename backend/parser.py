@@ -18,7 +18,7 @@ from backend.statement_parse_utils import (
 )
 from backend.transaction_exclusions import (
     PAYMENT_CATEGORY,
-    is_credit_card_bill_payment,
+    is_card_payment_merchant,
 )
 
 
@@ -45,7 +45,6 @@ CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
             "ZELLE",
             "CASH APP",
             "TRANSFER",
-            "PAYMENT RECEIVED",
             "DEPOSIT",
         ),
     ),
@@ -647,7 +646,7 @@ AI_SERVICE_KEYWORDS: tuple[str, ...] = (
 
 
 def categorize_merchant(merchant: str, amount: float | None = None) -> str:
-    if is_credit_card_bill_payment(merchant):
+    if is_card_payment_merchant(merchant):
         return PAYMENT_CATEGORY
 
     if merchant.strip() == MERCHANT_NOT_IN_PDF:

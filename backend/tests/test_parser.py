@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from backend.parser import categorize_merchant, parse_transactions
+from backend.transaction_exclusions import should_exclude_from_spending
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -36,6 +37,7 @@ def test_parse_chase_fixture_covers_us_and_iso_lines() -> None:
     payment = _transaction_by_merchant(transactions, "PAYMENT RECEIVED")
     assert payment["date"] == "2024-04-21"
     assert payment["amount"] == -100.0
+    assert payment["category"] == "Payment / Credit"
     assert payment["currency"] == "USD"
 
     openai = _transaction_by_merchant(transactions, "OPENAI API")
@@ -129,3 +131,39 @@ def test_categorize_merchant_handles_known_merchants() -> None:
     assert categorize_merchant("富邦ｍｏｍｏ", 500.0) == "Shopping"
     assert categorize_merchant("ＣＯＵＰＡＮＧ 酷澎", 500.0) == "Shopping"
     assert categorize_merchant("陳耀訓 麵包埠", 120.0) == "Dining"
+
+
+def test_us_card_payment_is_not_counted_as_spending():
+    text = (
+        "CHASE\nOpening/Closing Date 01/01/26 - 01/31/26\n"
+        "01/05 TRADER JOE S 45.10\n"
+        "01/20 Payment Thank You-Mobile -45.10\n"
+        "01/21 AUTOMATIC PAYMENT - THANK YOU -10.00\n"
+    )
+    rows = {row["merchant"]: row for row in parse_transactions(text)}
+    payment_names = (
+        "Payment Thank You-Mobile",
+        "AUTOMATIC PAYMENT - THANK YOU",
+    )
+    for name in payment_names:
+        row = rows[name]
+        assert row["category"] == "Payment / Credit"
+        assert should_exclude_from_spending(
+            row["merchant"],
+            category=row["category"],
+        ), row
+    groceries = rows["TRADER JOE S"]
+    assert groceries["category"] != "Payment / Credit"
+    assert not should_exclude_from_spending(
+        groceries["merchant"],
+        category=groceries["category"],
+    )
+
+
+def test_payment_phrases_do_not_match_merchant_names_that_contain_payment():
+    for name in ("APPLE PAYMENT SERVICE", "PAYMENTUS"):
+        assert categorize_merchant(name, 12.0) != "Payment / Credit"
+        assert not should_exclude_from_spending(
+            name,
+            category="Other Spending",
+        )

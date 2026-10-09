@@ -7,6 +7,7 @@ import re
 from datetime import date
 from typing import Any, Literal
 
+from backend.batch_import.amounts import signed_amount
 from backend.batch_import.category import (
     CategoryEngine,
     transaction_type_for_category,
@@ -345,14 +346,6 @@ def _normalize_row(
             else category_match.needs_review
         )
 
-    absolute_amount = abs(amount)
-    if amount < 0:
-        normalized_amount = -absolute_amount
-    elif transaction_type == "payment_or_credit":
-        normalized_amount = -absolute_amount
-    else:
-        normalized_amount = absolute_amount
-
     return NormalizedTransaction(
         statement_file=statement_file,
         bank=row_bank,
@@ -360,12 +353,13 @@ def _normalize_row(
         transaction_date=date_text,
         posted_date=posted_date,
         merchant_raw=merchant,
-        amount=normalized_amount,
+        amount=signed_amount(amount, transaction_type),
         currency=row_currency.upper(),
         transaction_type=transaction_type,
         category=category,
         exclude_from_spending=exclude_from_spending,
         needs_review=needs_review,
+        statement_amount=amount,
     )
 
 
