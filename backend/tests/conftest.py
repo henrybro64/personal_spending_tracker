@@ -5,6 +5,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import types
 from pathlib import Path
@@ -117,55 +118,70 @@ def _start_ephemeral_postgres(
     cluster_root = tmp_path_factory.mktemp("postgres-cluster")
     data_dir = cluster_root / "data"
     log_path = cluster_root / "postgres.log"
-    socket_dir = cluster_root / "sockets"
-    socket_dir.mkdir(parents=True, exist_ok=True)
     port = _pick_free_port()
+    # Postgres caps Unix socket paths at 103 bytes. pytest's default tmp dirs
+    # under /var/folders/... are often longer, so keep sockets under /tmp.
+    socket_dir = Path(tempfile.mkdtemp(prefix=f"pst{port}-", dir="/tmp"))
     database_name = "personal_spending_tracker_test"
     admin_dsn = f"postgresql://postgres@127.0.0.1:{port}/postgres"
     dsn = f"postgresql://postgres@127.0.0.1:{port}/{database_name}"
 
-    _run_command(
-        [
-            initdb,
-            "-D",
-            str(data_dir),
-            "--auth=trust",
-            "--username",
-            "postgres",
-        ],
-        log_path=log_path,
-    )
-    pg_options = (
-        f"-F -p {port} "
-        f"-c listen_addresses=127.0.0.1 "
-        f"-c unix_socket_directories={socket_dir} "
-        f"-c shared_buffers=64MB "
-        f"-c max_connections=50"
-    )
-    _run_command(
-        [
-            pg_ctl,
-            "-D",
-            str(data_dir),
-            "-l",
-            str(log_path),
-            "-o",
-            pg_options,
-            "start",
-        ],
-        log_path=log_path,
-    )
-    _wait_for_postgres(admin_dsn)
-    _run_command(
-        [createdb, "-h", "127.0.0.1", "-p", str(port), "-U", "postgres", database_name],
-        log_path=log_path,
-    )
-    _wait_for_postgres(dsn)
+    try:
+        _run_command(
+            [
+                initdb,
+                "-D",
+                str(data_dir),
+                "--auth=trust",
+                "--username",
+                "postgres",
+            ],
+            log_path=log_path,
+        )
+        pg_options = (
+            f"-F -p {port} "
+            f"-c listen_addresses=127.0.0.1 "
+            f"-c unix_socket_directories={socket_dir} "
+            f"-c shared_buffers=64MB "
+            f"-c max_connections=50"
+        )
+        _run_command(
+            [
+                pg_ctl,
+                "-D",
+                str(data_dir),
+                "-l",
+                str(log_path),
+                "-o",
+                pg_options,
+                "start",
+            ],
+            log_path=log_path,
+        )
+        _wait_for_postgres(admin_dsn)
+        _run_command(
+            [
+                createdb,
+                "-h",
+                "127.0.0.1",
+                "-p",
+                str(port),
+                "-U",
+                "postgres",
+                database_name,
+            ],
+            log_path=log_path,
+        )
+        _wait_for_postgres(dsn)
+    except Exception:
+        shutil.rmtree(socket_dir, ignore_errors=True)
+        raise
 
     return dsn, {
         "dropdb": dropdb,
         "pg_ctl": pg_ctl,
         "data_dir": data_dir,
+        "socket_dir": socket_dir,
         "port": port,
         "database_name": database_name,
     }
@@ -229,6 +245,7 @@ def database_url(tmp_path_factory: pytest.TempPathFactory) -> str:
             capture_output=True,
             text=True,
         )
+        shutil.rmtree(teardown["socket_dir"], ignore_errors=True)
 
 
 @pytest.fixture

@@ -946,6 +946,61 @@ def get_user_ai_provider_secret(
     }
 
 
+def _insert_statement_upload_row(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    original_file_name: str,
+    stored_file_name: str,
+    file_fingerprint_sha256: str,
+    parse_status: str,
+    parse_reason: str | None,
+    parse_error: str | None,
+    currency: str | None,
+) -> StatementUploadRecord:
+    cursor.execute(
+        """
+        INSERT INTO statement_uploads (
+            user_id,
+            original_file_name,
+            stored_file_name,
+            file_fingerprint_sha256,
+            currency,
+            parse_status,
+            parse_reason,
+            parse_error
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING
+            id,
+            stored_file_name,
+            original_file_name,
+            uploaded_at,
+            parse_status
+        """,
+        (
+            user_id,
+            original_file_name,
+            stored_file_name,
+            file_fingerprint_sha256,
+            currency,
+            parse_status,
+            parse_reason,
+            parse_error,
+        ),
+    )
+    upload_id, file_name, display_name, uploaded_at, resolved_parse_status = (
+        cursor.fetchone()
+    )
+    return {
+        "id": int(upload_id),
+        "file_name": str(file_name),
+        "display_name": str(display_name),
+        "uploaded_at": _iso_datetime(uploaded_at),
+        "parse_status": str(resolved_parse_status),
+    }
+
+
 def create_statement_upload(
     *,
     user_id: int,
@@ -967,46 +1022,22 @@ def create_statement_upload(
             statement_timeout_ms=None,
         ) as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO statement_uploads (
-                        user_id,
-                        original_file_name,
-                        stored_file_name,
-                        file_fingerprint_sha256,
-                        currency,
-                        parse_status,
-                        parse_reason,
-                        parse_error
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id, stored_file_name, original_file_name, uploaded_at, parse_status
-                    """,
-                    (
-                        user_id,
-                        original_file_name,
-                        stored_file_name,
-                        file_fingerprint_sha256,
-                        currency,
-                        parse_status,
-                        parse_reason,
-                        parse_error,
-                    ),
-                )
-                upload_id, file_name, display_name, uploaded_at, resolved_parse_status = (
-                    cursor.fetchone()
+                record = _insert_statement_upload_row(
+                    cursor,
+                    user_id=user_id,
+                    original_file_name=original_file_name,
+                    stored_file_name=stored_file_name,
+                    file_fingerprint_sha256=file_fingerprint_sha256,
+                    parse_status=parse_status,
+                    parse_reason=parse_reason,
+                    parse_error=parse_error,
+                    currency=currency,
                 )
             connection.commit()
     except psycopg.errors.UniqueViolation as exc:
         raise DuplicateStatementUploadError(file_fingerprint_sha256) from exc
 
-    return {
-        "id": int(upload_id),
-        "file_name": str(file_name),
-        "display_name": str(display_name),
-        "uploaded_at": _iso_datetime(uploaded_at),
-        "parse_status": str(resolved_parse_status),
-    }
+    return record
 
 
 def _quantized_amount(amount: float) -> str:
@@ -1209,22 +1240,21 @@ def _claim_pre_sign_fix_source_keys(
     return newly_claimed
 
 
-def insert_transactions(
+def _prepare_transaction_rows(
     transactions: list[Transaction],
     *,
     user_id: int,
     file_name: str,
-    file_fingerprint: str | None = None,
-    original_file_name: str | None = None,
-    statement_upload_id: int | None = None,
-    source_keys: list[str] | None = None,
-    statement_scope: str = "",
-    database_url: str | None = None,
-) -> InsertTransactionsResult:
-    if not transactions:
-        return InsertTransactionsResult(0, frozenset())
-
-    resolved_database_url = _resolve_database_url(database_url)
+    file_fingerprint: str | None,
+    original_file_name: str | None,
+    statement_upload_id: int | None,
+    source_keys: list[str] | None,
+    statement_scope: str,
+) -> tuple[
+    list[str],
+    list[str],
+    list[tuple[Transaction, str, tuple[object, ...]]],
+]:
     display_name = original_file_name or file_name
     resolved_scope = statement_scope or (file_fingerprint or "")
     resolved_keys = source_keys or source_keys_for_transactions(
@@ -1292,38 +1322,158 @@ def insert_transactions(
                 ),
             )
         )
+    return resolved_keys, legacy_keys, prepared
 
+
+def _write_prepared_transactions(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    transactions: list[Transaction],
+    resolved_keys: list[str],
+    legacy_keys: list[str],
+    prepared: list[tuple[Transaction, str, tuple[object, ...]]],
+) -> InsertTransactionsResult:
+    if not transactions:
+        return InsertTransactionsResult(0, frozenset())
+
+    claimed_keys = _backfill_legacy_source_keys(
+        cursor,
+        user_id=user_id,
+        transactions=transactions,
+        source_keys=resolved_keys,
+    )
+    claimed_keys |= _claim_pre_sign_fix_source_keys(
+        cursor,
+        user_id=user_id,
+        source_keys=resolved_keys,
+        legacy_keys=legacy_keys,
+        already_claimed=claimed_keys,
+    )
+    insert_rows = [
+        row
+        for _transaction, source_key, row in prepared
+        if source_key not in claimed_keys
+    ]
+    inserted_keys = _insert_transaction_rows(cursor, insert_rows)
+    return InsertTransactionsResult(
+        inserted_count=len(inserted_keys),
+        inserted_source_keys=frozenset(inserted_keys),
+    )
+
+
+def insert_transactions(
+    transactions: list[Transaction],
+    *,
+    user_id: int,
+    file_name: str,
+    file_fingerprint: str | None = None,
+    original_file_name: str | None = None,
+    statement_upload_id: int | None = None,
+    source_keys: list[str] | None = None,
+    statement_scope: str = "",
+    database_url: str | None = None,
+) -> InsertTransactionsResult:
+    if not transactions:
+        return InsertTransactionsResult(0, frozenset())
+
+    resolved_keys, legacy_keys, prepared = _prepare_transaction_rows(
+        transactions,
+        user_id=user_id,
+        file_name=file_name,
+        file_fingerprint=file_fingerprint,
+        original_file_name=original_file_name,
+        statement_upload_id=statement_upload_id,
+        source_keys=source_keys,
+        statement_scope=statement_scope,
+    )
+    resolved_database_url = _resolve_database_url(database_url)
     with db_connection(
         resolved_database_url,
         operation="insert_transactions",
         statement_timeout_ms=None,
     ) as connection:
         with connection.cursor() as cursor:
-            claimed_keys = _backfill_legacy_source_keys(
+            result = _write_prepared_transactions(
                 cursor,
                 user_id=user_id,
                 transactions=transactions,
-                source_keys=resolved_keys,
-            )
-            claimed_keys |= _claim_pre_sign_fix_source_keys(
-                cursor,
-                user_id=user_id,
-                source_keys=resolved_keys,
+                resolved_keys=resolved_keys,
                 legacy_keys=legacy_keys,
-                already_claimed=claimed_keys,
+                prepared=prepared,
             )
-            insert_rows = [
-                row
-                for _transaction, source_key, row in prepared
-                if source_key not in claimed_keys
-            ]
-            inserted_keys = _insert_transaction_rows(cursor, insert_rows)
         connection.commit()
+    return result
 
-    return InsertTransactionsResult(
-        inserted_count=len(inserted_keys),
-        inserted_source_keys=frozenset(inserted_keys),
-    )
+
+def import_statement(
+    *,
+    user_id: int,
+    original_file_name: str,
+    stored_file_name: str,
+    file_fingerprint_sha256: str,
+    transactions: list[Transaction],
+    parse_status: str,
+    parse_reason: str | None = None,
+    parse_error: str | None = None,
+    currency: str | None = None,
+    source_keys: list[str] | None = None,
+    statement_scope: str = "",
+    database_url: str | None = None,
+) -> tuple[StatementUploadRecord, InsertTransactionsResult]:
+    """Save one statement upload and its transactions in a single commit.
+
+    A failure rolls both back, so the same file can be imported again.
+    """
+    resolved_database_url = _resolve_database_url(database_url)
+    try:
+        with db_connection(
+            resolved_database_url,
+            operation="import_statement",
+            statement_timeout_ms=None,
+        ) as connection:
+            with connection.cursor() as cursor:
+                upload_record = _insert_statement_upload_row(
+                    cursor,
+                    user_id=user_id,
+                    original_file_name=original_file_name,
+                    stored_file_name=stored_file_name,
+                    file_fingerprint_sha256=file_fingerprint_sha256,
+                    parse_status=parse_status,
+                    parse_reason=parse_reason,
+                    parse_error=parse_error,
+                    currency=currency,
+                )
+                if transactions:
+                    resolved_keys, legacy_keys, prepared = (
+                        _prepare_transaction_rows(
+                            transactions,
+                            user_id=user_id,
+                            file_name=stored_file_name,
+                            file_fingerprint=file_fingerprint_sha256,
+                            original_file_name=original_file_name,
+                            statement_upload_id=upload_record["id"],
+                            source_keys=source_keys,
+                            statement_scope=(
+                                statement_scope or file_fingerprint_sha256
+                            ),
+                        )
+                    )
+                    insert_result = _write_prepared_transactions(
+                        cursor,
+                        user_id=user_id,
+                        transactions=transactions,
+                        resolved_keys=resolved_keys,
+                        legacy_keys=legacy_keys,
+                        prepared=prepared,
+                    )
+                else:
+                    insert_result = InsertTransactionsResult(0, frozenset())
+            connection.commit()
+    except psycopg.errors.UniqueViolation as exc:
+        raise DuplicateStatementUploadError(file_fingerprint_sha256) from exc
+
+    return upload_record, insert_result
 
 
 _TRANSACTION_INSERT_COLUMNS = (
@@ -1551,11 +1701,8 @@ def update_transaction(
             effective_amount = float(existing[1])
             if normalized_category is not None:
                 effective_category = normalized_category
-            elif normalized_merchant is not None:
-                effective_category = categorize_merchant(
-                    effective_merchant, effective_amount
-                )
             else:
+                # A merchant rename must not replace a category the user chose.
                 effective_category = str(existing[2])
 
             cursor.execute(

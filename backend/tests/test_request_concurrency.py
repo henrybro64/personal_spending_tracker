@@ -413,7 +413,8 @@ def test_duplicate_fingerprint_conflict_removes_the_saved_pdf(
     def lookup(**kwargs):
         del kwargs
         lookups["count"] += 1
-        if lookups["count"] == 1:
+        # Byte and text fingerprints miss; the insert then hits the unique key.
+        if lookups["count"] < 3:
             return None
         return {
             "id": 4,
@@ -434,7 +435,7 @@ def test_duplicate_fingerprint_conflict_removes_the_saved_pdf(
         del kwargs
         raise DuplicateStatementUploadError("fp")
 
-    monkeypatch.setattr(api_main, "create_statement_upload", reject_duplicate)
+    monkeypatch.setattr(api_main, "import_statement", reject_duplicate)
 
     audit_context = api_main.get_audit_request_context(_upload_request())
     upload_stream = BytesIO(b"%PDF-1.4 synthetic")

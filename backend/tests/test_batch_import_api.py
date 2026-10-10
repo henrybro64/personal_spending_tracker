@@ -202,18 +202,28 @@ def test_batch_import_run_and_merge_use_sandboxed_paths(
 ) -> None:
     merged: list[dict[str, object]] = []
 
-    def fake_insert_transactions(transactions, file_name, **kwargs):
+    def fake_import_statement(*, transactions, **kwargs):
         from backend.database import InsertTransactionsResult
 
+        del kwargs
         merged.extend(transactions)
-        return InsertTransactionsResult(
-            inserted_count=len(transactions),
-            inserted_source_keys=frozenset(),
+        return (
+            {
+                "id": 1,
+                "file_name": "batch.json",
+                "display_name": "Batch import",
+                "uploaded_at": "2026-01-01T00:00:00+00:00",
+                "parse_status": "parsed",
+            },
+            InsertTransactionsResult(
+                inserted_count=len(transactions),
+                inserted_source_keys=frozenset(),
+            ),
         )
 
     monkeypatch.setattr(
-        "backend.batch_import.merge.insert_transactions",
-        fake_insert_transactions,
+        "backend.batch_import.merge.import_statement",
+        fake_import_statement,
     )
 
     run_response = batch_client.post("/batch-imports/run", json={})

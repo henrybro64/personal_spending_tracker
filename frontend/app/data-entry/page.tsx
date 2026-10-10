@@ -548,7 +548,11 @@ function BulkImportCard({
           <Input value={bulkBank} onChange={(_, data) => setBulkBank(data.value)} />
         </Field>
         <Field label={translate(locale, "bulkImportCurrencyLabel")}>
-          <Input value={bulkCurrency} onChange={(_, data) => setBulkCurrency(data.value)} />
+          <Input
+            aria-label={translate(locale, "bulkImportCurrencyLabel")}
+            value={bulkCurrency}
+            onChange={(_, data) => setBulkCurrency(data.value)}
+          />
         </Field>
       </div>
       <div className={styles.stepTitle}>{translate(locale, "bulkImportLlmStepTitle")}</div>
@@ -580,6 +584,7 @@ function BulkImportCard({
       <div className={styles.stepTitle}>{translate(locale, "bulkImportPasteStepTitle")}</div>
       <Field label={translate(locale, "bulkImportPasteLabel")}>
         <textarea
+          aria-label={translate(locale, "bulkImportPasteLabel")}
           className={styles.exampleBlock}
           value={bulkContent}
           onChange={(event) => setBulkContent(event.target.value)}
@@ -615,6 +620,7 @@ function BulkImportCard({
         </Field>
         <Field label={translate(locale, "bulkImportDestinationLabel")}>
           <select
+            aria-label={translate(locale, "bulkImportDestinationLabel")}
             className={styles.selectControl}
             value={bulkDestination}
             onChange={(event) =>
