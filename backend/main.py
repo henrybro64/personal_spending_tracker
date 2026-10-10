@@ -102,6 +102,7 @@ from backend.bulk_import import (  # noqa: E402
     BulkImportParseError,
     parse_import_content,
 )
+from backend.batch_import.merge import MergeSyncError  # noqa: E402
 from backend.batch_import.paths import (  # noqa: E402
     default_pdf_source_dir,
     default_text_source_dir,
@@ -1973,6 +1974,20 @@ def merge_batch_import(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except DuplicateStatementUploadError:
+        raise HTTPException(
+            status_code=409,
+            detail=_duplicate_upload_detail(None),
+        ) from None
+    except MergeSyncError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"{exc} "
+                f"merged_count={exc.merged_count} "
+                f"skipped_count={exc.skipped_count}."
+            ),
+        ) from exc
 
     audit_context = get_audit_request_context(request)
     _audit_after_commit(

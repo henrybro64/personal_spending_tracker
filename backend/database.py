@@ -36,6 +36,19 @@ class InsertTransactionsResult(NamedTuple):
     inserted_source_keys: frozenset[str]
 
 
+class StatementImport(NamedTuple):
+    """One statement to save inside a multi-statement merge transaction."""
+
+    original_file_name: str
+    stored_file_name: str
+    file_fingerprint_sha256: str
+    parse_status: str
+    currency: str | None
+    transactions: list[Transaction]
+    source_keys: list[str] | None
+    statement_scope: str
+
+
 # Serializes registration with the first-user legacy claim. Two signups that
 # both pass the application lookup must not both observe "I am the only user".
 _REGISTRATION_LOCK_KEY = 872_341_221
@@ -989,16 +1002,105 @@ def _insert_statement_upload_row(
             parse_error,
         ),
     )
-    upload_id, file_name, display_name, uploaded_at, resolved_parse_status = (
-        cursor.fetchone()
-    )
+    row = cursor.fetchone()
+    if row is None:
+        raise DuplicateStatementUploadError(file_fingerprint_sha256)
+    return _statement_upload_record(row)
+
+
+def _statement_upload_record(row: tuple[Any, ...]) -> StatementUploadRecord:
+    upload_id, file_name, display_name, uploaded_at, parse_status = row
     return {
         "id": int(upload_id),
         "file_name": str(file_name),
         "display_name": str(display_name),
         "uploaded_at": _iso_datetime(uploaded_at),
-        "parse_status": str(resolved_parse_status),
+        "parse_status": str(parse_status),
     }
+
+
+def _load_statement_upload_by_fingerprint(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    file_fingerprint_sha256: str,
+) -> StatementUploadRecord | None:
+    cursor.execute(
+        """
+        SELECT
+            id,
+            stored_file_name,
+            original_file_name,
+            uploaded_at,
+            parse_status
+        FROM statement_uploads
+        WHERE user_id = %s
+          AND file_fingerprint_sha256 = %s
+        """,
+        (user_id, file_fingerprint_sha256),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return _statement_upload_record(row)
+
+
+def _reuse_statement_upload_row(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    original_file_name: str,
+    stored_file_name: str,
+    file_fingerprint_sha256: str,
+    parse_status: str,
+    parse_reason: str | None,
+    parse_error: str | None,
+    currency: str | None,
+) -> StatementUploadRecord:
+    """Insert the upload, or return the row this user already has for it."""
+    cursor.execute(
+        """
+        INSERT INTO statement_uploads (
+            user_id,
+            original_file_name,
+            stored_file_name,
+            file_fingerprint_sha256,
+            currency,
+            parse_status,
+            parse_reason,
+            parse_error
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, file_fingerprint_sha256) DO NOTHING
+        RETURNING
+            id,
+            stored_file_name,
+            original_file_name,
+            uploaded_at,
+            parse_status
+        """,
+        (
+            user_id,
+            original_file_name,
+            stored_file_name,
+            file_fingerprint_sha256,
+            currency,
+            parse_status,
+            parse_reason,
+            parse_error,
+        ),
+    )
+    row = cursor.fetchone()
+    if row is not None:
+        return _statement_upload_record(row)
+    existing = _load_statement_upload_by_fingerprint(
+        cursor,
+        user_id=user_id,
+        file_fingerprint_sha256=file_fingerprint_sha256,
+    )
+    if existing is None:
+        raise DuplicateStatementUploadError(file_fingerprint_sha256)
+    return existing
 
 
 def create_statement_upload(
@@ -1444,36 +1546,143 @@ def import_statement(
                     parse_error=parse_error,
                     currency=currency,
                 )
-                if transactions:
-                    resolved_keys, legacy_keys, prepared = (
-                        _prepare_transaction_rows(
-                            transactions,
-                            user_id=user_id,
-                            file_name=stored_file_name,
-                            file_fingerprint=file_fingerprint_sha256,
-                            original_file_name=original_file_name,
-                            statement_upload_id=upload_record["id"],
-                            source_keys=source_keys,
-                            statement_scope=(
-                                statement_scope or file_fingerprint_sha256
-                            ),
-                        )
-                    )
-                    insert_result = _write_prepared_transactions(
-                        cursor,
-                        user_id=user_id,
-                        transactions=transactions,
-                        resolved_keys=resolved_keys,
-                        legacy_keys=legacy_keys,
-                        prepared=prepared,
-                    )
-                else:
-                    insert_result = InsertTransactionsResult(0, frozenset())
+                insert_result = _write_statement_transactions(
+                    cursor,
+                    user_id=user_id,
+                    upload_record=upload_record,
+                    stored_file_name=stored_file_name,
+                    file_fingerprint_sha256=file_fingerprint_sha256,
+                    original_file_name=original_file_name,
+                    transactions=transactions,
+                    source_keys=source_keys,
+                    statement_scope=statement_scope,
+                )
             connection.commit()
     except psycopg.errors.UniqueViolation as exc:
         raise DuplicateStatementUploadError(file_fingerprint_sha256) from exc
 
     return upload_record, insert_result
+
+
+def _write_statement_transactions(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int,
+    upload_record: StatementUploadRecord,
+    stored_file_name: str,
+    file_fingerprint_sha256: str,
+    original_file_name: str,
+    transactions: list[Transaction],
+    source_keys: list[str] | None,
+    statement_scope: str,
+) -> InsertTransactionsResult:
+    if not transactions:
+        return InsertTransactionsResult(0, frozenset())
+    resolved_keys, legacy_keys, prepared = _prepare_transaction_rows(
+        transactions,
+        user_id=user_id,
+        file_name=stored_file_name,
+        file_fingerprint=file_fingerprint_sha256,
+        original_file_name=original_file_name,
+        statement_upload_id=upload_record["id"],
+        source_keys=source_keys,
+        statement_scope=statement_scope or file_fingerprint_sha256,
+    )
+    return _write_prepared_transactions(
+        cursor,
+        user_id=user_id,
+        transactions=transactions,
+        resolved_keys=resolved_keys,
+        legacy_keys=legacy_keys,
+        prepared=prepared,
+    )
+
+
+def import_statements(
+    *,
+    user_id: int,
+    statements: list[StatementImport],
+    database_url: str | None = None,
+) -> list[tuple[StatementUploadRecord, InsertTransactionsResult]]:
+    """Save every statement in one transaction.
+
+    An existing upload for the same fingerprint is reused. Transaction rows
+    already stored are left in place. A failure rolls the whole run back.
+    """
+    if not statements:
+        return []
+
+    resolved_database_url = _resolve_database_url(database_url)
+    results: list[tuple[StatementUploadRecord, InsertTransactionsResult]] = []
+    with db_connection(
+        resolved_database_url,
+        operation="import_statements",
+        statement_timeout_ms=None,
+    ) as connection:
+        with connection.cursor() as cursor:
+            for statement in statements:
+                upload_record = _reuse_statement_upload_row(
+                    cursor,
+                    user_id=user_id,
+                    original_file_name=statement.original_file_name,
+                    stored_file_name=statement.stored_file_name,
+                    file_fingerprint_sha256=(
+                        statement.file_fingerprint_sha256
+                    ),
+                    parse_status=statement.parse_status,
+                    parse_reason=None,
+                    parse_error=None,
+                    currency=statement.currency,
+                )
+                insert_result = _write_statement_transactions(
+                    cursor,
+                    user_id=user_id,
+                    upload_record=upload_record,
+                    stored_file_name=statement.stored_file_name,
+                    file_fingerprint_sha256=(
+                        statement.file_fingerprint_sha256
+                    ),
+                    original_file_name=statement.original_file_name,
+                    transactions=statement.transactions,
+                    source_keys=statement.source_keys,
+                    statement_scope=statement.statement_scope,
+                )
+                results.append((upload_record, insert_result))
+        connection.commit()
+    return results
+
+
+def source_keys_owned_by_upload(
+    *,
+    user_id: int,
+    statement_upload_id: int,
+    source_keys: list[str],
+    database_url: str | None = None,
+) -> frozenset[str]:
+    """Return which of ``source_keys`` already belong to this upload.
+
+    Used after a merge retry so batch rows can be re-linked when Postgres
+    already has the transactions but SQLite never stored ``postgres_source_key``.
+    """
+    if not source_keys:
+        return frozenset()
+
+    resolved_database_url = _resolve_database_url(database_url)
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT source_key
+            FROM transactions
+            WHERE user_id = %s
+              AND statement_upload_id = %s
+              AND source_key = ANY(%s)
+            """,
+            (user_id, statement_upload_id, list(source_keys)),
+        )
+        return frozenset(str(row[0]) for row in cursor.fetchall())
 
 
 _TRANSACTION_INSERT_COLUMNS = (
