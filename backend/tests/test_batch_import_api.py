@@ -202,28 +202,33 @@ def test_batch_import_run_and_merge_use_sandboxed_paths(
 ) -> None:
     merged: list[dict[str, object]] = []
 
-    def fake_import_statement(*, transactions, **kwargs):
+    def fake_import_statements(*, statements, **kwargs):
         from backend.database import InsertTransactionsResult
 
         del kwargs
-        merged.extend(transactions)
-        return (
-            {
-                "id": 1,
-                "file_name": "batch.json",
-                "display_name": "Batch import",
-                "uploaded_at": "2026-01-01T00:00:00+00:00",
-                "parse_status": "parsed",
-            },
-            InsertTransactionsResult(
-                inserted_count=len(transactions),
-                inserted_source_keys=frozenset(),
-            ),
-        )
+        results = []
+        for statement in statements:
+            merged.extend(statement.transactions)
+            results.append(
+                (
+                    {
+                        "id": 1,
+                        "file_name": "batch.json",
+                        "display_name": "Batch import",
+                        "uploaded_at": "2026-01-01T00:00:00+00:00",
+                        "parse_status": "parsed",
+                    },
+                    InsertTransactionsResult(
+                        inserted_count=len(statement.transactions),
+                        inserted_source_keys=frozenset(),
+                    ),
+                )
+            )
+        return results
 
     monkeypatch.setattr(
-        "backend.batch_import.merge.import_statement",
-        fake_import_statement,
+        "backend.batch_import.merge.import_statements",
+        fake_import_statements,
     )
 
     run_response = batch_client.post("/batch-imports/run", json={})
@@ -669,3 +674,234 @@ def test_deleting_an_unlinked_merged_row_leaves_dashboard_rows(client):
     assert deleted.json()["dashboard_row_deleted"] is False
     after = client.get("/transactions").json()["transactions"]
     assert len(after) == before
+
+
+SECOND_STATEMENT = (
+    "AMERICAN EXPRESS\n"
+    "Statement Date: 02/02/2026\n"
+    "Card ending 1002\n"
+    "Date Description Amount\n"
+    "02/01 CAFE 4.00\n"
+)
+
+
+def test_merge_can_be_retried_after_a_failure(api_main, monkeypatch) -> None:
+    import sqlite3
+
+    from backend.batch_import.storage import BatchImportStore
+
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    with client:
+        _statement_for_user(1)
+        _register(client, "alice")
+        run = client.post("/batch-imports/run", json={}).json()["run"]
+        real = BatchImportStore.mark_transactions_synced
+        calls = {"n": 0}
+
+        def flaky(self, ids):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Real SQLite failures are sqlite3.Error, not only OSError.
+                raise sqlite3.OperationalError("disk hiccup")
+            return real(self, ids)
+
+        monkeypatch.setattr(
+            BatchImportStore,
+            "mark_transactions_synced",
+            flaky,
+        )
+        first = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert first.status_code == 500
+        assert "merged_count=" in first.json()["detail"]
+        retry = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert retry.status_code == 200, retry.text
+        rows = client.get("/transactions").json()["transactions"]
+        assert len(rows) == 3
+        assert retry.json()["merged_count"] == 0
+        assert retry.json()["skipped_count"] == 3
+
+
+def test_merge_retry_restores_postgres_source_key_links(
+    api_main,
+    monkeypatch,
+) -> None:
+    """Crash after Postgres commit must still link batch rows on retry (#81/#76)."""
+    import sqlite3
+
+    from backend.batch_import.paths import default_sqlite_output_path
+    from backend.batch_import.storage import BatchImportStore
+
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    with client:
+        _statement_for_user(1)
+        _register(client, "alice")
+        run = client.post("/batch-imports/run", json={}).json()["run"]
+        real_set_keys = BatchImportStore.set_postgres_source_keys
+        calls = {"n": 0}
+
+        def flaky_set_keys(self, keys_by_id):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise sqlite3.OperationalError("link write failed")
+            return real_set_keys(self, keys_by_id)
+
+        monkeypatch.setattr(
+            BatchImportStore,
+            "set_postgres_source_keys",
+            flaky_set_keys,
+        )
+        first = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert first.status_code == 500
+        assert "merged_count=" in first.json()["detail"]
+
+        store = BatchImportStore(
+            default_sqlite_output_path().with_name("batch_imports_user_1.sqlite3")
+        )
+        batch_rows = store.list_transactions(run_id=run["run_id"])
+        assert batch_rows
+        assert all(store.get_postgres_source_key(row["id"]) is None for row in batch_rows)
+
+        retry = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert retry.status_code == 200, retry.text
+        assert len(client.get("/transactions").json()["transactions"]) == 3
+        linked = [
+            store.get_postgres_source_key(row["id"])
+            for row in store.list_transactions(run_id=run["run_id"])
+            if not row["exclude_from_spending"]
+        ]
+        assert linked
+        assert all(key is not None for key in linked)
+
+
+def test_merge_retry_restores_links_when_upload_reused_a_pdf_fingerprint(
+    api_main,
+    monkeypatch,
+    database_url: str,
+) -> None:
+    """Batch rows on a PDF upload still get links restored after SQLite failure."""
+    import sqlite3
+
+    import psycopg
+
+    from backend.batch_import.paths import default_sqlite_output_path
+    from backend.batch_import.storage import BatchImportStore
+
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    with client:
+        _statement_for_user(1)
+        _register(client, "alice")
+        run = client.post("/batch-imports/run", json={}).json()["run"]
+        real_set_keys = BatchImportStore.set_postgres_source_keys
+        calls = {"n": 0}
+
+        def flaky_set_keys(self, keys_by_id):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise sqlite3.OperationalError("link write failed")
+            return real_set_keys(self, keys_by_id)
+
+        monkeypatch.setattr(
+            BatchImportStore,
+            "set_postgres_source_keys",
+            flaky_set_keys,
+        )
+        first = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert first.status_code == 500
+
+        # Simulate an earlier PDF upload owning the fingerprint: the upload
+        # record is no longer named batch-import/…, but the rows still are.
+        with psycopg.connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE statement_uploads
+                    SET
+                        stored_file_name = 'abcdef.pdf',
+                        original_file_name = 'amex.pdf'
+                    WHERE user_id = 1
+                    """
+                )
+            connection.commit()
+
+        retry = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert retry.status_code == 200, retry.text
+        store = BatchImportStore(
+            default_sqlite_output_path().with_name("batch_imports_user_1.sqlite3")
+        )
+        linked = [
+            store.get_postgres_source_key(row["id"])
+            for row in store.list_transactions(run_id=run["run_id"])
+            if not row["exclude_from_spending"]
+        ]
+        assert linked
+        assert all(key is not None for key in linked)
+
+
+def test_failed_second_statement_rolls_back_the_whole_merge(
+    api_main,
+    monkeypatch,
+) -> None:
+    import backend.database as database
+
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    with client:
+        _statement_for_user(1)
+        folder = Path(os.environ["BATCH_TEXT_SOURCE_DIR"]) / "user-1"
+        (folder / "2026-02-02.txt").write_text(
+            SECOND_STATEMENT,
+            encoding="utf-8",
+        )
+        _register(client, "alice")
+        started = client.post("/batch-imports/run", json={})
+        assert started.status_code == 201, started.text
+        run = started.json()["run"]
+        assert run["statement_count"] == 2
+
+        real_insert = database._insert_transaction_rows
+        calls = {"n": 0}
+
+        def flaky_insert(cursor, insert_rows):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("second statement insert failed")
+            return real_insert(cursor, insert_rows)
+
+        monkeypatch.setattr(
+            database,
+            "_insert_transaction_rows",
+            flaky_insert,
+        )
+        failed = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert failed.status_code >= 400
+        assert database.count_statement_uploads(user_id=1) == 0
+        assert database.get_transactions(user_id=1) == []
+
+        retry = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert retry.status_code == 200, retry.text
+        rows = client.get("/transactions").json()["transactions"]
+        assert len(rows) == 4
+        assert calls["n"] >= 3

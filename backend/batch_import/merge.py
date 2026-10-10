@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
 from hashlib import sha256
 
 from backend.database import (
-    DuplicateStatementUploadError,
-    get_existing_upload_by_fingerprint,
-    import_statement,
-    insert_transactions,
+    StatementImport,
+    import_statements,
+    source_keys_owned_by_upload,
 )
 from backend.parser import Transaction
 from backend.transaction_source import source_keys_for_transactions
@@ -74,6 +74,21 @@ def _passes_merge_filters(
     return True
 
 
+class MergeSyncError(Exception):
+    """Postgres saved the merge; the batch file was not marked synced."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        merged_count: int,
+        skipped_count: int,
+    ) -> None:
+        super().__init__(message)
+        self.merged_count = merged_count
+        self.skipped_count = skipped_count
+
+
 def merge_run_to_postgres(
     store: BatchImportStore,
     *,
@@ -106,6 +121,10 @@ def merge_run_to_postgres(
 
     merged_count = 0
     skipped_count = 0
+    statements: list[StatementImport] = []
+    statement_plans: list[
+        tuple[list[BatchStoredTransaction], dict[int, str]]
+    ] = []
 
     for statement_file, statement_transactions in transactions_by_statement.items():
         fingerprint = _batch_statement_fingerprint(statement_transactions)
@@ -134,7 +153,7 @@ def merge_run_to_postgres(
         eligible_transactions = [
             transaction
             for transaction in filtered_transactions
-            if not store.is_transaction_synced(transaction["id"])
+            if not transaction["postgres_synced"]
         ]
         skipped_count += len(filtered_transactions) - len(eligible_transactions)
         if not eligible_transactions:
@@ -149,9 +168,8 @@ def merge_run_to_postgres(
         ]
         file_name = f"batch-import/{statement_file}"
         display_name = f"Batch import: {statement_file}"
-        try:
-            _upload_record, insert_result = import_statement(
-                user_id=user_id,
+        statements.append(
+            StatementImport(
                 original_file_name=display_name,
                 stored_file_name=file_name,
                 file_fingerprint_sha256=fingerprint,
@@ -161,36 +179,56 @@ def merge_run_to_postgres(
                 source_keys=eligible_keys,
                 statement_scope=fingerprint,
             )
-        except DuplicateStatementUploadError:
-            existing_upload = get_existing_upload_by_fingerprint(
-                user_id=user_id,
-                file_fingerprint_sha256=fingerprint,
-            )
-            if existing_upload is None:
-                raise
-            insert_result = insert_transactions(
-                upload_transactions,
-                user_id=user_id,
-                file_name=file_name,
-                original_file_name=display_name,
-                file_fingerprint=fingerprint,
-                statement_upload_id=existing_upload["id"],
-                source_keys=eligible_keys,
-                statement_scope=fingerprint,
-            )
+        )
+        statement_plans.append((eligible_transactions, key_by_id))
+
+    # One Postgres transaction for the whole run. A later statement failing
+    # rolls back the earlier ones, so a retry does not see a partial import.
+    results = import_statements(user_id=user_id, statements=statements)
+    links: dict[int, str] = {}
+    synced_ids: list[int] = []
+    for (eligible_transactions, key_by_id), (upload_record, insert_result) in zip(
+        statement_plans,
+        results,
+        strict=True,
+    ):
         merged_count += insert_result.inserted_count
         skipped_count += len(eligible_transactions) - insert_result.inserted_count
-        # Persist links and synced flags per statement so a later failure does
-        # not leave inserted rows without delete targets on retry (#76).
-        statement_links = {
-            transaction["id"]: key_by_id[transaction["id"]]
-            for transaction in eligible_transactions
-            if key_by_id[transaction["id"]] in insert_result.inserted_source_keys
-        }
-        store.set_postgres_source_keys(statement_links)
-        store.mark_transactions_synced(
-            [transaction["id"] for transaction in eligible_transactions]
+        # Link rows this merge inserted, or (on retry) batch-owned rows already
+        # on the upload. Ownership is by transaction file_name batch-import/
+        # prefix, not the upload record name, so a shared PDF fingerprint still
+        # restores links without tying batch deletes to PDF-owned rows (#76).
+        batch_owned_keys = source_keys_owned_by_upload(
+            user_id=user_id,
+            statement_upload_id=upload_record["id"],
+            source_keys=[
+                key_by_id[transaction["id"]]
+                for transaction in eligible_transactions
+            ],
         )
+        for transaction in eligible_transactions:
+            source_key = key_by_id[transaction["id"]]
+            if (
+                source_key in insert_result.inserted_source_keys
+                or source_key in batch_owned_keys
+            ):
+                links[transaction["id"]] = source_key
+        synced_ids.extend(
+            transaction["id"] for transaction in eligible_transactions
+        )
+
+    # SQLite is updated only after Postgres commits. If this write fails, the
+    # next merge finds the rows already stored and marks them then.
+    try:
+        store.set_postgres_source_keys(links)
+        store.mark_transactions_synced(synced_ids)
+    except (OSError, sqlite3.Error) as exc:
+        raise MergeSyncError(
+            "Saved the merge, but could not mark the batch rows synced. "
+            "Retry the merge.",
+            merged_count=merged_count,
+            skipped_count=skipped_count,
+        ) from exc
 
     return {
         "run_id": effective_run_id,

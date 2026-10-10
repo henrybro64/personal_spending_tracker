@@ -74,6 +74,7 @@ class BatchStoredTransaction(TypedDict):
     exclude_from_spending: bool
     needs_review: bool
     statement_content_sha256: str
+    postgres_synced: bool
 
 
 class BatchImportRunSummary(TypedDict):
@@ -545,7 +546,8 @@ class BatchImportStore:
                     category,
                     exclude_from_spending,
                     needs_review,
-                    statement_content_sha256
+                    statement_content_sha256,
+                    postgres_synced
                 FROM imported_transactions
                 WHERE {where_clause}
                 ORDER BY statement_file, transaction_date, id
@@ -1159,4 +1161,10 @@ class BatchImportStore:
             "exclude_from_spending": bool(row["exclude_from_spending"]),
             "needs_review": bool(row["needs_review"]),
             "statement_content_sha256": content_sha256,
+            "postgres_synced": (
+                bool(row["postgres_synced"])
+                if "postgres_synced" in keys
+                and row["postgres_synced"] is not None
+                else False
+            ),
         }
