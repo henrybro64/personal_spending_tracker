@@ -79,7 +79,7 @@ def transactions_from_upload_parser(
     card_last4 = _infer_card_last4(source_path, statement_text)
     transactions: list[NormalizedTransaction] = []
 
-    for row in parse_transactions(statement_text):
+    for row in parse_transactions(statement_text, file_name=source_path.name):
         if not _is_valid_iso_date(row["date"]):
             continue
 

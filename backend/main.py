@@ -33,6 +33,7 @@ from fastapi import (  # noqa: E402
 )
 from psycopg_pool import PoolTimeout  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 import psycopg  # noqa: E402
 
@@ -92,7 +93,7 @@ from backend.database import (  # noqa: E402
     upsert_user_ai_provider_setting,
     delete_statement_upload_for_user,
     delete_transaction,
-    delete_transaction_by_match,
+    delete_transaction_by_source_key,
     get_statement_upload_for_user,
     update_transaction as update_stored_transaction,
     update_transaction_category,
@@ -1894,7 +1895,7 @@ def import_batch_content(
             }
             for item in transactions
         ]
-        inserted = insert_transactions(
+        insert_result = insert_transactions(
             dashboard_rows,
             user_id=current_user["id"],
             file_name=upload_record["file_name"],
@@ -1905,7 +1906,7 @@ def import_batch_content(
         )
         return {
             "destination": "dashboard",
-            "imported_count": inserted,
+            "imported_count": insert_result.inserted_count,
             "run": None,
         }
 
@@ -2059,21 +2060,22 @@ def delete_batch_import_transaction(
     transaction_id: int,
     request: Request,
     current_user: UserRecord = Depends(require_current_user),
-) -> None:
+) -> Response:
     store = _get_batch_import_store(current_user["id"])
-    if store.is_transaction_synced(transaction_id):
-        row = store.get_transaction(transaction_id)
-        if row is None:
+    synced = store.is_transaction_synced(transaction_id)
+    source_key: str | None = None
+    if synced:
+        if store.get_transaction(transaction_id) is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Batch-import transaction {transaction_id} was not found.",
             )
-        delete_transaction_by_match(
-            user_id=current_user["id"],
-            transaction_date=row["transaction_date"],
-            merchant=row["merchant_raw"],
-            amount=float(row["amount"]),
-        )
+        source_key = store.get_postgres_source_key(transaction_id)
+        if source_key:
+            delete_transaction_by_source_key(
+                user_id=current_user["id"],
+                source_key=source_key,
+            )
 
     run_id = store.delete_imported_transaction(transaction_id)
     if run_id is None:
@@ -2092,8 +2094,20 @@ def delete_batch_import_transaction(
         request_id=audit_context.request_id,
         ip_address=audit_context.ip_address,
         user_agent=audit_context.user_agent,
-        metadata={"run_id": run_id},
+        metadata={"run_id": run_id, "dashboard_row_deleted": bool(source_key)},
     )
+    if synced and not source_key:
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "dashboard_row_deleted": False,
+                "detail": (
+                    "Removed the batch row. The dashboard transaction was "
+                    "left in place because this import has no link to it."
+                ),
+            },
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/batch-imports/needs-review-merchants")
@@ -2179,13 +2193,19 @@ def auto_categorize_batch_import_review(
 
 
 def _load_uploaded_statement(
-    file_path: Path, password: str | None
+    file_path: Path,
+    password: str | None,
+    *,
+    original_file_name: str = "",
 ) -> tuple[str, list[Transaction]]:
     # Tests replace this helper. Production runs PDF CPU in a child process.
     # Wait at most one parse limit for other PDFs, so the whole upload ends
     # within twice PDF_PARSE_TIMEOUT_SECONDS. The frontend proxy relies on it.
     return read_statement_pdf(
-        file_path, password, max_wait=pdf_parse_timeout_seconds()
+        file_path,
+        password,
+        max_wait=pdf_parse_timeout_seconds(),
+        original_file_name=original_file_name,
     )
 
 
@@ -2278,7 +2298,11 @@ def _open_uploaded_statement(
     audit_context: AuditRequestContext,
 ) -> tuple[str, list[Transaction]]:
     try:
-        return _load_uploaded_statement(saved_path, password)
+        return _load_uploaded_statement(
+            saved_path,
+            password,
+            original_file_name=original_name,
+        )
     except PdfPasswordProtectedError as exc:
         saved_path.unlink(missing_ok=True)
         record_audit_event(

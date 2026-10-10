@@ -1,7 +1,7 @@
 import os
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NamedTuple, TypedDict
 
 import psycopg
 from psycopg.types.json import Json
@@ -27,6 +27,13 @@ class DuplicateUsernameError(Exception):
 
 class DuplicateStatementUploadError(Exception):
     """This user already imported a statement with the same fingerprint."""
+
+
+class InsertTransactionsResult(NamedTuple):
+    """How many rows were newly inserted, and which source_keys they used."""
+
+    inserted_count: int
+    inserted_source_keys: frozenset[str]
 
 
 # Serializes registration with the first-user legacy claim. Two signups that
@@ -1051,6 +1058,7 @@ def _fetch_legacy_null_key_rows(
         FROM transactions
         WHERE user_id = %s
           AND source_key IS NULL
+          AND COALESCE(file_name, '') <> 'manual-entry'
           AND date = ANY(%s)
         ORDER BY date ASC, id ASC
         """,
@@ -1212,9 +1220,9 @@ def insert_transactions(
     source_keys: list[str] | None = None,
     statement_scope: str = "",
     database_url: str | None = None,
-) -> int:
+) -> InsertTransactionsResult:
     if not transactions:
-        return 0
+        return InsertTransactionsResult(0, frozenset())
 
     resolved_database_url = _resolve_database_url(database_url)
     display_name = original_file_name or file_name
@@ -1306,47 +1314,67 @@ def insert_transactions(
             )
             insert_rows = [
                 row
-                for transaction, source_key, row in prepared
+                for _transaction, source_key, row in prepared
                 if source_key not in claimed_keys
             ]
-            inserted = 0
-            if insert_rows:
-                cursor.executemany(
-                    """
-                    INSERT INTO transactions (
-                        user_id,
-                        statement_upload_id,
-                        date,
-                        merchant,
-                        amount,
-                        file_name,
-                        original_file_name,
-                        category,
-                        file_fingerprint,
-                        payment_method,
-                        currency,
-                        original_amount,
-                        original_currency,
-                        base_amount,
-                        base_currency,
-                        exchange_rate,
-                        exchange_rate_date,
-                        source_key
-                    )
-                    VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s
-                    )
-                    ON CONFLICT (user_id, source_key)
-                        WHERE source_key IS NOT NULL
-                    DO NOTHING
-                    """,
-                    insert_rows,
-                )
-                inserted = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+            inserted_keys = _insert_transaction_rows(cursor, insert_rows)
         connection.commit()
 
-    return inserted
+    return InsertTransactionsResult(
+        inserted_count=len(inserted_keys),
+        inserted_source_keys=frozenset(inserted_keys),
+    )
+
+
+_TRANSACTION_INSERT_COLUMNS = (
+    "user_id",
+    "statement_upload_id",
+    "date",
+    "merchant",
+    "amount",
+    "file_name",
+    "original_file_name",
+    "category",
+    "file_fingerprint",
+    "payment_method",
+    "currency",
+    "original_amount",
+    "original_currency",
+    "base_amount",
+    "base_currency",
+    "exchange_rate",
+    "exchange_rate_date",
+    "source_key",
+)
+
+
+def _insert_transaction_rows(
+    cursor: psycopg.Cursor[Any],
+    insert_rows: list[tuple[object, ...]],
+) -> set[str]:
+    """Batch-insert rows and return the source_keys that were newly created."""
+    if not insert_rows:
+        return set()
+
+    column_count = len(_TRANSACTION_INSERT_COLUMNS)
+    row_placeholder = "(" + ", ".join(["%s"] * column_count) + ")"
+    values_sql = ", ".join(row_placeholder for _ in insert_rows)
+    flat_params = [value for row in insert_rows for value in row]
+    columns_sql = ", ".join(_TRANSACTION_INSERT_COLUMNS)
+    cursor.execute(
+        f"""
+        INSERT INTO transactions (
+            {columns_sql}
+        )
+        VALUES {values_sql}
+        ON CONFLICT (user_id, source_key)
+            WHERE source_key IS NOT NULL
+        DO NOTHING
+        RETURNING source_key
+        """,
+        flat_params,
+    )
+    return {str(row[0]) for row in cursor.fetchall()}
 
 
 def insert_manual_transaction(
@@ -1582,15 +1610,15 @@ def delete_transaction(
     return deleted
 
 
-def delete_transaction_by_match(
+def delete_transaction_by_source_key(
     *,
     user_id: int,
-    transaction_date: str,
-    merchant: str,
-    amount: float,
+    source_key: str,
     database_url: str | None = None,
 ) -> bool:
-    """Remove a dashboard row that came from batch merge (best-effort match)."""
+    """Remove the one dashboard row created from a merged batch row."""
+    if not source_key.strip():
+        return False
     resolved_database_url = _resolve_database_url(database_url)
     with db_connection(resolved_database_url) as connection:
         with connection.cursor() as cursor:
@@ -1598,12 +1626,10 @@ def delete_transaction_by_match(
                 """
                 DELETE FROM transactions
                 WHERE user_id = %s
-                  AND date = %s
-                  AND merchant = %s
-                  AND amount = %s
+                  AND source_key = %s
                 RETURNING id
                 """,
-                (user_id, transaction_date, merchant, amount),
+                (user_id, source_key),
             )
             deleted = cursor.fetchone() is not None
         connection.commit()

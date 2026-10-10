@@ -106,7 +106,6 @@ def merge_run_to_postgres(
 
     merged_count = 0
     skipped_count = 0
-    synced_ids: list[int] = []
 
     for statement_file, statement_transactions in transactions_by_statement.items():
         fingerprint = _batch_statement_fingerprint(statement_transactions)
@@ -168,7 +167,7 @@ def merge_run_to_postgres(
             if existing_upload is None:
                 raise
             statement_upload_id = existing_upload["id"]
-        inserted = insert_transactions(
+        insert_result = insert_transactions(
             upload_transactions,
             user_id=user_id,
             file_name=file_name,
@@ -178,13 +177,19 @@ def merge_run_to_postgres(
             source_keys=eligible_keys,
             statement_scope=fingerprint,
         )
-        merged_count += inserted
-        skipped_count += len(eligible_transactions) - inserted
-        synced_ids.extend(
-            transaction["id"] for transaction in eligible_transactions
+        merged_count += insert_result.inserted_count
+        skipped_count += len(eligible_transactions) - insert_result.inserted_count
+        # Persist links and synced flags per statement so a later failure does
+        # not leave inserted rows without delete targets on retry (#76).
+        statement_links = {
+            transaction["id"]: key_by_id[transaction["id"]]
+            for transaction in eligible_transactions
+            if key_by_id[transaction["id"]] in insert_result.inserted_source_keys
+        }
+        store.set_postgres_source_keys(statement_links)
+        store.mark_transactions_synced(
+            [transaction["id"] for transaction in eligible_transactions]
         )
-
-    store.mark_transactions_synced(synced_ids)
 
     return {
         "run_id": effective_run_id,

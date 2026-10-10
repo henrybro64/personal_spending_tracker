@@ -97,10 +97,13 @@ def read_statement_pdf(
     password: str | None = None,
     *,
     max_wait: float | None = None,
+    original_file_name: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Extract and parse one statement without holding the API process GIL.
 
     ``max_wait`` limits how long to wait for other PDFs to finish first.
+    ``original_file_name`` is the user-facing name (uploads are stored under a
+    UUID); parsers use it for bank/period hints such as E.SUN file names.
     """
     from backend.process_pool import run_cpu_bound
 
@@ -109,6 +112,7 @@ def read_statement_pdf(
             _read_statement_pdf_in_process,
             os.fspath(file_path),
             password,
+            (original_file_name or "").strip(),
             max_wait=max_wait,
         )
     )
@@ -141,13 +145,16 @@ def _raise_pdf_worker_failure(result: Any) -> Any:
 
 
 def _read_statement_pdf_in_process(
-    file_path: str, password: str | None
+    file_path: str,
+    password: str | None,
+    original_file_name: str = "",
 ) -> tuple[str, list[dict[str, Any]]] | _PdfWorkerFailure:
     from backend.parser import parse_transactions
 
     try:
         text = _extract_pdf_text_unlocked(file_path, password)
-        return text, list(parse_transactions(text))
+        parse_name = original_file_name.strip() or Path(file_path).name
+        return text, list(parse_transactions(text, file_name=parse_name))
     except Exception as exc:
         return _pdf_worker_failure(exc)
 

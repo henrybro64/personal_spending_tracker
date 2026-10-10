@@ -203,8 +203,13 @@ def test_batch_import_run_and_merge_use_sandboxed_paths(
     merged: list[dict[str, object]] = []
 
     def fake_insert_transactions(transactions, file_name, **kwargs):
+        from backend.database import InsertTransactionsResult
+
         merged.extend(transactions)
-        return len(transactions)
+        return InsertTransactionsResult(
+            inserted_count=len(transactions),
+            inserted_source_keys=frozenset(),
+        )
 
     monkeypatch.setattr(
         "backend.batch_import.merge.insert_transactions",
@@ -419,7 +424,7 @@ def test_reimport_does_not_duplicate_pre_sign_fix_refund_keys(
         statement_upload_id=upload["id"],
         database_url=database_url,
     )
-    assert inserted == 0
+    assert inserted.inserted_count == 0
 
     with psycopg.connect(database_url) as connection:
         with connection.cursor() as cursor:
@@ -437,39 +442,43 @@ def test_reimport_does_not_duplicate_pre_sign_fix_refund_keys(
     assert rows[0][1] == 1
 
 
-def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
+def _amex_upload_transactions() -> list[dict[str, object]]:
+    return [
+        {
+            "date": "2026-01-05",
+            "merchant": "STARBUCKS",
+            "amount": 5.75,
+            "category": "Dining / Food",
+            "currency": "USD",
+        },
+        {
+            "date": "2026-01-05",
+            "merchant": "STARBUCKS",
+            "amount": 5.75,
+            "category": "Dining / Food",
+            "currency": "USD",
+        },
+        {
+            "date": "2026-01-09",
+            "merchant": "IKEA",
+            "amount": 80.0,
+            "category": "Shopping",
+            "currency": "USD",
+        },
+    ]
+
+
+def _upload_amex_then_merge(
     client: TestClient,
     api_main,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+) -> dict[str, object]:
     _statement_for_user(1)
     _register(client, "alice")
 
-    def fake_load(path, password=None):
+    def fake_load(path, password=None, **_kwargs):
         del path, password
-        return AMEX_STATEMENT, [
-            {
-                "date": "2026-01-05",
-                "merchant": "STARBUCKS",
-                "amount": 5.75,
-                "category": "Dining / Food",
-                "currency": "USD",
-            },
-            {
-                "date": "2026-01-05",
-                "merchant": "STARBUCKS",
-                "amount": 5.75,
-                "category": "Dining / Food",
-                "currency": "USD",
-            },
-            {
-                "date": "2026-01-09",
-                "merchant": "IKEA",
-                "amount": 80.0,
-                "category": "Shopping",
-                "currency": "USD",
-            },
-        ]
+        return AMEX_STATEMENT, _amex_upload_transactions()
 
     monkeypatch.setattr(api_main, "_load_uploaded_statement", fake_load)
     uploaded = client.post(
@@ -491,8 +500,17 @@ def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
         json={"run_id": run.json()["run"]["run_id"]},
     )
     assert merged.status_code == 200, merged.text
-    assert merged.json()["merged_count"] == 0
-    assert merged.json()["skipped_count"] == 3
+    return merged.json()
+
+
+def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
+    client: TestClient,
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merged = _upload_amex_then_merge(client, api_main, monkeypatch)
+    assert merged["merged_count"] == 0
+    assert merged["skipped_count"] == 3
     rows = client.get("/transactions").json()["transactions"]
     assert sorted(row["merchant"] for row in rows) == [
         "IKEA",
@@ -501,3 +519,143 @@ def test_upload_then_batch_import_keeps_one_copy_of_each_transaction(
     ]
     # Shared text fingerprint means batch reuses the upload record.
     assert len(client.get("/uploads/recent").json()["uploads"]) == 1
+
+
+def test_deleting_deduped_batch_row_leaves_upload_dashboard_rows(
+    client: TestClient,
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Merge that inserts nothing must not link batch rows for delete (#76)."""
+    merged = _upload_amex_then_merge(client, api_main, monkeypatch)
+    assert merged["merged_count"] == 0
+
+    before = client.get("/transactions").json()["transactions"]
+    assert len(before) == 3
+
+    batch_rows = client.get("/batch-imports/transactions").json()[
+        "transactions"
+    ]
+    one = next(row for row in batch_rows if row["merchant_raw"] == "STARBUCKS")
+    deleted = client.delete(f"/batch-imports/transactions/{one['id']}")
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["dashboard_row_deleted"] is False
+
+    after = client.get("/transactions").json()["transactions"]
+    assert len(after) == 3
+    assert sorted(row["merchant"] for row in after) == [
+        "IKEA",
+        "STARBUCKS",
+        "STARBUCKS",
+    ]
+
+
+def test_deleting_one_batch_row_deletes_only_its_own_dashboard_row(client):
+    _statement_for_user(1)
+    _register(client, "alice")
+    manual = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2026-01-05",
+            "merchant": "STARBUCKS",
+            "amount": 5.75,
+            "currency": "USD",
+            "base_currency": "USD",
+        },
+    )
+    assert manual.status_code == 201, manual.text
+    run = client.post("/batch-imports/run", json={}).json()["run"]
+    merged = client.post(
+        "/batch-imports/merge",
+        json={"run_id": run["run_id"]},
+    )
+    assert merged.status_code == 200, merged.text
+
+    batch_rows = client.get("/batch-imports/transactions").json()[
+        "transactions"
+    ]
+    one = next(row for row in batch_rows if row["merchant_raw"] == "STARBUCKS")
+    deleted = client.delete(f"/batch-imports/transactions/{one['id']}")
+    assert deleted.status_code == 204
+
+    remaining = [
+        row
+        for row in client.get("/transactions").json()["transactions"]
+        if row["merchant"] == "STARBUCKS"
+    ]
+    assert len(remaining) == 2
+
+
+def test_deleting_a_renamed_dashboard_row_still_removes_that_row(client):
+    _statement_for_user(1)
+    _register(client, "alice")
+    run = client.post("/batch-imports/run", json={}).json()["run"]
+    merged = client.post(
+        "/batch-imports/merge",
+        json={"run_id": run["run_id"]},
+    )
+    assert merged.status_code == 200, merged.text
+
+    starbucks = [
+        row
+        for row in client.get("/transactions").json()["transactions"]
+        if row["merchant"] == "STARBUCKS"
+    ]
+    assert len(starbucks) == 2
+    renamed_names = []
+    for index, row in enumerate(starbucks):
+        name = f"RENAMED {index}"
+        renamed = client.patch(
+            f"/transactions/{row['id']}",
+            json={"merchant": name},
+        )
+        assert renamed.status_code == 200, renamed.text
+        renamed_names.append(name)
+
+    batch_rows = client.get("/batch-imports/transactions").json()[
+        "transactions"
+    ]
+    one = next(row for row in batch_rows if row["merchant_raw"] == "STARBUCKS")
+    deleted = client.delete(f"/batch-imports/transactions/{one['id']}")
+    assert deleted.status_code == 204
+
+    remaining_names = {
+        row["merchant"]
+        for row in client.get("/transactions").json()["transactions"]
+    }
+    still_renamed = [name for name in renamed_names if name in remaining_names]
+    assert len(still_renamed) == 1
+    assert "STARBUCKS" not in remaining_names
+    assert "IKEA" in remaining_names
+
+
+def test_deleting_an_unlinked_merged_row_leaves_dashboard_rows(client):
+    import sqlite3
+
+    from backend.main import _default_batch_sqlite_path_for_user
+
+    _statement_for_user(1)
+    _register(client, "alice")
+    run = client.post("/batch-imports/run", json={}).json()["run"]
+    merged = client.post(
+        "/batch-imports/merge",
+        json={"run_id": run["run_id"]},
+    )
+    assert merged.status_code == 200, merged.text
+    before = len(client.get("/transactions").json()["transactions"])
+
+    path = _default_batch_sqlite_path_for_user(1)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE imported_transactions SET postgres_source_key = NULL"
+        )
+
+    batch_rows = client.get("/batch-imports/transactions").json()[
+        "transactions"
+    ]
+    one = next(row for row in batch_rows if row["merchant_raw"] == "STARBUCKS")
+    deleted = client.delete(f"/batch-imports/transactions/{one['id']}")
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["dashboard_row_deleted"] is False
+    after = client.get("/transactions").json()["transactions"]
+    assert len(after) == before

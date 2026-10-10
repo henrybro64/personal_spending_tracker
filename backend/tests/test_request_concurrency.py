@@ -122,7 +122,7 @@ async def test_pdf_parsing_runs_off_the_event_loop(
     api_main,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_load(path, password=None):
+    def fake_load(path, password=None, **_kwargs):
         del path, password
         return "synthetic statement", [
             {
@@ -348,7 +348,7 @@ def test_pdf_worker_failure_rejects_upload_and_removes_the_file(
     audits: list[dict] = []
     monkeypatch.setattr(api_main, "record_audit_event", lambda **kwargs: audits.append(kwargs))
 
-    def failing_load(path, password):
+    def failing_load(path, password, **_kwargs):
         del path, password
         raise getattr(process_pool, error_name)("worker failed")
 
@@ -428,7 +428,7 @@ def test_duplicate_fingerprint_conflict_removes_the_saved_pdf(
     monkeypatch.setattr(
         api_main,
         "_load_uploaded_statement",
-        lambda path, password: ("statement", []),
+        lambda path, password, **_kwargs: ("statement", []),
     )
     def reject_duplicate(**kwargs):
         del kwargs
