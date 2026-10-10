@@ -23,7 +23,10 @@ from backend.transaction_exclusions import (
     PAYMENT_CATEGORY,
     is_card_payment_merchant,
 )
-from backend.transaction_source import source_keys_for_transactions
+from backend.transaction_source import (
+    card_last4_from_statement,
+    source_keys_for_transactions,
+)
 
 BACKUP_REMINDER = (
     "Run scripts/backup-spending-tracker.sh before repairing data."
@@ -142,13 +145,23 @@ def recategorize_payments(
     i_have_a_backup: bool = False,
     database_url: str | None = None,
 ) -> RepairResult:
-    """Set category Payment / Credit on rows the payment rule would exclude."""
+    """Set category Payment / Credit on rows the payment rule would exclude.
+
+    Also recomputes ``source_key`` with the payment amount folding so a later
+    import matches this row instead of inserting a duplicate.
+    """
     _require_backup(apply=apply, i_have_a_backup=i_have_a_backup)
     resolved_url = _resolve_database_url(database_url)
+    notes: list[str] = []
     with db_connection(resolved_url, operation="recategorize_payments") as connection:
         with connection.cursor() as cursor:
-            rows = _payment_rows(cursor, user_id=user_id)
-            changed_ids = tuple(row.transaction_id for row in rows)
+            flagged = _payment_rows(cursor, user_id=user_id)
+            changed_ids = tuple(row.transaction_id for row in flagged)
+            key_updates, key_notes = _payment_source_key_updates(
+                cursor,
+                transaction_ids=changed_ids,
+            )
+            notes.extend(key_notes)
             if apply and changed_ids:
                 cursor.execute(
                     """
@@ -158,13 +171,22 @@ def recategorize_payments(
                     """,
                     (PAYMENT_CATEGORY, list(changed_ids)),
                 )
+                for row_id, source_key in key_updates:
+                    cursor.execute(
+                        """
+                        UPDATE transactions
+                        SET source_key = %s
+                        WHERE id = %s
+                        """,
+                        (source_key, row_id),
+                    )
         if apply:
             connection.commit()
     return RepairResult(
         applied=apply,
         changed_ids=changed_ids,
         conflicts=(),
-        notes=(),
+        notes=tuple(notes),
     )
 
 
@@ -188,6 +210,10 @@ def delete_batch_merges(
             uploads = _batch_upload_ids(cursor, user_id=user_id)
             upload_ids = [row[0] for row in uploads]
             owner_ids = sorted({row[1] for row in uploads})
+            # Keep the requested user for SQLite cleanup even when Postgres
+            # uploads are already gone (retry after a failed clear).
+            if user_id is not None:
+                owner_ids = sorted({*owner_ids, user_id})
             if not upload_ids:
                 changed_ids: tuple[int, ...] = ()
             else:
@@ -249,16 +275,21 @@ def backfill_source_keys(
 ) -> RepairResult:
     """Fill source_key on imported rows that do not have one.
 
-    Rows are handled in date order. A key that already belongs to another
-    row is reported and stops further updates for that user.
+    Occurrence numbers are assigned against every row on the statement,
+    including rows that already have a key, so a partially keyed upload
+    still receives the correct remaining keys. Card last4 is taken from
+    the statement file name when present so keys match a later re-import.
     """
     _require_backup(apply=apply, i_have_a_backup=i_have_a_backup)
     resolved_url = _resolve_database_url(database_url)
     with db_connection(resolved_url, operation="backfill_source_keys") as connection:
         with connection.cursor() as cursor:
-            pending = _null_source_key_rows(cursor, user_id=user_id)
+            statement_rows = _imported_rows_for_source_keys(
+                cursor,
+                user_id=user_id,
+            )
             taken = _existing_source_keys(cursor, user_id=user_id)
-            updates, conflicts = _plan_source_key_updates(pending, taken)
+            updates, conflicts = _plan_source_key_updates(statement_rows, taken)
             if apply and updates:
                 cursor.executemany(
                     """
@@ -515,11 +546,12 @@ def _unreadable_dates(
     ]
 
 
-def _null_source_key_rows(
+def _imported_rows_for_source_keys(
     cursor: psycopg.Cursor[Any],
     *,
     user_id: int | None,
 ) -> list[dict[str, Any]]:
+    """All imported rows used when assigning source_key occurrences."""
     user_sql, params = _user_filter(user_id, "t.user_id")
     cursor.execute(
         f"""
@@ -540,44 +572,68 @@ def _null_source_key_rows(
                 NULLIF(t.file_fingerprint, ''),
                 NULLIF(u.file_fingerprint_sha256, ''),
                 ''
-            ) AS statement_scope
+            ) AS statement_scope,
+            t.source_key,
+            COALESCE(t.original_file_name, u.original_file_name, ''),
+            COALESCE(t.file_name, u.stored_file_name, '')
         FROM transactions t
         LEFT JOIN statement_uploads u
           ON u.id = t.statement_upload_id
-        WHERE t.source_key IS NULL
-          AND COALESCE(t.file_name, '') <> 'manual-entry'
+        WHERE COALESCE(t.file_name, '') <> 'manual-entry'
           AND t.user_id IS NOT NULL
         {user_sql}
         ORDER BY t.date, t.id
         """,
         [DEFAULT_BASE_CURRENCY, *params],
     )
-    columns = (
-        "id",
-        "user_id",
-        "date",
-        "merchant",
-        "amount",
-        "category",
-        "currency",
-        "statement_upload_id",
-        "statement_scope",
-    )
-    return [
-        dict(zip(columns, row, strict=True))
-        for row in cursor.fetchall()
-    ]
+    rows: list[dict[str, Any]] = []
+    for packed in cursor.fetchall():
+        (
+            row_id,
+            owner_id,
+            row_date,
+            merchant,
+            amount,
+            category,
+            currency,
+            statement_upload_id,
+            statement_scope,
+            source_key,
+            original_file_name,
+            file_name,
+        ) = packed
+        card_last4 = card_last4_from_statement(
+            "",
+            file_name=f"{original_file_name}\n{file_name}",
+        )
+        rows.append(
+            {
+                "id": int(row_id),
+                "user_id": int(owner_id),
+                "date": str(row_date),
+                "merchant": str(merchant),
+                "amount": amount,
+                "category": str(category),
+                "currency": str(currency),
+                "statement_upload_id": statement_upload_id,
+                "statement_scope": str(statement_scope),
+                "source_key": None if source_key is None else str(source_key),
+                "card_last4": card_last4,
+            }
+        )
+    return rows
 
 
 def _existing_source_keys(
     cursor: psycopg.Cursor[Any],
     *,
     user_id: int | None,
-) -> dict[int, set[str]]:
+) -> dict[int, dict[str, int]]:
+    """Map user_id -> source_key -> transaction id that owns it."""
     user_sql, params = _user_filter(user_id, "user_id")
     cursor.execute(
         f"""
-        SELECT user_id, source_key
+        SELECT user_id, source_key, id
         FROM transactions
         WHERE source_key IS NOT NULL
           AND user_id IS NOT NULL
@@ -585,34 +641,39 @@ def _existing_source_keys(
         """,
         params,
     )
-    taken: dict[int, set[str]] = {}
-    for owner_id, source_key in cursor.fetchall():
-        taken.setdefault(int(owner_id), set()).add(str(source_key))
+    taken: dict[int, dict[str, int]] = {}
+    for owner_id, source_key, row_id in cursor.fetchall():
+        taken.setdefault(int(owner_id), {})[str(source_key)] = int(row_id)
     return taken
 
 
 def _plan_source_key_updates(
-    pending: list[dict[str, Any]],
-    taken: dict[int, set[str]],
+    statement_rows: list[dict[str, Any]],
+    taken: dict[int, dict[str, int]],
 ) -> tuple[list[tuple[int, str]], list[str]]:
     by_user: dict[int, list[dict[str, Any]]] = {}
-    for row in pending:
+    for row in statement_rows:
         by_user.setdefault(int(row["user_id"]), []).append(row)
 
     updates: list[tuple[int, str]] = []
     conflicts: list[str] = []
     for owner_id, rows in by_user.items():
         planned = _keys_for_user_rows(rows)
-        used = set(taken.get(owner_id, set()))
+        used = dict(taken.get(owner_id, {}))
         for row, source_key in planned:
-            if source_key in used:
+            existing_key = row.get("source_key")
+            if existing_key is not None:
+                # Already keyed: keep it for occurrence counting only.
+                continue
+            owner_of_key = used.get(source_key)
+            if owner_of_key is not None and owner_of_key != int(row["id"]):
                 conflicts.append(
                     "source_key conflict for transaction "
                     f"{row['id']} on {row['date']} {row['merchant']}"
                 )
                 break
             updates.append((int(row["id"]), source_key))
-            used.add(source_key)
+            used[source_key] = int(row["id"])
     return updates, conflicts
 
 
@@ -639,7 +700,7 @@ def _keys_for_user_rows(
                 "amount": float(row["amount"]),
                 "category": str(row["category"]),
                 "currency": str(row["currency"]),
-                "card_last4": "",
+                "card_last4": str(row.get("card_last4") or ""),
             }
             for row in ordered
         ]
@@ -653,22 +714,118 @@ def _keys_for_user_rows(
     return planned
 
 
+def _payment_source_key_updates(
+    cursor: psycopg.Cursor[Any],
+    *,
+    transaction_ids: tuple[int, ...],
+) -> tuple[list[tuple[int, str | None]], list[str]]:
+    """Plan source_key values after switching rows to Payment / Credit."""
+    if not transaction_ids:
+        return [], []
+
+    cursor.execute(
+        """
+        SELECT
+            t.id,
+            t.user_id,
+            t.date,
+            t.merchant,
+            COALESCE(t.original_amount, t.amount) AS amount,
+            COALESCE(
+                NULLIF(t.original_currency, ''),
+                NULLIF(t.currency, ''),
+                %s
+            ) AS currency,
+            COALESCE(
+                NULLIF(t.file_fingerprint, ''),
+                NULLIF(u.file_fingerprint_sha256, ''),
+                ''
+            ) AS statement_scope,
+            COALESCE(t.original_file_name, u.original_file_name, ''),
+            COALESCE(t.file_name, u.stored_file_name, '')
+        FROM transactions t
+        LEFT JOIN statement_uploads u
+          ON u.id = t.statement_upload_id
+        WHERE t.id = ANY(%s)
+        ORDER BY t.date, t.id
+        """,
+        [DEFAULT_BASE_CURRENCY, list(transaction_ids)],
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return [], []
+
+    taken = _existing_source_keys(cursor, user_id=None)
+    updates: list[tuple[int, str | None]] = []
+    notes: list[str] = []
+    for (
+        row_id,
+        owner_id,
+        row_date,
+        merchant,
+        amount,
+        currency,
+        statement_scope,
+        original_file_name,
+        file_name,
+    ) in rows:
+        card_last4 = card_last4_from_statement(
+            "",
+            file_name=f"{original_file_name}\n{file_name}",
+        )
+        source_key = source_keys_for_transactions(
+            [
+                {
+                    "date": str(row_date),
+                    "merchant": str(merchant),
+                    "amount": float(amount),
+                    "category": PAYMENT_CATEGORY,
+                    "currency": str(currency),
+                    "card_last4": card_last4,
+                }
+            ],
+            statement_scope=str(statement_scope),
+        )[0]
+        owner_of_key = taken.get(int(owner_id), {}).get(source_key)
+        if owner_of_key is not None and owner_of_key != int(row_id):
+            updates.append((int(row_id), None))
+            notes.append(
+                f"cleared source_key on transaction {row_id}; "
+                f"payment key already belongs to {owner_of_key}"
+            )
+            continue
+        updates.append((int(row_id), source_key))
+        taken.setdefault(int(owner_id), {})[source_key] = int(row_id)
+    return updates, notes
+
+
 def _clear_postgres_synced(user_id: int) -> str:
     path = batch_sqlite_path_for_user(user_id)
     if not path.exists():
         return f"no batch database for user {user_id}"
     with sqlite3.connect(path) as connection:
-        columns = [
+        columns = {
             str(row[1])
             for row in connection.execute(
                 "PRAGMA table_info(imported_transactions)"
             )
-        ]
+        }
         if "postgres_synced" not in columns:
             return (
                 f"batch database for user {user_id} has no postgres_synced"
             )
-        connection.execute(
-            "UPDATE imported_transactions SET postgres_synced = 0"
-        )
+        # Drop stale dashboard links so a later delete cannot remove a row
+        # owned by a different upload after this repair.
+        if "postgres_source_key" in columns:
+            connection.execute(
+                """
+                UPDATE imported_transactions
+                SET postgres_synced = 0,
+                    postgres_source_key = NULL
+                """
+            )
+        else:
+            connection.execute(
+                "UPDATE imported_transactions SET postgres_synced = 0"
+            )
     return f"cleared postgres_synced for user {user_id}"

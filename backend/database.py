@@ -1659,10 +1659,12 @@ def source_keys_owned_by_upload(
     source_keys: list[str],
     database_url: str | None = None,
 ) -> frozenset[str]:
-    """Return which of ``source_keys`` already belong to this upload.
+    """Return which of ``source_keys`` this merge created on the upload.
 
-    Used after a merge retry so batch rows can be re-linked when Postgres
-    already has the transactions but SQLite never stored ``postgres_source_key``.
+    Matches rows whose ``file_name`` is a batch-import path so a shared PDF
+    upload fingerprint does not link batch review rows to PDF-owned charges
+    (#76). Still works when the upload record itself is not named
+    ``batch-import/…`` because an earlier PDF upload reused the fingerprint.
     """
     if not source_keys:
         return frozenset()
@@ -1679,6 +1681,7 @@ def source_keys_owned_by_upload(
             WHERE user_id = %s
               AND statement_upload_id = %s
               AND source_key = ANY(%s)
+              AND file_name LIKE 'batch-import/%%'
             """,
             (user_id, statement_upload_id, list(source_keys)),
         )

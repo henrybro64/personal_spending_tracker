@@ -194,19 +194,18 @@ def merge_run_to_postgres(
     ):
         merged_count += insert_result.inserted_count
         skipped_count += len(eligible_transactions) - insert_result.inserted_count
-        # Only link rows this batch upload owns. Shared PDF fingerprints must
-        # not get links (#76). On retry, look up keys already on the batch
-        # upload so a crash after Postgres still restores delete targets.
-        batch_owned_keys: frozenset[str] = frozenset()
-        if str(upload_record["file_name"]).startswith("batch-import/"):
-            batch_owned_keys = source_keys_owned_by_upload(
-                user_id=user_id,
-                statement_upload_id=upload_record["id"],
-                source_keys=[
-                    key_by_id[transaction["id"]]
-                    for transaction in eligible_transactions
-                ],
-            )
+        # Link rows this merge inserted, or (on retry) batch-owned rows already
+        # on the upload. Ownership is by transaction file_name batch-import/
+        # prefix, not the upload record name, so a shared PDF fingerprint still
+        # restores links without tying batch deletes to PDF-owned rows (#76).
+        batch_owned_keys = source_keys_owned_by_upload(
+            user_id=user_id,
+            statement_upload_id=upload_record["id"],
+            source_keys=[
+                key_by_id[transaction["id"]]
+                for transaction in eligible_transactions
+            ],
+        )
         for transaction in eligible_transactions:
             source_key = key_by_id[transaction["id"]]
             if (

@@ -785,6 +785,76 @@ def test_merge_retry_restores_postgres_source_key_links(
         assert all(key is not None for key in linked)
 
 
+def test_merge_retry_restores_links_when_upload_reused_a_pdf_fingerprint(
+    api_main,
+    monkeypatch,
+    database_url: str,
+) -> None:
+    """Batch rows on a PDF upload still get links restored after SQLite failure."""
+    import sqlite3
+
+    import psycopg
+
+    from backend.batch_import.paths import default_sqlite_output_path
+    from backend.batch_import.storage import BatchImportStore
+
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    with client:
+        _statement_for_user(1)
+        _register(client, "alice")
+        run = client.post("/batch-imports/run", json={}).json()["run"]
+        real_set_keys = BatchImportStore.set_postgres_source_keys
+        calls = {"n": 0}
+
+        def flaky_set_keys(self, keys_by_id):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise sqlite3.OperationalError("link write failed")
+            return real_set_keys(self, keys_by_id)
+
+        monkeypatch.setattr(
+            BatchImportStore,
+            "set_postgres_source_keys",
+            flaky_set_keys,
+        )
+        first = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert first.status_code == 500
+
+        # Simulate an earlier PDF upload owning the fingerprint: the upload
+        # record is no longer named batch-import/…, but the rows still are.
+        with psycopg.connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE statement_uploads
+                    SET
+                        stored_file_name = 'abcdef.pdf',
+                        original_file_name = 'amex.pdf'
+                    WHERE user_id = 1
+                    """
+                )
+            connection.commit()
+
+        retry = client.post(
+            "/batch-imports/merge",
+            json={"run_id": run["run_id"]},
+        )
+        assert retry.status_code == 200, retry.text
+        store = BatchImportStore(
+            default_sqlite_output_path().with_name("batch_imports_user_1.sqlite3")
+        )
+        linked = [
+            store.get_postgres_source_key(row["id"])
+            for row in store.list_transactions(run_id=run["run_id"])
+            if not row["exclude_from_spending"]
+        ]
+        assert linked
+        assert all(key is not None for key in linked)
+
+
 def test_failed_second_statement_rolls_back_the_whole_merge(
     api_main,
     monkeypatch,

@@ -122,11 +122,25 @@ def _seed(database_url: str) -> dict[str, int]:
                 row_date="2026-01-06",
                 merchant="IKEA",
             )
+            spending_payment_key = source_keys_for_transactions(
+                [
+                    {
+                        "date": "2026-02-01",
+                        "merchant": "PAYMENT THANK YOU",
+                        "amount": 10.0,
+                        "category": "Dining",
+                        "currency": "TWD",
+                        "card_last4": "",
+                    }
+                ],
+                statement_scope="fp-card",
+            )[0]
             payment_id = add_row(
                 upload="card.pdf",
                 row_date="2026-02-01",
                 merchant="PAYMENT THANK YOU",
                 category="Dining",
+                source_key=spending_payment_key,
             )
             future_id = add_row(
                 upload="future.pdf",
@@ -144,6 +158,45 @@ def _seed(database_url: str) -> dict[str, int]:
                 merchant="BOOKSHOP",
                 amount=20,
             )
+            # File name carries the card suffix used by normal imports.
+            cursor.execute(
+                """
+                INSERT INTO statement_uploads (
+                    user_id,
+                    original_file_name,
+                    stored_file_name,
+                    file_fingerprint_sha256,
+                    parse_status
+                )
+                VALUES (%s, %s, %s, %s, 'parsed')
+                RETURNING id
+                """,
+                (
+                    user_id,
+                    "statements-4321-jan.pdf",
+                    "statements-4321-jan.pdf",
+                    "fp-carded",
+                ),
+            )
+            carded_upload = int(cursor.fetchone()[0])
+            cursor.execute(
+                """
+                INSERT INTO transactions (
+                    user_id, statement_upload_id, date, merchant,
+                    amount, original_amount, currency, original_currency,
+                    category, file_name, original_file_name,
+                    file_fingerprint, source_key
+                )
+                VALUES (
+                    %s, %s, '2026-03-15', 'CARD CAFE', 9, 9, 'TWD', 'TWD',
+                    'Dining', 'statements-4321-jan.pdf',
+                    'statements-4321-jan.pdf', 'fp-carded', NULL
+                )
+                RETURNING id
+                """,
+                (user_id, carded_upload),
+            )
+            carded_backfill_id = int(cursor.fetchone()[0])
             cursor.execute(
                 """
                 INSERT INTO transactions (
@@ -166,7 +219,9 @@ def _seed(database_url: str) -> dict[str, int]:
         "future_id": future_id,
         "unreadable_id": unreadable_id,
         "backfill_id": backfill_id,
+        "carded_backfill_id": carded_backfill_id,
         "manual_id": manual_id,
+        "spending_payment_key": spending_payment_key,
     }
 
 
@@ -246,9 +301,10 @@ def test_repairs_change_nothing_without_apply(
     assert seeded["duplicate_on_card"] not in filled.changed_ids
     assert seeded["manual_id"] not in filled.changed_ids
     assert _category(database_url, seeded["payment_id"]) == "Dining"
-    assert _upload_count(database_url, seeded["user_id"]) == 4
+    assert _upload_count(database_url, seeded["user_id"]) == 5
     assert _source_key(database_url, seeded["backfill_id"]) is None
     assert _sqlite_synced(seeded["user_id"]) == 1
+    assert _sqlite_source_key(seeded["user_id"]) == "stale-key"
 
 
 def test_each_repair_changes_only_the_expected_rows(
@@ -272,9 +328,27 @@ def test_each_repair_changes_only_the_expected_rows(
     assert payments.changed_ids == (seeded["payment_id"],)
     assert _category(database_url, seeded["payment_id"]) == PAYMENT_CATEGORY
     assert _category(database_url, seeded["duplicate_on_card"]) == "Dining"
+    payment_key = _source_key(database_url, seeded["payment_id"])
+    assert payment_key is not None
+    assert payment_key != seeded["spending_payment_key"]
+    expected_payment_key = source_keys_for_transactions(
+        [
+            {
+                "date": "2026-02-01",
+                "merchant": "PAYMENT THANK YOU",
+                "amount": 10.0,
+                "category": PAYMENT_CATEGORY,
+                "currency": "TWD",
+                "card_last4": "",
+            }
+        ],
+        statement_scope="fp-card",
+    )[0]
+    assert payment_key == expected_payment_key
 
     filled = backfill_source_keys(**common)
     assert seeded["backfill_id"] in filled.changed_ids
+    assert seeded["carded_backfill_id"] in filled.changed_ids
     assert _source_key(database_url, seeded["manual_id"]) is None
     assert _source_key(database_url, seeded["duplicate_on_card"]) == "keep-me"
     expected = source_keys_for_transactions(
@@ -291,6 +365,20 @@ def test_each_repair_changes_only_the_expected_rows(
         statement_scope="fp-book",
     )[0]
     assert _source_key(database_url, seeded["backfill_id"]) == expected
+    expected_carded = source_keys_for_transactions(
+        [
+            {
+                "date": "2026-03-15",
+                "merchant": "CARD CAFE",
+                "amount": 9.0,
+                "category": "Dining",
+                "currency": "TWD",
+                "card_last4": "4321",
+            }
+        ],
+        statement_scope="fp-carded",
+    )[0]
+    assert _source_key(database_url, seeded["carded_backfill_id"]) == expected_carded
 
     deleted = delete_batch_merges(**common)
     assert deleted.changed_ids == (seeded["duplicate_on_batch"],)
@@ -298,8 +386,10 @@ def test_each_repair_changes_only_the_expected_rows(
         "book.pdf",
         "card.pdf",
         "future.pdf",
+        "statements-4321-jan.pdf",
     ]
     assert _sqlite_synced(seeded["user_id"]) == 0
+    assert _sqlite_source_key(seeded["user_id"]) is None
 
 
 def test_backfill_stops_on_a_source_key_conflict(
@@ -393,11 +483,115 @@ def test_delete_batch_merges_notes_when_sqlite_clear_fails(
         "book.pdf",
         "card.pdf",
         "future.pdf",
+        "statements-4321-jan.pdf",
     ]
     assert any(
         "clearing postgres_synced failed" in note for note in result.notes
     )
     assert any("Re-run --delete-batch-merges" in note for note in result.notes)
+
+
+def test_delete_batch_merges_retries_sqlite_clear_when_uploads_are_gone(
+    database_url: str,
+    reset_database,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    del reset_database
+    monkeypatch.setenv("BATCH_DATA_DIR", str(tmp_path))
+    seeded = _seed(database_url)
+    _mark_batch_sqlite_synced(seeded["user_id"])
+    first = delete_batch_merges(
+        user_id=seeded["user_id"],
+        database_url=database_url,
+        apply=True,
+        i_have_a_backup=True,
+    )
+    assert first.changed_ids == (seeded["duplicate_on_batch"],)
+
+    # Simulate the SQLite clear failing after Postgres deleted the uploads.
+    _mark_batch_sqlite_synced(seeded["user_id"])
+    assert _sqlite_synced(seeded["user_id"]) == 1
+    assert _sqlite_source_key(seeded["user_id"]) == "stale-key"
+
+    retry = delete_batch_merges(
+        user_id=seeded["user_id"],
+        database_url=database_url,
+        apply=True,
+        i_have_a_backup=True,
+    )
+    assert retry.changed_ids == ()
+    assert _sqlite_synced(seeded["user_id"]) == 0
+    assert _sqlite_source_key(seeded["user_id"]) is None
+
+
+def test_backfill_assigns_occurrence_using_already_keyed_siblings(
+    database_url: str,
+    reset_database,
+) -> None:
+    del reset_database
+    seeded = _seed(database_url)
+    first_ikea_key = source_keys_for_transactions(
+        [
+            {
+                "date": "2026-01-06",
+                "merchant": "IKEA",
+                "amount": 10.0,
+                "category": "Dining",
+                "currency": "TWD",
+                "card_last4": "",
+            }
+        ],
+        statement_scope="fp-card",
+    )[0]
+    second_ikea_key = source_keys_for_transactions(
+        [
+            {
+                "date": "2026-01-06",
+                "merchant": "IKEA",
+                "amount": 10.0,
+                "category": "Dining",
+                "currency": "TWD",
+                "card_last4": "",
+            },
+            {
+                "date": "2026-01-06",
+                "merchant": "IKEA",
+                "amount": 10.0,
+                "category": "Dining",
+                "currency": "TWD",
+                "card_last4": "",
+            },
+        ],
+        statement_scope="fp-card",
+    )[1]
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM transactions
+                WHERE user_id = %s AND merchant = 'IKEA'
+                ORDER BY id
+                """,
+                (seeded["user_id"],),
+            )
+            first_id, second_id = [int(row[0]) for row in cursor.fetchall()]
+            cursor.execute(
+                "UPDATE transactions SET source_key = %s WHERE id = %s",
+                (first_ikea_key, first_id),
+            )
+        connection.commit()
+
+    result = backfill_source_keys(
+        user_id=seeded["user_id"],
+        database_url=database_url,
+        apply=True,
+        i_have_a_backup=True,
+    )
+    assert second_id in result.changed_ids
+    assert _source_key(database_url, second_id) == second_ikea_key
+    assert not any(str(second_id) in conflict for conflict in result.conflicts)
 
 
 def _upload_count(database_url: str, user_id: int) -> int:
@@ -434,6 +628,8 @@ def _mark_batch_sqlite_synced(user_id: int) -> None:
     store = BatchImportStore(path)
     store.initialize()
     with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM imported_transactions")
+        connection.execute("DELETE FROM import_runs")
         connection.execute(
             """
             INSERT INTO import_runs (
@@ -450,11 +646,11 @@ def _mark_batch_sqlite_synced(user_id: int) -> None:
                 import_run_id, statement_file, bank, transaction_date,
                 merchant_raw, merchant_key, amount, currency,
                 transaction_type, category, exclude_from_spending,
-                needs_review, postgres_synced
+                needs_review, postgres_synced, postgres_source_key
             )
             VALUES (
                 1, 'jan.txt', 'AMEX', '2026-01-05', 'CAFE', 'CAFE',
-                10, 'TWD', 'purchase', 'Dining', 0, 0, 1
+                10, 'TWD', 'purchase', 'Dining', 0, 0, 1, 'stale-key'
             )
             """
         )
@@ -467,3 +663,14 @@ def _sqlite_synced(user_id: int) -> int:
             "SELECT postgres_synced FROM imported_transactions"
         ).fetchone()
     return int(row[0])
+
+
+def _sqlite_source_key(user_id: int) -> str | None:
+    path = batch_sqlite_path_for_user(user_id)
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT postgres_source_key FROM imported_transactions"
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return str(row[0])
