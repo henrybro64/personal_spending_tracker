@@ -4,8 +4,8 @@ from hashlib import sha256
 
 from backend.database import (
     DuplicateStatementUploadError,
-    create_statement_upload,
     get_existing_upload_by_fingerprint,
+    import_statement,
     insert_transactions,
 )
 from backend.parser import Transaction
@@ -150,15 +150,17 @@ def merge_run_to_postgres(
         file_name = f"batch-import/{statement_file}"
         display_name = f"Batch import: {statement_file}"
         try:
-            upload_record = create_statement_upload(
+            _upload_record, insert_result = import_statement(
                 user_id=user_id,
                 original_file_name=display_name,
                 stored_file_name=file_name,
                 file_fingerprint_sha256=fingerprint,
                 parse_status="parsed",
                 currency=statement_transactions[0]["currency"],
+                transactions=upload_transactions,
+                source_keys=eligible_keys,
+                statement_scope=fingerprint,
             )
-            statement_upload_id = upload_record["id"]
         except DuplicateStatementUploadError:
             existing_upload = get_existing_upload_by_fingerprint(
                 user_id=user_id,
@@ -166,17 +168,16 @@ def merge_run_to_postgres(
             )
             if existing_upload is None:
                 raise
-            statement_upload_id = existing_upload["id"]
-        insert_result = insert_transactions(
-            upload_transactions,
-            user_id=user_id,
-            file_name=file_name,
-            original_file_name=display_name,
-            file_fingerprint=fingerprint,
-            statement_upload_id=statement_upload_id,
-            source_keys=eligible_keys,
-            statement_scope=fingerprint,
-        )
+            insert_result = insert_transactions(
+                upload_transactions,
+                user_id=user_id,
+                file_name=file_name,
+                original_file_name=display_name,
+                file_fingerprint=fingerprint,
+                statement_upload_id=existing_upload["id"],
+                source_keys=eligible_keys,
+                statement_scope=fingerprint,
+            )
         merged_count += insert_result.inserted_count
         skipped_count += len(eligible_transactions) - insert_result.inserted_count
         # Persist links and synced flags per statement so a later failure does

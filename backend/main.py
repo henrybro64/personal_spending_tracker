@@ -8,7 +8,7 @@ from datetime import date
 from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
-from typing import BinaryIO, Literal, NoReturn, TypedDict, cast
+from typing import Any, BinaryIO, Literal, NoReturn, TypedDict, cast
 from uuid import uuid4
 
 # Repo root on sys.path so `from backend.*` works when running
@@ -74,7 +74,6 @@ from backend.database import (  # noqa: E402
     DuplicateUsernameError,
     count_statement_uploads,
     create_session,
-    create_statement_upload,
     delete_user_ai_provider_setting,
     get_existing_upload_by_fingerprint,
     get_recent_uploads,
@@ -83,9 +82,9 @@ from backend.database import (  # noqa: E402
     iter_transactions,
     get_user_ai_provider_secret,
     get_user_auth_by_email,
+    import_statement,
     init_db,
     insert_manual_transaction,
-    insert_transactions,
     list_user_ai_provider_settings,
     record_audit_event,
     register_new_user,
@@ -160,6 +159,19 @@ from backend.db import (  # noqa: E402
 DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
 LOCAL_FRONTEND_ORIGINS = ("http://localhost:3000",)
 logger = logging.getLogger(__name__)
+
+
+def _audit_after_commit(**kwargs: Any) -> None:
+    """Record a success audit without failing a change that already saved."""
+    try:
+        record_audit_event(**kwargs)
+    except (psycopg.Error, PoolTimeout):
+        logger.exception(
+            "audit log failed after the change was saved action=%s",
+            kwargs.get("action"),
+        )
+
+
 _schema_ready = False
 _schema_lock = threading.Lock()
 
@@ -1017,7 +1029,7 @@ def register(
     )
     update_user_last_login(created_user["id"])
     attach_session_cookie(response, session_token)
-    record_audit_event(
+    _audit_after_commit(
         action="user_register",
         status="success",
         user_id=created_user["id"],
@@ -1031,7 +1043,7 @@ def register(
             "claimed_legacy_uploads": claimed_counts["claimed_statement_count"],
         },
     )
-    record_audit_event(
+    _audit_after_commit(
         action="user_sign_in",
         status="success",
         user_id=created_user["id"],
@@ -1076,7 +1088,7 @@ def login(
     create_session(user["id"], hash_session_token(session_token), session_expiry())
     update_user_last_login(user["id"])
     attach_session_cookie(response, session_token)
-    record_audit_event(
+    _audit_after_commit(
         action="user_sign_in",
         status="success",
         user_id=user["id"],
@@ -1111,7 +1123,7 @@ def logout(
     clear_session_cookie(response)
 
     if current_user:
-        record_audit_event(
+        _audit_after_commit(
             action="user_sign_out",
             status="success",
             user_id=current_user["id"],
@@ -1171,7 +1183,7 @@ def save_ai_settings(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    record_audit_event(
+    _audit_after_commit(
         action="ai_settings_update",
         status="success",
         user_id=current_user["id"],
@@ -1205,7 +1217,7 @@ def delete_ai_settings(
         raise HTTPException(status_code=404, detail="Provider settings not found.")
 
     audit_context = get_audit_request_context(request)
-    record_audit_event(
+    _audit_after_commit(
         action="ai_settings_delete",
         status="success",
         user_id=current_user["id"],
@@ -1304,7 +1316,7 @@ async def ai_insights(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     await asyncio.to_thread(
-        record_audit_event,
+        _audit_after_commit,
         action="ai_insights_generate",
         status="success",
         user_id=current_user["id"],
@@ -1391,7 +1403,7 @@ def delete_statement_upload(
     stored_path.unlink(missing_ok=True)
 
     audit_context = get_audit_request_context(request)
-    record_audit_event(
+    _audit_after_commit(
         action="statement_upload_delete",
         status="success",
         user_id=current_user["id"],
@@ -1700,7 +1712,7 @@ def create_manual_transaction(
         payment_method=cast(str | None, fields["payment_method"]),
     )
     audit_context = get_audit_request_context(request)
-    record_audit_event(
+    _audit_after_commit(
         action="manual_transaction_create",
         status="success",
         user_id=current_user["id"],
@@ -1750,7 +1762,7 @@ def patch_transaction(
         raise HTTPException(status_code=404, detail="Transaction not found.")
 
     audit_context = get_audit_request_context(request)
-    record_audit_event(
+    _audit_after_commit(
         action="transaction_update",
         status="success",
         user_id=current_user["id"],
@@ -1781,7 +1793,7 @@ def delete_dashboard_transaction(
         raise HTTPException(status_code=404, detail="Transaction not found.")
 
     audit_context = get_audit_request_context(request)
-    record_audit_event(
+    _audit_after_commit(
         action="transaction_delete",
         status="success",
         user_id=current_user["id"],
@@ -1825,7 +1837,7 @@ def _execute_batch_import(
         result.transaction_count,
         len(result.skipped_files),
     )
-    record_audit_event(
+    _audit_after_commit(
         action="batch_import_run",
         status="success",
         user_id=user_id,
@@ -1876,14 +1888,6 @@ def import_batch_content(
 
     if payload.destination == "dashboard":
         content_fingerprint = sha256(payload.content.encode("utf-8")).hexdigest()
-        upload_record = create_statement_upload(
-            user_id=current_user["id"],
-            original_file_name=payload.source_name,
-            stored_file_name=f"import-{uuid4().hex[:12]}.json",
-            file_fingerprint_sha256=content_fingerprint,
-            parse_status="imported",
-            currency=payload.currency.upper(),
-        )
         dashboard_rows: list[Transaction] = [
             {
                 "date": item.transaction_date,
@@ -1895,15 +1899,28 @@ def import_batch_content(
             }
             for item in transactions
         ]
-        insert_result = insert_transactions(
-            dashboard_rows,
-            user_id=current_user["id"],
-            file_name=upload_record["file_name"],
-            file_fingerprint=content_fingerprint,
-            original_file_name=payload.source_name,
-            statement_upload_id=upload_record["id"],
-            statement_scope=content_fingerprint,
-        )
+        try:
+            _upload_record, insert_result = import_statement(
+                user_id=current_user["id"],
+                original_file_name=payload.source_name,
+                stored_file_name=f"import-{uuid4().hex[:12]}.json",
+                file_fingerprint_sha256=content_fingerprint,
+                parse_status="imported",
+                currency=(
+                    dashboard_rows[0]["currency"] if dashboard_rows else None
+                ),
+                transactions=dashboard_rows,
+                statement_scope=content_fingerprint,
+            )
+        except DuplicateStatementUploadError:
+            existing_upload = get_existing_upload_by_fingerprint(
+                user_id=current_user["id"],
+                file_fingerprint_sha256=content_fingerprint,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=_duplicate_upload_detail(existing_upload),
+            ) from None
         return {
             "destination": "dashboard",
             "imported_count": insert_result.inserted_count,
@@ -1958,7 +1975,7 @@ def merge_batch_import(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     audit_context = get_audit_request_context(request)
-    record_audit_event(
+    _audit_after_commit(
         action="batch_import_merge",
         status="success",
         user_id=current_user["id"],
@@ -2038,7 +2055,7 @@ def update_batch_import_transaction(
         ) from None
 
     audit_context = get_audit_request_context(request)
-    record_audit_event(
+    _audit_after_commit(
         action="batch_import_review_update",
         status="success",
         user_id=current_user["id"],
@@ -2085,7 +2102,7 @@ def delete_batch_import_transaction(
         )
 
     audit_context = get_audit_request_context(request)
-    record_audit_event(
+    _audit_after_commit(
         action="batch_import_review_delete",
         status="success",
         user_id=current_user["id"],
@@ -2251,14 +2268,19 @@ def _reject_duplicate_upload(
         user_agent=audit_context.user_agent,
         metadata={"file_name": original_name},
     )
-    if existing_upload:
-        detail = (
-            "This statement was already imported as "
-            f"'{existing_upload['display_name']}' on {existing_upload['uploaded_at']}."
-        )
-    else:
-        detail = "This statement was already imported."
-    raise HTTPException(status_code=409, detail=detail)
+    raise HTTPException(
+        status_code=409,
+        detail=_duplicate_upload_detail(existing_upload),
+    )
+
+
+def _duplicate_upload_detail(existing_upload: ExistingUpload | None) -> str:
+    """Same wording for a duplicate PDF and a duplicate pasted statement."""
+    if existing_upload is None:
+        return "This statement was already imported."
+    name = existing_upload["display_name"]
+    uploaded_at = existing_upload["uploaded_at"]
+    return f"This statement was already imported as '{name}' on {uploaded_at}."
 
 
 def _fingerprint_uploaded_pdf(
@@ -2364,6 +2386,26 @@ def _open_uploaded_statement(
             metadata={"file_name": original_name, "reason": reason},
         )
         raise HTTPException(status_code=status_code, detail=detail) from None
+    except Exception:
+        saved_path.unlink(missing_ok=True)
+        logger.exception(
+            "statement upload parse failed user_id=%s",
+            user_id,
+        )
+        record_audit_event(
+            action="statement_upload_parse_failure",
+            status="rejected",
+            user_id=user_id,
+            target_type="statement_upload",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"file_name": original_name, "reason": "unreadable"},
+        )
+        raise HTTPException(
+            status_code=422,
+            detail="This PDF could not be read",
+        ) from None
 
 
 def _pdf_worker_failure_response(exc: PdfWorkerError) -> tuple[str, str, int, str]:
@@ -2454,95 +2496,94 @@ def _store_uploaded_pdf(
 
     saved_name = f"{uuid4().hex}.pdf"
     saved_path = upload_dir / saved_name
-    temp_path.rename(saved_path)
-    extracted_text, transactions = _open_uploaded_statement(
-        saved_path,
-        password_clean,
-        user_id=user_id,
-        original_name=original_name,
-        audit_context=audit_context,
-    )
-    display_name = original_name or saved_name
-    transactions = with_statement_card_last4(
-        transactions,
-        extracted_text,
-        file_name=display_name,
-    )
-    # Shared with batch merge: fingerprint extracted text, not PDF bytes.
-    text_fingerprint = statement_content_fingerprint(extracted_text)
-    existing_by_text = get_existing_upload_by_fingerprint(
-        user_id=user_id,
-        file_fingerprint_sha256=text_fingerprint,
-    )
-    if existing_by_text:
-        saved_path.unlink(missing_ok=True)
-        _reject_duplicate_upload(
-            existing_upload=existing_by_text,
-            user_id=user_id,
-            original_name=original_name,
-            audit_context=audit_context,
-        )
-
-    parse_reason: str | None = None
-    parse_status = "parsed"
-    if not transactions:
-        parse_reason = (
-            "empty_text" if not extracted_text.strip() else "no_matching_lines"
-        )
-        parse_status = "no_transactions"
-
     try:
-        upload_record = create_statement_upload(
-            user_id=user_id,
-            original_file_name=display_name,
-            stored_file_name=saved_name,
-            file_fingerprint_sha256=text_fingerprint,
-            parse_status=parse_status,
-            parse_reason=parse_reason,
-            currency=transactions[0].get("currency") if transactions else None,
-        )
-    except DuplicateStatementUploadError:
-        saved_path.unlink(missing_ok=True)
-        _reject_duplicate_upload(
-            existing_upload=get_existing_upload_by_fingerprint(
-                user_id=user_id,
-                file_fingerprint_sha256=text_fingerprint,
-            ),
+        temp_path.rename(saved_path)
+        extracted_text, transactions = _open_uploaded_statement(
+            saved_path,
+            password_clean,
             user_id=user_id,
             original_name=original_name,
             audit_context=audit_context,
         )
-    insert_transactions(
-        transactions,
-        user_id=user_id,
-        file_name=saved_name,
-        file_fingerprint=text_fingerprint,
-        original_file_name=display_name,
-        statement_upload_id=upload_record["id"],
-        statement_scope=text_fingerprint,
-    )
-    record_audit_event(
-        action="statement_upload_success",
-        status="success",
-        user_id=user_id,
-        target_type="statement_upload",
-        target_id=str(upload_record["id"]),
-        request_id=audit_context.request_id,
-        ip_address=audit_context.ip_address,
-        user_agent=audit_context.user_agent,
-        metadata={
-            "file_name": display_name,
-            "parse_status": parse_status,
-            "transaction_count": len(transactions),
-        },
-    )
+        display_name = original_name or saved_name
+        transactions = with_statement_card_last4(
+            transactions,
+            extracted_text,
+            file_name=display_name,
+        )
+        # Shared with batch merge: fingerprint extracted text, not PDF bytes.
+        text_fingerprint = statement_content_fingerprint(extracted_text)
+        existing_by_text = get_existing_upload_by_fingerprint(
+            user_id=user_id,
+            file_fingerprint_sha256=text_fingerprint,
+        )
+        if existing_by_text:
+            _reject_duplicate_upload(
+                existing_upload=existing_by_text,
+                user_id=user_id,
+                original_name=original_name,
+                audit_context=audit_context,
+            )
 
-    return {
-        "file_path": str(saved_path),
-        "original_file_name": display_name,
-        "transactions": transactions,
-        "parse_reason": parse_reason,
-    }
+        parse_reason: str | None = None
+        parse_status = "parsed"
+        if not transactions:
+            parse_reason = (
+                "empty_text"
+                if not extracted_text.strip()
+                else "no_matching_lines"
+            )
+            parse_status = "no_transactions"
+
+        try:
+            upload_record, _inserted = import_statement(
+                user_id=user_id,
+                original_file_name=display_name,
+                stored_file_name=saved_name,
+                file_fingerprint_sha256=text_fingerprint,
+                parse_status=parse_status,
+                parse_reason=parse_reason,
+                currency=(
+                    transactions[0].get("currency") if transactions else None
+                ),
+                transactions=transactions,
+                statement_scope=text_fingerprint,
+            )
+        except DuplicateStatementUploadError:
+            _reject_duplicate_upload(
+                existing_upload=get_existing_upload_by_fingerprint(
+                    user_id=user_id,
+                    file_fingerprint_sha256=text_fingerprint,
+                ),
+                user_id=user_id,
+                original_name=original_name,
+                audit_context=audit_context,
+            )
+        _audit_after_commit(
+            action="statement_upload_success",
+            status="success",
+            user_id=user_id,
+            target_type="statement_upload",
+            target_id=str(upload_record["id"]),
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={
+                "file_name": display_name,
+                "parse_status": parse_status,
+                "transaction_count": len(transactions),
+            },
+        )
+        return {
+            "file_path": str(saved_path),
+            "original_file_name": display_name,
+            "transactions": transactions,
+            "parse_reason": parse_reason,
+        }
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        saved_path.unlink(missing_ok=True)
+        raise
 
 
 @app.post("/upload", status_code=status.HTTP_201_CREATED)

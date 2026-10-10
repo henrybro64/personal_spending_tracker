@@ -13,6 +13,7 @@ from backend.batch_import.category import (
     transaction_type_for_category,
 )
 from backend.batch_import.models import NormalizedTransaction, TransactionType
+from backend.currency import normalize_supported_currency_code
 
 ImportDestination = Literal["batch", "dashboard"]
 ImportFormat = Literal["auto", "json", "text"]
@@ -310,9 +311,13 @@ def _normalize_row(
             raise BulkImportParseError("card_last4 must be four digits.")
 
     row_bank = str(raw_row.get("bank") or default_bank).strip() or default_bank
-    row_currency = (
+    raw_currency = (
         str(raw_row.get("currency") or default_currency).strip() or default_currency
     )
+    try:
+        row_currency = normalize_supported_currency_code(raw_currency)
+    except ValueError as exc:
+        raise BulkImportParseError(str(exc)) from exc
 
     explicit_category = raw_row.get("category")
     exclude_from_spending = bool(raw_row.get("exclude_from_spending", False))

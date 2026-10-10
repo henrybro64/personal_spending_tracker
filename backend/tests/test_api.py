@@ -654,3 +654,221 @@ def test_dashboard_view_does_not_return_the_unused_transactions_list(
     assert "transactions" not in payload
     assert len(payload["sorted_transactions"]) == 1
     assert payload["summary"]["number_of_transactions"] == 1
+
+
+def _upload_request() -> Request:
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/upload",
+            "headers": [],
+            "query_string": b"",
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+            "scheme": "http",
+        }
+    )
+    request.state.request_id = "upload-retry-test"
+    return request
+
+
+def test_renaming_merchant_keeps_hand_chosen_category(
+    client: TestClient,
+) -> None:
+    registered = client.post(
+        "/auth/register",
+        json={"email": "alice", "password": "password123"},
+    )
+    assert registered.status_code == 201
+    created = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2026-01-05",
+            "merchant": "Starbuks",
+            "amount": 100,
+            "category": "Gifts & Donations",
+        },
+    ).json()["transaction"]
+    patched = client.patch(
+        f"/transactions/{created['id']}",
+        json={"merchant": "Starbucks"},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["transaction"]["category"] == "Gifts & Donations"
+
+
+def test_upload_can_be_retried_after_a_failed_database_write(
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import psycopg
+
+    from backend.database import (
+        _insert_transaction_rows,
+        count_statement_uploads,
+        get_transactions,
+    )
+
+    with TestClient(api_main.app) as http:
+        registered = http.post(
+            "/auth/register",
+            json={"email": "alice", "password": "password123"},
+        )
+    assert registered.status_code == 201
+
+    def fake_load(path, password=None, **_kwargs):
+        del path, password
+        return "synthetic statement", [
+            {
+                "date": "2026-01-05",
+                "merchant": "Cafe",
+                "amount": 12.0,
+                "category": "Dining",
+                "currency": "USD",
+            }
+        ]
+
+    calls = {"n": 0}
+
+    def flaky_insert(cursor, insert_rows):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise psycopg.OperationalError("connection lost")
+        return _insert_transaction_rows(cursor, insert_rows)
+
+    monkeypatch.setattr(
+        "backend.database._insert_transaction_rows",
+        flaky_insert,
+    )
+    monkeypatch.setattr(api_main, "_load_uploaded_statement", fake_load)
+    audit_context = api_main.get_audit_request_context(_upload_request())
+    upload_dir = api_main._get_upload_dir(1)
+
+    def store_once() -> None:
+        api_main._store_uploaded_pdf(
+            upload_stream=BytesIO(b"%PDF-1.4 synthetic"),
+            original_name="statement.pdf",
+            content_type="application/pdf",
+            password=None,
+            user_id=1,
+            audit_context=audit_context,
+        )
+
+    with pytest.raises(psycopg.OperationalError):
+        store_once()
+    assert count_statement_uploads(user_id=1) == 0
+    assert list(upload_dir.glob("*.pdf")) == []
+    assert list(upload_dir.glob(".tmp-*")) == []
+
+    store_once()
+    assert count_statement_uploads(user_id=1) == 1
+    assert len(get_transactions(user_id=1)) == 1
+
+
+def test_parse_failure_removes_the_saved_pdf(
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failing_load(path, password=None, **_kwargs):
+        del path, password
+        raise RuntimeError("ValueError: day is out of range for month")
+
+    monkeypatch.setattr(api_main, "_load_uploaded_statement", failing_load)
+    audit_context = api_main.get_audit_request_context(_upload_request())
+    with TestClient(api_main.app) as http:
+        registered = http.post(
+            "/auth/register",
+            json={"email": "alice", "password": "password123"},
+        )
+    assert registered.status_code == 201
+
+    with pytest.raises(Exception) as caught:
+        api_main._store_uploaded_pdf(
+            upload_stream=BytesIO(b"%PDF-1.4 synthetic"),
+            original_name="statement.pdf",
+            content_type="application/pdf",
+            password=None,
+            user_id=1,
+            audit_context=audit_context,
+        )
+
+    assert isinstance(caught.value, HTTPException)
+    assert caught.value.status_code == 422
+    assert caught.value.detail == "This PDF could not be read"
+    assert list(api_main._get_upload_dir(1).glob("*")) == []
+
+
+def test_audit_failure_after_success_does_not_fail_the_request(
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import psycopg
+
+    def fail_audit(**kwargs):
+        del kwargs
+        raise psycopg.OperationalError("audit down")
+
+    monkeypatch.setattr(api_main, "record_audit_event", fail_audit)
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    with client:
+        registered = client.post(
+            "/auth/register",
+            json={"email": "alice", "password": "password123"},
+        )
+        assert registered.status_code == 201
+        created = client.post(
+            "/transactions/manual",
+            json={
+                "date": "2026-01-05",
+                "merchant": "Cafe",
+                "amount": 10,
+            },
+        )
+        assert created.status_code == 201, created.text
+        listed = client.get("/transactions")
+    assert listed.status_code == 200
+    assert len(listed.json()["transactions"]) == 1
+
+
+def test_bulk_import_to_dashboard_rejects_duplicates_and_bad_currency_cleanly(
+    api_main,
+) -> None:
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    with client:
+        registered = client.post(
+            "/auth/register",
+            json={"email": "alice", "password": "password123"},
+        )
+        assert registered.status_code == 201
+        body = {
+            "content": "2026-01-05 Cafe 10.00",
+            "destination": "dashboard",
+            "currency": "TWD",
+        }
+        first = client.post("/batch-imports/import", json=body)
+        assert first.status_code == 201, first.text
+        second = client.post("/batch-imports/import", json=body)
+        assert second.status_code == 409
+        assert second.json()["detail"].startswith(
+            "This statement was already imported as 'import' on "
+        )
+        bad = {
+            "content": "2026-01-06 Cafe 12.00",
+            "destination": "dashboard",
+            "currency": "AUD",
+        }
+        rejected = client.post("/batch-imports/import", json=bad)
+        assert rejected.status_code == 400
+        detail = rejected.json()["detail"]
+        assert detail.startswith("Row 1: Currency must be one of: ")
+        assert "TWD" in detail
+        assert "AUD" not in detail
+        uploads = client.get("/uploads/recent")
+        assert uploads.status_code == 200
+        assert len(uploads.json()["uploads"]) == 1
+        fixed = client.post(
+            "/batch-imports/import",
+            json={**bad, "currency": "USD"},
+        )
+        assert fixed.status_code == 201, fixed.text
