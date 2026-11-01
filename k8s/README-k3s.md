@@ -128,6 +128,18 @@ bash scripts/triage-k3s-pods.sh   # pods Error / ContainerCreating
 
 **Backend stays up while Postgres is starting:** the API process does not wait for Postgres. `/health` stays available, and `/ready` applies migrations once the database accepts connections. The pod stays out of rotation until that probe succeeds.
 
+**Sign-in shows "API proxy to backend failed: fetch failed" after a node restart, Postgres in `CrashLoopBackOff` with empty logs** (issue #101): the backend's `/ready` returns 503 because Postgres never started, so `kubectl -n spending-tracker get endpoints backend` is empty. On 2026-11-01 the cause was the image's entrypoint hanging in `gosu` (100% CPU, nothing listening on 5432) until the liveness probe killed it, over and over. Check with:
+
+```bash
+kubectl -n spending-tracker exec deploy/postgres -- ps aux   # PID 1 is "gosu postgres ..." instead of "postgres"
+```
+
+`20-postgres.yaml` now avoids this. The pod runs as the `postgres` user (`POSTGRES_UID`, default `70` for `-alpine` images, `999` for Debian-based `postgres:16`), so the entrypoint skips `gosu`, and an init container makes the data directory owned by that user. A startup probe gives Postgres up to 5 minutes to start before it is restarted (e.g. crash recovery). The `Recreate` strategy means a rollout stops the old Postgres pod before starting the new one, so two pods never share the data volume. If you hit this on an older manifest, redeploy with `scripts/deploy-k3s.sh`.
+
+**Restarting Postgres safely:** use `kubectl -n spending-tracker rollout restart deployment/postgres`, or `kubectl -n spending-tracker scale deployment/postgres --replicas=0` and then `--replicas=1`. **Do not `kubectl delete pod` the Postgres pod.** `Recreate` only applies to rollouts. A deleted pod is replaced right away, while the old one is still shutting down, so for a moment two Postgres processes can open the same data directory. Postgres cannot detect this across containers.
+
+**Brief database downtime on deploy:** because of `Recreate`, a deploy that changes the Postgres pod (image, probes, `POSTGRES_UID`, a new `IMAGE_PULL_SECRET`) stops Postgres before starting the new pod. Expect roughly 10–20 seconds of database downtime, during which the backend's `/ready` reports 503. A deploy that leaves the Postgres manifest unchanged does not restart it. `deploy-k3s.sh` waits up to `POSTGRES_ROLLOUT_TIMEOUT` (default `330s`, longer than the 5-minute startup probe) for Postgres to become ready.
+
 **Backups:** see [docs/backup-restore.md](../docs/backup-restore.md). Use `KUBECTL='sudo k3s kubectl' ./scripts/backup-spending-tracker.sh --k3s` before major upgrades.
 
 **Password auth failed after changing `DB_PASSWORD`:** Postgres PVC keeps the old password. Delete the namespace and redeploy, or `ALTER USER` inside the Postgres pod.

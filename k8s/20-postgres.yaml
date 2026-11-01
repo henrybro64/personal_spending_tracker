@@ -21,6 +21,10 @@ metadata:
     app.kubernetes.io/part-of: personal-spending-tracker
 spec:
   replicas: 1
+  # Never run two Postgres pods on the same ReadWriteOnce volume (the default
+  # RollingUpdate starts the new pod before the old one stops).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: postgres
@@ -31,6 +35,27 @@ spec:
         app.kubernetes.io/part-of: personal-spending-tracker
     spec:
       restartPolicy: Always
+      # Start as the postgres user so docker-entrypoint.sh runs Postgres
+      # directly instead of going through gosu, which hung at 100% CPU after a
+      # node restart (issue #101). 70 = alpine images, 999 = Debian images.
+      securityContext:
+        runAsUser: ${POSTGRES_UID}
+        runAsGroup: ${POSTGRES_UID}
+      initContainers:
+        # A new local-path volume is created owned by root; Postgres refuses a
+        # data directory it does not own. Runs as root, once per pod start.
+        - name: postgres-data-owner
+          image: busybox:1.36
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          command:
+            - sh
+            - -c
+            - chown ${POSTGRES_UID}:${POSTGRES_UID} /var/lib/postgresql/data && chmod 700 /var/lib/postgresql/data
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
       containers:
         - name: postgres
           image: ${POSTGRES_IMAGE}
@@ -57,22 +82,35 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+          # Up to 5 minutes to start (e.g. crash recovery after a power cut)
+          # before Kubernetes restarts the container.
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
           readinessProbe:
             exec:
               command:
                 - sh
                 - -c
                 - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-            initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
+          # After startup, restart a Postgres that stops responding for 2 minutes.
           livenessProbe:
             exec:
               command:
                 - sh
                 - -c
                 - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-            initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
       volumes:
         - name: postgres-data
           persistentVolumeClaim:

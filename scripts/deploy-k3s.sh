@@ -22,12 +22,16 @@ STATEMENT_RETENTION_DAYS="${STATEMENT_RETENTION_DAYS:-0}"
 PDF_PARSE_TIMEOUT_SECONDS="${PDF_PARSE_TIMEOUT_SECONDS:-120}"
 BATCH_STORAGE_SIZE="${BATCH_STORAGE_SIZE:-5Gi}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
+POSTGRES_UID="${POSTGRES_UID:-70}"
 POSTGRES_STORAGE_CLASS="${POSTGRES_STORAGE_CLASS:-local-path}"
 POSTGRES_STORAGE_SIZE="${POSTGRES_STORAGE_SIZE:-8Gi}"
 UPLOADS_STORAGE_SIZE="${UPLOADS_STORAGE_SIZE:-5Gi}"
 IMAGE_PULL_POLICY="${IMAGE_PULL_POLICY:-IfNotPresent}"
 APP_IMAGE_PULL_POLICY="${APP_IMAGE_PULL_POLICY:-$IMAGE_PULL_POLICY}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
+# Longer than the Postgres startupProbe window (5 minutes) so a slow start
+# (e.g. crash recovery) does not fail the deploy while Postgres is healthy.
+POSTGRES_ROLLOUT_TIMEOUT="${POSTGRES_ROLLOUT_TIMEOUT:-330s}"
 BUILD_IMAGES="${BUILD_IMAGES:-0}"
 LOCAL_DEPLOY="${LOCAL_DEPLOY:-0}"
 LOCAL_BACKEND_IMAGE="${LOCAL_BACKEND_IMAGE:-personal-spending-tracker-backend:latest}"
@@ -71,12 +75,14 @@ Optional environment variables:
   STATEMENT_RETENTION_DAYS=0
   PDF_PARSE_TIMEOUT_SECONDS=120
   POSTGRES_IMAGE=postgres:16-alpine
+  POSTGRES_UID=70   postgres user in -alpine images; Debian-based postgres:16 uses 999 (must not be 0)
   POSTGRES_STORAGE_CLASS=local-path
   POSTGRES_STORAGE_SIZE=8Gi
   UPLOADS_STORAGE_SIZE=5Gi
   IMAGE_PULL_POLICY=IfNotPresent
   APP_IMAGE_PULL_POLICY=IfNotPresent  Backend/frontend only (LOCAL_DEPLOY sets Never)
   ROLLOUT_TIMEOUT=180s
+  POSTGRES_ROLLOUT_TIMEOUT=330s   Longer than the Postgres 5-minute startup probe window
   IMAGE_PULL_SECRET=
   FRONTEND_NODE_PORT=30081
   INGRESS_ENABLED=0   Set to 1 to also create Traefik ingress on port 80
@@ -173,7 +179,7 @@ init_ctr_cmd() {
   require_cmd "${CTR_CMD[0]}"
 }
 
-K8S_ENVSUBST_VARS='$NAMESPACE $APP_HOST $POSTGRES_IMAGE $POSTGRES_STORAGE_CLASS $POSTGRES_STORAGE_SIZE $UPLOADS_STORAGE_SIZE $BATCH_STORAGE_SIZE $IMAGE_PULL_POLICY $BACKEND_IMAGE $FRONTEND_IMAGE $APP_IMAGE_PULL_POLICY $FRONTEND_NODE_PORT $UPLOAD_DIR'
+K8S_ENVSUBST_VARS='$NAMESPACE $APP_HOST $POSTGRES_IMAGE $POSTGRES_UID $POSTGRES_STORAGE_CLASS $POSTGRES_STORAGE_SIZE $UPLOADS_STORAGE_SIZE $BATCH_STORAGE_SIZE $IMAGE_PULL_POLICY $BACKEND_IMAGE $FRONTEND_IMAGE $APP_IMAGE_PULL_POLICY $FRONTEND_NODE_PORT $UPLOAD_DIR'
 
 apply_k8s_manifest() {
   local manifest_path="$1"
@@ -222,14 +228,16 @@ ensure_k3s_starts_on_boot() {
   fi
 }
 
-apply_image_pull_secrets() {
+# Patch right after each manifest is applied, before its rollout is waited on
+# or restarted, so the secret never triggers an extra rollout later in the
+# deploy. A no-op (no new rollout) once the secret is already set.
+apply_image_pull_secret() {
+  local deployment="$1"
   if [[ -z "$IMAGE_PULL_SECRET" ]]; then
     return
   fi
 
-  local deployment
-  for deployment in postgres backend frontend; do
-    "${KUBECTL_CMD[@]}" -n "$NAMESPACE" patch deployment "$deployment" --type merge -p "$(cat <<EOF
+  "${KUBECTL_CMD[@]}" -n "$NAMESPACE" patch deployment "$deployment" --type merge -p "$(cat <<EOF
 {
   "spec": {
     "template": {
@@ -243,7 +251,6 @@ apply_image_pull_secrets() {
 }
 EOF
 )"
-  done
 }
 
 library_image_ref() {
@@ -311,6 +318,12 @@ list_imported_images() {
   fi
 }
 
+# 0 (root) would bring back the gosu startup path that hung in issue #101.
+if [[ ! "$POSTGRES_UID" =~ ^[1-9][0-9]*$ ]]; then
+  echo "POSTGRES_UID must be a positive integer (70 for -alpine images, 999 for Debian), got: '$POSTGRES_UID'" >&2
+  exit 1
+fi
+
 init_kubectl_cmd
 require_cmd envsubst
 ensure_k3s_starts_on_boot
@@ -350,7 +363,7 @@ else
   require_env FRONTEND_IMAGE
 fi
 
-export NAMESPACE APP_HOST POSTGRES_IMAGE POSTGRES_STORAGE_CLASS POSTGRES_STORAGE_SIZE
+export NAMESPACE APP_HOST POSTGRES_IMAGE POSTGRES_UID POSTGRES_STORAGE_CLASS POSTGRES_STORAGE_SIZE
 export UPLOADS_STORAGE_SIZE BATCH_STORAGE_SIZE IMAGE_PULL_POLICY UPLOAD_DIR
 export BACKEND_IMAGE FRONTEND_IMAGE APP_IMAGE_PULL_POLICY FRONTEND_NODE_PORT
 
@@ -393,18 +406,19 @@ apply_k8s_manifest "$ROOT_DIR/k8s/61-batch-pvc.yaml"
 
 echo "Applying PostgreSQL resources"
 apply_k8s_manifest "$ROOT_DIR/k8s/20-postgres.yaml"
+apply_image_pull_secret postgres
 echo "Waiting for Postgres before starting backend (avoids DB connection crash)"
-"${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/postgres --timeout="$ROLLOUT_TIMEOUT"
+"${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/postgres --timeout="$POSTGRES_ROLLOUT_TIMEOUT"
 
 echo "Applying backend resources"
 apply_k8s_manifest "$ROOT_DIR/k8s/30-backend.yaml"
+apply_image_pull_secret backend
 echo "Restarting backend to pick up image and probe changes"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout restart deployment/backend
 
 echo "Applying frontend resources"
 apply_k8s_manifest "$ROOT_DIR/k8s/40-frontend.yaml"
-
-apply_image_pull_secrets
+apply_image_pull_secret frontend
 
 if [[ "$INGRESS_ENABLED" == "1" ]]; then
   echo "Applying ingress"
@@ -416,7 +430,7 @@ else
 fi
 
 echo "Waiting for rollouts"
-"${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/postgres --timeout="$ROLLOUT_TIMEOUT"
+"${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/postgres --timeout="$POSTGRES_ROLLOUT_TIMEOUT"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/backend --timeout="$ROLLOUT_TIMEOUT"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" rollout status deployment/frontend --timeout="$ROLLOUT_TIMEOUT"
 
