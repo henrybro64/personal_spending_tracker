@@ -136,7 +136,14 @@ kubectl -n spending-tracker exec deploy/postgres -- ps aux   # PID 1 is "gosu po
 
 `20-postgres.yaml` now avoids this. The pod runs as the `postgres` user (`POSTGRES_UID`, default `70` for `-alpine` images, `999` for Debian-based `postgres:16`), so the entrypoint skips `gosu`, and an init container makes the data directory owned by that user. A startup probe gives Postgres up to 5 minutes to start before it is restarted (e.g. crash recovery). The `Recreate` strategy means a rollout stops the old Postgres pod before starting the new one, so two pods never share the data volume. If you hit this on an older manifest, redeploy with `scripts/deploy-k3s.sh`.
 
-**Restarting Postgres safely:** use `kubectl -n spending-tracker rollout restart deployment/postgres`, or `kubectl -n spending-tracker scale deployment/postgres --replicas=0` and then `--replicas=1`. **Do not `kubectl delete pod` the Postgres pod.** `Recreate` only applies to rollouts. A deleted pod is replaced right away, while the old one is still shutting down, so for a moment two Postgres processes can open the same data directory. Postgres cannot detect this across containers.
+**Restarting Postgres safely:** use `kubectl -n spending-tracker rollout restart deployment/postgres`. `Recreate` makes a rollout wait until the old pod is gone before it creates the new one. **Do not `kubectl delete pod` the Postgres pod**, and do not run `scale --replicas=0` and `--replicas=1` back to back. `Recreate` does not cover either case: the replacement can start while the old pod is still shutting down, so for a moment two Postgres processes can open the same data directory. Postgres cannot detect this across containers. If you need Postgres stopped for a while (e.g. to copy the volume), wait for the pod to be deleted before scaling back up:
+
+```bash
+kubectl -n spending-tracker scale deployment/postgres --replicas=0
+kubectl -n spending-tracker wait --for=delete pod -l app.kubernetes.io/name=postgres --timeout=180s
+# ... maintenance ...
+kubectl -n spending-tracker scale deployment/postgres --replicas=1
+```
 
 **Brief database downtime on deploy:** because of `Recreate`, a deploy that changes the Postgres pod (image, probes, `POSTGRES_UID`, a new `IMAGE_PULL_SECRET`) stops Postgres before starting the new pod. Expect roughly 10–20 seconds of database downtime, during which the backend's `/ready` reports 503. A deploy that leaves the Postgres manifest unchanged does not restart it. `deploy-k3s.sh` waits up to `POSTGRES_ROLLOUT_TIMEOUT` (default `330s`, longer than the 5-minute startup probe) for Postgres to become ready.
 

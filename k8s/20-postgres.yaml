@@ -42,8 +42,11 @@ spec:
         runAsUser: ${POSTGRES_UID}
         runAsGroup: ${POSTGRES_UID}
       initContainers:
-        # A new local-path volume is created owned by root; Postgres refuses a
-        # data directory it does not own. Runs as root, once per pod start.
+        # A new local-path volume is created owned by root, and existing files
+        # keep their old owner if POSTGRES_UID changes (e.g. alpine 70 -> Debian
+        # 999); Postgres refuses data it does not own. Like the image entrypoint
+        # does when started as root, chown only entries with the wrong owner, so
+        # a normal start changes nothing. Runs as root, once per pod start.
         - name: postgres-data-owner
           image: busybox:1.36
           securityContext:
@@ -52,7 +55,10 @@ spec:
           command:
             - sh
             - -c
-            - chown ${POSTGRES_UID}:${POSTGRES_UID} /var/lib/postgresql/data && chmod 700 /var/lib/postgresql/data
+            - >-
+              find /var/lib/postgresql/data \( ! -user ${POSTGRES_UID} -o ! -group ${POSTGRES_UID} \)
+              -exec chown -h ${POSTGRES_UID}:${POSTGRES_UID} {} +
+              && chmod 700 /var/lib/postgresql/data
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data

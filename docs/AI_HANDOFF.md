@@ -13,7 +13,7 @@ Owner's constraints:
 
 ## Current status
 
-**Committed, pushed, and PR opened at the owner's request (2026-11-02). Waiting on CI and on-node verification.**
+**PR #102 open. The first commit passed CI (backend, frontend, SonarCloud). Both Codex review comments are addressed in a follow-up commit and replied to. Waiting on CI for that commit and on on-node verification.**
 Find the PR with `env -u GH_TOKEN -u GITHUB_TOKEN gh pr list --head fix/issue-101`. All 5 architect-review findings were fixed before the commit.
 
 ## Git context
@@ -34,7 +34,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN gh issue view 101 --json title,body,comments
 - `k8s/20-postgres.yaml` (Deployment `postgres`):
   - `strategy: Recreate`, so a rollout never runs two Postgres pods on the RWO volume.
   - Pod `securityContext.runAsUser/runAsGroup: ${POSTGRES_UID}`, so `docker-entrypoint.sh` sees a non-root uid and skips `gosu`.
-  - Init container `postgres-data-owner` (`busybox:1.36`, uid/gid 0) runs `chown ${POSTGRES_UID}:${POSTGRES_UID}` + `chmod 700` on the volume root.
+  - Init container `postgres-data-owner` (`busybox:1.36`, uid/gid 0) runs `find <data> \( ! -user UID -o ! -group UID \) -exec chown -h UID:UID {} +`, then `chmod 700` on the volume root. It chowns only wrong-owner entries; see "Codex review fixes".
   - Added a `startupProbe` (period 10s, timeout 5s, failureThreshold 30 = 5 min). Readiness gets `timeoutSeconds: 5`. Liveness gets `timeoutSeconds: 5` and `failureThreshold: 6` (2 min). `initialDelaySeconds` is removed from both.
 - `scripts/deploy-k3s.sh`: `POSTGRES_UID="${POSTGRES_UID:-70}"`, a usage-text line (70 for alpine, 999 for Debian images), added to `K8S_ENVSUBST_VARS`, **and to the `export` line**. The issue omitted the export; without it envsubst renders an empty value.
 - `k8s/README-k3s.md`: troubleshooting entry under "Verify and troubleshoot" (symptom, `ps aux` check, what the manifest now does).
@@ -46,10 +46,14 @@ Review fixes (third session, owner said "fix all the problems"):
   - Validates `POSTGRES_UID` against `^[1-9][0-9]*$` before any kubectl call, so `0`, negative, non-numeric, leading-zero and whitespace values exit 1. Empty still falls back to 70. (Finding 5)
 - `k8s/README-k3s.md`: "Restarting Postgres safely" (use `rollout restart` or `scale`, never `delete pod`, and why) (Finding 1), and "Brief database downtime on deploy" (Recreate means about 10–20s of DB downtime only when the Postgres pod changes; mentions `POSTGRES_ROLLOUT_TIMEOUT`) (Finding 4).
 
+Codex review fixes (PR #102, commit after `dec0c831`):
+- Codex P2 on `k8s/20-postgres.yaml`: the non-recursive chown broke a `POSTGRES_UID` change (alpine 70 ↔ Debian 999). The init container now does the targeted recursive repair described above.
+- Codex P2 on `k8s/README-k3s.md`: `scale --replicas=0` then `1` back to back can overlap pods, because Recreate covers only rollouts. The README now recommends `rollout restart`, and documents `kubectl wait --for=delete pod -l app.kubernetes.io/name=postgres` before scaling back up.
+
 ## Technical decisions
 
 - Followed the issue's suggested fix. The one deviation: the init container also sets `runAsGroup: 0`, so it doesn't inherit gid 70 from the pod.
-- `chown` is non-recursive. Existing data files are already uid 70 (gosu ran as postgres), and a recursive chown on every start would slow startup.
+- Ownership repair copies the official entrypoint's root-mode behaviour (`find "$PGDATA" \! -user postgres -exec chown ...`). It touches only wrong-owner entries, so a normal start changes nothing (verified: 0 entries) and a `POSTGRES_UID` change repairs every file. `chown -h` changes symlinks themselves and never follows them as root. The data dir has no symlinked tablespaces or WAL.
 - `PGDATA` and the PVC are unchanged, as the issue requires. No StatefulSet (out of scope).
 
 ## Testing (all run 2026-11-02, real results)
@@ -79,6 +83,18 @@ Review-fix verification (third session, real results; throwaway k3d `pst-issue10
 | Cluster: redeploy with same manifest + same secret | `unchanged` / `patched (no change)`, revision and pod name unchanged, so **no restart** |
 | Cluster: old `main` manifest, then new manifest + first-time secret back to back | collapsed into a single replacement pod, **max concurrent Postgres pods = 1**, canary row intact |
 
+Codex-fix verification (throwaway k3d, real results):
+
+| Check | Result |
+|---|---|
+| Fresh volume with the new init command (busybox `find -exec {} +`) | init exit 0, Postgres ready |
+| Normal restart | 0 wrong-owner entries, so nothing chowned |
+| **Negative control**: committed `dec0c831` manifest, switch to `postgres:16` + `POSTGRES_UID=999` | `CrashLoopBackOff`, `could not open configuration file ... postgresql.conf: Permission denied`. Reproduces Codex's finding |
+| Fixed manifest, same switch | ready as uid 999, 0 wrong-owner entries, canary intact |
+| Switch back to alpine/70 | ready, canary intact |
+| Old `main` manifest, then fixed manifest | ready as uid 70, canary intact |
+| README `scale 0` → `wait --for=delete` → `scale 1` | max concurrent Postgres pods = 1 |
+
 Not run: `pytest` and the frontend build, because no Python or TypeScript changed.
 Side note: on macOS the script exits 1 at the final `hostname -I` (BSD hostname lacks `-I`). The same happens on `main`, and it's fine on the Linux node.
 
@@ -102,16 +118,16 @@ Findings (none blocking). **All five were fixed in the third session at the owne
 
 ## Outstanding issues
 
-1. **Acceptance criteria need on-node output in the PR** (steps 1–4 on the real k3s node). Only the owner can run those. **Back up first:** `KUBECTL='sudo k3s kubectl' ./scripts/backup-spending-tracker.sh --k3s`. It may fail because the backend image lacks `pg_dump`. If it does, scale Postgres to 0 and copy the PV directory (`kubectl get pv`).
+1. **Acceptance criteria need on-node output in the PR** (steps 1–4 on the real k3s node). Only the owner can run those. **Back up first:** `KUBECTL='sudo k3s kubectl' ./scripts/backup-spending-tracker.sh --k3s`. It may fail because the backend image lacks `pg_dump`. If it does, scale Postgres to 0, **wait for the pod to be deleted** (`kubectl wait --for=delete pod -l app.kubernetes.io/name=postgres`), and copy the PV directory (`kubectl get pv`).
 2. The live node currently has the hand-applied patches from the incident (liveness removed). The next `deploy-k3s.sh` puts liveness back, now with a startup probe in front of it, which is intended.
 
 ## Next steps
 
-1. Check CI: `env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks <PR#>`. CI (`.github/workflows/ci.yml`) runs backend pytest and the frontend build plus Playwright. It does not exercise k8s manifests, so a failure there is likely unrelated to this change; investigate before changing anything.
+1. Check CI: `env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks 102`. Check for new review comments with `gh api repos/henrybro64/personal_spending_tracker/pulls/102/comments`. CI (`.github/workflows/ci.yml`) runs backend pytest and the frontend build plus Playwright. It does not exercise k8s manifests, so a failure there is likely unrelated to this change; investigate before changing anything.
 2. Any further commits or pushes need the owner's explicit approval (each push costs GitHub Actions minutes).
 3. The owner runs the issue's steps 1–4 on the node and pastes the output into the PR.
 
 ## Related GitHub issues/PRs
 
-- #101 (this task), parent #95.
+- #101 (this task), parent #95. PR #102 (this work).
 - PR #93 (`d5fdbc5a`): latest merge on `main`. PR #92: earlier fixes.
