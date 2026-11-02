@@ -1004,3 +1004,39 @@ def test_bulk_import_to_dashboard_rejects_duplicates_and_bad_currency_cleanly(
             json={**bad, "currency": "USD"},
         )
         assert fixed.status_code == 201, fixed.text
+
+
+def test_bulk_import_rejects_an_unquoted_thousands_separator(api_main) -> None:
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+    with client:
+        registered = client.post(
+            "/auth/register",
+            json={"email": "alice", "password": "password123"},
+        )
+        assert registered.status_code == 201
+        for destination in ("batch", "dashboard"):
+            rejected = client.post(
+                "/batch-imports/import",
+                json={
+                    "content": "2026-05-12,Cafe,80\n2026-05-13,IKEA,1,234",
+                    "format": "text",
+                    "destination": destination,
+                },
+            )
+            assert rejected.status_code == 400, rejected.text
+            assert rejected.json()["detail"] == (
+                "Line 2: the amount looks like it was split at a comma. "
+                'Quote it ("1,234") or remove the thousands comma (1234); '
+                "use a dot for decimals (12.50)."
+            )
+        imported = client.post(
+            "/batch-imports/import",
+            json={
+                "content": '2026-05-13,IKEA,"1,234"',
+                "format": "text",
+                "destination": "dashboard",
+            },
+        )
+        assert imported.status_code == 201, imported.text
+        rows = client.get("/transactions").json()["transactions"]
+        assert [(row["merchant"], row["amount"]) for row in rows] == [("IKEA", 1234.0)]

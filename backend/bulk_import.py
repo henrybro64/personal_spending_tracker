@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 import re
@@ -31,6 +32,18 @@ _TEXT_LINE_PATTERN = re.compile(
 _HEADER_ALIASES = frozenset(
     {"date", "merchant", "amount", "category", "currency", "bank"}
 )
+# An unquoted 1,234 or 12,50 splits into two numbers (#99). A bare number is
+# never a real category, so a 4-field line shaped like that is rejected, not
+# guessed.
+_SPLIT_AMOUNT_HEAD = re.compile(r"[-+]?\$?\d+(?:\.\d+)?")
+_SPLIT_AMOUNT_TAIL = re.compile(r"\d+(?:\.\d+)?")
+_SPLIT_AMOUNT_HINT = (
+    "the amount looks like it was split at a comma. "
+    'Quote it ("1,234") or remove the thousands comma (1234); '
+    "use a dot for decimals (12.50)."
+)
+# The only comma an amount may contain: thousands grouping such as 1,234,567.
+_THOUSANDS_GROUPED_AMOUNT = re.compile(r"[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?")
 
 
 class BulkImportParseError(ValueError):
@@ -267,12 +280,32 @@ def _parse_tab_separated_line(line: str, line_number: int) -> dict[str, Any]:
     return row
 
 
+def _csv_fields(line: str, line_number: int) -> list[str]:
+    # strict: a stray quote is an error, not a silently rewritten field.
+    try:
+        fields = next(csv.reader([line], skipinitialspace=True, strict=True))
+    except csv.Error as exc:
+        raise BulkImportParseError(
+            f"Line {line_number} has a misplaced or unmatched quote. "
+            'Quote a whole field, for example "IKEA, Taipei".'
+        ) from exc
+    return [field.strip() for field in fields]
+
+
 def _parse_comma_separated_line(line: str, line_number: int) -> dict[str, Any]:
-    parts = [part.strip() for part in line.split(",")]
+    parts = _csv_fields(line, line_number)
     if len(parts) < 3:
         raise BulkImportParseError(
             f"Line {line_number} needs at least date, merchant, and amount columns."
         )
+    # The format is date,merchant[,category],amount; more fields mean an
+    # unquoted comma inside one of them, most likely the amount.
+    if len(parts) > 4 or (
+        len(parts) == 4
+        and _SPLIT_AMOUNT_HEAD.fullmatch(parts[2])
+        and _SPLIT_AMOUNT_TAIL.fullmatch(parts[3])
+    ):
+        raise BulkImportParseError(f"Line {line_number}: {_SPLIT_AMOUNT_HINT}")
 
     row: dict[str, Any] = {
         "date": parts[0],
@@ -287,7 +320,12 @@ def _parse_comma_separated_line(line: str, line_number: int) -> dict[str, Any]:
 def _split_text_fields(line: str) -> list[str]:
     if "," not in line:
         return line.split()
-    return [part.strip() for part in line.split(",")]
+    # Same CSV rules as _parse_comma_separated_line, so a header is detected
+    # the way its row would be parsed.
+    try:
+        return _csv_fields(line, 0)
+    except BulkImportParseError:
+        return []
 
 
 def _normalize_row(
@@ -422,9 +460,17 @@ def _parse_amount_value(value: Any) -> float:
             # A JSON integer with hundreds of digits does not fit a float.
             raise BulkImportParseError("Amount is too large.") from exc
     else:
-        text = str(value).strip().replace(",", "")
+        text = str(value).strip()
         if not text:
             raise BulkImportParseError("amount is required.")
+        if "," in text:
+            # Deleting every comma turned a decimal comma (12,50) into 1250.
+            if not _THOUSANDS_GROUPED_AMOUNT.fullmatch(text):
+                raise BulkImportParseError(
+                    f"amount {value!r} has a comma that is not a thousands "
+                    "separator. Use a dot for decimals (12.50)."
+                )
+            text = text.replace(",", "")
         try:
             amount = float(text)
         except ValueError as exc:
