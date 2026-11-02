@@ -122,7 +122,10 @@ function takeEntraErrorFromUrl(): AuthErrorMessage | null {
   url.searchParams.delete("entra_object_id");
   window.history.replaceState(window.history.state, "", url.toString());
 
-  const message = ENTRA_ERROR_MESSAGES[code] ?? ENTRA_ERROR_MESSAGES.entra_signin_failed;
+  // Own keys only, so a code such as "__proto__" falls back too.
+  const message = Object.prototype.hasOwnProperty.call(ENTRA_ERROR_MESSAGES, code)
+    ? ENTRA_ERROR_MESSAGES[code]
+    : ENTRA_ERROR_MESSAGES.entra_signin_failed;
   if (code === "entra_not_allowed" && OBJECT_ID_PATTERN.test(objectId)) {
     return {
       ...message,

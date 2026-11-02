@@ -214,6 +214,20 @@ Re-run after the fixes (real results): `python3.12 -m pytest -q` **368 passed**;
 `npm run test:unit` **52/52**; `npm run build` ok; `CI=true npm run test:e2e` **42 passed**, no
 `ECONNREFUSED` lines.
 
+## PR #105 and the SonarCloud gate (2026-11-02)
+
+- Phase 1 committed as `e7921192` and pushed; PR **#105** ("Part of #100"). CI: backend and frontend
+  passed; **SonarCloud failed "Security Rating on New Code" (C, needs A)**. The issue list is private
+  (no Sonar token here), so the exact rule was not visible.
+- Fix pushed in a second commit, aimed at the likely cause (log injection taint): `allowlisted_oauth_error`
+  now returns the allowlist's own string (`_OAUTH_ERROR_ALLOWLIST` is a dict mapping each code to itself),
+  and `extract_aadsts_code` rebuilds the code from `int(...)`. Also `auth-card.tsx` looks up
+  `ENTRA_ERROR_MESSAGES` by own key only (`?auth_error=__proto__` used to show no message; new e2e test,
+  fails without the fix).
+- Re-run locally: pytest 368 passed; unit 52/52; build ok; e2e 43 passed.
+- **If SonarCloud still fails**, the owner must open the PR's Sonar issues page and give the rule and
+  file/line: `https://sonarcloud.io/project/issues?id=henrybro64_personal_spending_tracker&pullRequest=105`.
+
 ## Outstanding issues
 
 1. **Phase 2 (HTTPS) needs owner input**: how `stock.cloudforge64.com` reaches k3s (Cloudflare Tunnel or a

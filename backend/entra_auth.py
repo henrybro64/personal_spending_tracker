@@ -58,8 +58,11 @@ _HTTP_TIMEOUT_SECONDS = 15.0
 _GUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
-_OAUTH_ERROR_ALLOWLIST = frozenset(
-    {
+# Maps each allowed OAuth error to itself, so the logged value is always one
+# of these strings and never the text from the request.
+_OAUTH_ERROR_ALLOWLIST = {
+    code: code
+    for code in (
         "access_denied",
         "consent_required",
         "interaction_required",
@@ -72,8 +75,8 @@ _OAUTH_ERROR_ALLOWLIST = frozenset(
         "temporarily_unavailable",
         "unauthorized_client",
         "unsupported_grant_type",
-    }
-)
+    )
+}
 _AADSTS_RE = re.compile(r"AADSTS(\d{4,10})", re.IGNORECASE)
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
@@ -326,8 +329,7 @@ def _jwks_client(jwks_uri: str) -> PyJWKClient:
 def allowlisted_oauth_error(raw: object) -> str | None:
     if not isinstance(raw, str):
         return None
-    cleaned = raw.strip().lower()
-    return cleaned if cleaned in _OAUTH_ERROR_ALLOWLIST else None
+    return _OAUTH_ERROR_ALLOWLIST.get(raw.strip().lower())
 
 
 def extract_aadsts_code(*candidates: object) -> str | None:
@@ -344,7 +346,8 @@ def extract_aadsts_code(*candidates: object) -> str | None:
         if isinstance(candidate, str):
             match = _AADSTS_RE.search(candidate)
             if match:
-                return f"AADSTS{match.group(1)}"
+                # Rebuilt from the number, so no request text reaches the log.
+                return f"AADSTS{int(match.group(1))}"
     return None
 
 

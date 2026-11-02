@@ -85,6 +85,13 @@ test("an unknown error code falls back to a generic failure", async ({ page }) =
   await expect(page.getByText("pwned")).toHaveCount(0);
 });
 
+test("an inherited property name is treated as an unknown error code", async ({ page }) => {
+  await mockSignedOutSession(page);
+  await mockProviders(page, { entra_enabled: true, local_registration_enabled: true });
+  await page.goto("/?auth_error=__proto__");
+  await expect(page.getByText("Microsoft sign-in failed")).toBeVisible();
+});
+
 test("signing out of a Microsoft account also opens Microsoft sign-out", async ({ page }) => {
   await mockAuthenticatedSession(page);
   await page.route("**/api/ai/settings", async (route) => {
