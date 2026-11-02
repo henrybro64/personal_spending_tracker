@@ -9,6 +9,9 @@ Stable notes for AI coding agents. Current, unfinished work lives in
 - Do not commit, push, merge, or deploy without the owner's explicit go-ahead.
   Each push runs GitHub Actions, which costs the owner minutes.
 - Never record secrets (API keys, tokens, passwords) in the repository.
+- Microsoft (Entra) sign-in: see `docs/entra-auth.md`. Non-secret `ENTRA_*` settings go in the
+  ConfigMap only; the client secret goes only in Secret `spending-tracker-entra`. Never touch Stock
+  Ticker's app registration, DNS, certificates or secrets from this repo.
 
 ## GitHub CLI
 

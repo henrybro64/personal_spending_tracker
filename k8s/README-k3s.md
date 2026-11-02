@@ -79,6 +79,7 @@ curl http://<node-ip>:30081/api/health
 | `00-namespace.yaml` | Namespace |
 | `10-configmap.yaml` | Reference config (deploy script creates ConfigMap from env) |
 | `11-secret.example.yaml` | Secret template |
+| `12-entra-secret.example.yaml` | Microsoft sign-in client secret template (create it as in `docs/entra-auth.md`) |
 | `20-postgres.yaml` | Postgres PVC, Deployment, Service |
 | `30-backend.yaml` | Backend Deployment, Service |
 | `40-frontend.yaml` | Frontend Deployment, NodePort Service |
@@ -222,3 +223,6 @@ kubectl delete namespace spending-tracker
 - Single-node `local-path` storage — no HA.
 - Back up Postgres PVC and uploads PVC if you care about recovery.
 - Multi-user auth is enabled; sign in before using the app.
+- Microsoft (Entra) sign-in is optional and off by default; see `docs/entra-auth.md`.
+  A redeploy keeps the live `ENTRA_*`, `LOCAL_REGISTRATION_ENABLED` and
+  `SESSION_COOKIE_SECURE` values unless you set them.

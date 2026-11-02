@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, BinaryIO, Literal, NoReturn, TypedDict, cast
+from urllib.parse import urlencode
 from uuid import uuid4
 
 # Repo root on sys.path so `from backend.*` works when running
@@ -34,12 +35,14 @@ from fastapi import (  # noqa: E402
 )
 from psycopg_pool import PoolTimeout  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import JSONResponse  # noqa: E402
+from fastapi.responses import JSONResponse, RedirectResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 import psycopg  # noqa: E402
 
 from backend.auth import (  # noqa: E402
+    attach_oidc_binding_cookie,
     attach_session_cookie,
+    clear_oidc_binding_cookie,
     clear_session_cookie,
     display_name_from_username,
     generate_session_token,
@@ -55,6 +58,23 @@ from backend.auth import (  # noqa: E402
     validate_password,
     verify_password,
 )
+from backend.entra_auth import (  # noqa: E402
+    ENTRA_PROVIDER,
+    ERROR_NOT_ALLOWED,
+    ERROR_SIGN_IN_FAILED,
+    ERROR_UNAVAILABLE,
+    LOGIN_STATE_TTL_SECONDS,
+    OIDC_BINDING_COOKIE_NAME,
+    EntraSignInError,
+    begin_login as begin_entra_login,
+    complete_login as complete_entra_login,
+    end_session_url as entra_end_session_url,
+    entra_is_configured,
+    local_registration_enabled,
+    log_authorize_error as log_entra_authorize_error,
+    log_database_unavailable as log_entra_database_unavailable,
+    log_entra_startup_status,
+)
 from backend.ai_insights import (  # noqa: E402
     AiProvider,
     InsightLanguage,
@@ -65,6 +85,7 @@ from backend.ai_insights import (  # noqa: E402
     generate_spending_insights,
 )
 from backend.database import (  # noqa: E402
+    user_has_identity,
     ExistingUpload,
     UserAiProviderSettingRecord,
     RecentUpload,
@@ -421,6 +442,16 @@ class SessionResponse(TypedDict):
     user: UserRecord | None
     claimed_legacy_transactions: int
     claimed_legacy_uploads: int
+
+
+class LogoutResponse(SessionResponse):
+    # Microsoft sign-out page for a user who signed in with Entra (#100).
+    logout_url: str | None
+
+
+class AuthProvidersResponse(TypedDict):
+    local_registration_enabled: bool
+    entra_enabled: bool
 
 
 class AiProviderSettingsView(TypedDict):
@@ -809,6 +840,7 @@ async def lifespan(_: FastAPI):
     # A down database must not kill the process: /health stays up and
     # /ready retries migrations.
     await asyncio.to_thread(prepare_schema_on_startup)
+    log_entra_startup_status()
     try:
         yield
     finally:
@@ -994,6 +1026,20 @@ def register(
     request: Request,
     response: Response,
 ) -> SessionResponse:
+    if not local_registration_enabled():
+        audit_context = get_audit_request_context(request)
+        record_audit_event(
+            action="user_register",
+            status="rejected",
+            request_id=audit_context.request_id,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            metadata={"reason": "registration_disabled"},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Creating accounts is turned off on this server.",
+        )
     normalized_username = validate_username(payload.email)
     validate_password(payload.password)
     display_name = (
@@ -1080,6 +1126,13 @@ def register(
     }
 
 
+def _revoke_previous_session(request: Request) -> None:
+    """End the session this browser already had, so a new sign-in replaces it."""
+    previous_token = request.cookies.get("pst_session")
+    if previous_token:
+        revoke_session(hash_session_token(previous_token))
+
+
 @app.post("/auth/login")
 def login(
     payload: AuthRequest,
@@ -1104,6 +1157,7 @@ def login(
         )
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
+    _revoke_previous_session(request)
     session_token = generate_session_token()
     create_session(user["id"], hash_session_token(session_token), session_expiry())
     update_user_last_login(user["id"])
@@ -1135,13 +1189,14 @@ def logout(
     request: Request,
     response: Response,
     current_user: UserRecord | None = Depends(get_optional_current_user),
-) -> SessionResponse:
+) -> LogoutResponse:
     session_token = request.cookies.get("pst_session")
     audit_context = get_audit_request_context(request)
     if session_token:
         revoke_session(hash_session_token(session_token))
     clear_session_cookie(response)
 
+    logout_url: str | None = None
     if current_user:
         _audit_after_commit(
             action="user_sign_out",
@@ -1152,13 +1207,131 @@ def logout(
             ip_address=audit_context.ip_address,
             user_agent=audit_context.user_agent,
         )
+        # The app session is already revoked. Also end the Microsoft session,
+        # so the next "Sign in with Microsoft" asks for the account again.
+        if entra_is_configured() and user_has_identity(
+            current_user["id"], provider=ENTRA_PROVIDER
+        ):
+            logout_url = entra_end_session_url()
 
     return {
         "authenticated": False,
         "user": None,
         "claimed_legacy_transactions": 0,
         "claimed_legacy_uploads": 0,
+        "logout_url": logout_url,
     }
+
+
+@app.get("/auth/providers")
+def auth_providers() -> AuthProvidersResponse:
+    """Which sign-in options the sign-in page should offer."""
+    return {
+        "local_registration_enabled": local_registration_enabled(),
+        "entra_enabled": entra_is_configured(),
+    }
+
+
+def _sign_in_error_redirect(error: EntraSignInError) -> RedirectResponse:
+    query: dict[str, str] = {"auth_error": error.code}
+    if error.code == ERROR_NOT_ALLOWED and error.object_id:
+        # Shown on the sign-in page so the owner can add it to the allowlist.
+        query["entra_object_id"] = error.object_id
+    return RedirectResponse(url=f"/?{urlencode(query)}", status_code=302)
+
+
+def _entra_database_unavailable(exc: BaseException) -> RedirectResponse:
+    """Show the sign-in page's "unavailable" message, not a raw error page."""
+    log_entra_database_unavailable(exc)
+    redirect = _sign_in_error_redirect(
+        EntraSignInError(ERROR_UNAVAILABLE, "database unavailable")
+    )
+    clear_oidc_binding_cookie(redirect, name=OIDC_BINDING_COOKIE_NAME)
+    return redirect
+
+
+@app.get("/auth/entra/login")
+def entra_login(
+    return_to: str | None = Query(default=None),
+) -> RedirectResponse:
+    if not entra_is_configured():
+        raise HTTPException(status_code=404, detail="Microsoft sign-in is not enabled.")
+    try:
+        start = begin_entra_login(return_to)
+    except EntraSignInError as exc:
+        return _sign_in_error_redirect(exc)
+    except _DATABASE_UNAVAILABLE as exc:
+        return _entra_database_unavailable(exc)
+    redirect = RedirectResponse(url=start.authorization_url, status_code=302)
+    attach_oidc_binding_cookie(
+        redirect,
+        name=OIDC_BINDING_COOKIE_NAME,
+        token=start.browser_binding_token,
+        max_age=LOGIN_STATE_TTL_SECONDS,
+    )
+    return redirect
+
+
+@app.get("/auth/entra/callback")
+def entra_callback(
+    request: Request,
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    error_description: str | None = Query(default=None),
+) -> RedirectResponse:
+    if not entra_is_configured():
+        raise HTTPException(status_code=404, detail="Microsoft sign-in is not enabled.")
+    audit_context = get_audit_request_context(request)
+    try:
+        try:
+            if error:
+                log_entra_authorize_error(
+                    error=error, error_description=error_description
+                )
+                raise EntraSignInError(ERROR_SIGN_IN_FAILED, "authorize error")
+            sign_in = complete_entra_login(
+                code=code,
+                state=state,
+                browser_binding_token=request.cookies.get(OIDC_BINDING_COOKIE_NAME),
+            )
+        except EntraSignInError as exc:
+            record_audit_event(
+                action="user_sign_in",
+                status="rejected",
+                target_type="user",
+                target_id=exc.object_id,
+                request_id=audit_context.request_id,
+                ip_address=audit_context.ip_address,
+                user_agent=audit_context.user_agent,
+                metadata={"provider": ENTRA_PROVIDER, "reason": exc.reason},
+            )
+            redirect = _sign_in_error_redirect(exc)
+            clear_oidc_binding_cookie(redirect, name=OIDC_BINDING_COOKIE_NAME)
+            return redirect
+
+        user = sign_in.user
+        _revoke_previous_session(request)
+        session_token = generate_session_token()
+        create_session(user["id"], hash_session_token(session_token), session_expiry())
+        update_user_last_login(user["id"])
+    except _DATABASE_UNAVAILABLE as exc:
+        return _entra_database_unavailable(exc)
+
+    redirect = RedirectResponse(url=sign_in.return_to, status_code=302)
+    attach_session_cookie(redirect, session_token)
+    clear_oidc_binding_cookie(redirect, name=OIDC_BINDING_COOKIE_NAME)
+    _audit_after_commit(
+        action="user_sign_in",
+        status="success",
+        user_id=user["id"],
+        target_type="session",
+        request_id=audit_context.request_id,
+        ip_address=audit_context.ip_address,
+        user_agent=audit_context.user_agent,
+        metadata={"provider": ENTRA_PROVIDER, "created_user": sign_in.created},
+    )
+    return redirect
 
 
 @app.get("/ai/settings")

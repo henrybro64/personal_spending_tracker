@@ -113,6 +113,70 @@ spec:
                 secretKeyRef:
                   name: spending-tracker-secrets
                   key: LLM_SETTINGS_ENCRYPTION_KEY
+            # Microsoft Entra sign-in and cookie settings (#100). Explicit keys,
+            # not envFrom, so no Secret can override a ConfigMap value.
+            - name: ENTRA_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: ENTRA_ENABLED
+                  optional: true
+            - name: ENTRA_TENANT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: ENTRA_TENANT_ID
+                  optional: true
+            - name: ENTRA_CLIENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: ENTRA_CLIENT_ID
+                  optional: true
+            - name: ENTRA_AUTHORITY
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: ENTRA_AUTHORITY
+                  optional: true
+            - name: ENTRA_REDIRECT_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: ENTRA_REDIRECT_URI
+                  optional: true
+            - name: ENTRA_POST_LOGOUT_REDIRECT_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: ENTRA_POST_LOGOUT_REDIRECT_URI
+                  optional: true
+            - name: ENTRA_ALLOWED_OBJECT_IDS
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: ENTRA_ALLOWED_OBJECT_IDS
+                  optional: true
+            - name: LOCAL_REGISTRATION_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: LOCAL_REGISTRATION_ENABLED
+                  optional: true
+            - name: SESSION_COOKIE_SECURE
+              valueFrom:
+                configMapKeyRef:
+                  name: spending-tracker-config
+                  key: SESSION_COOKIE_SECURE
+                  optional: true
+            # Only the client secret, in its own Secret. Optional: without it
+            # the backend keeps Microsoft sign-in off and logs why.
+            - name: ENTRA_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: spending-tracker-entra
+                  key: ENTRA_CLIENT_SECRET
+                  optional: true
           volumeMounts:
             - name: uploads-data
               mountPath: ${UPLOAD_DIR}

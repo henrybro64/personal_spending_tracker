@@ -20,6 +20,25 @@ USD_TWD_EXCHANGE_RATE="${USD_TWD_EXCHANGE_RATE:-32}"
 AUDIT_LOG_RETENTION_DAYS="${AUDIT_LOG_RETENTION_DAYS:-365}"
 STATEMENT_RETENTION_DAYS="${STATEMENT_RETENTION_DAYS:-0}"
 PDF_PARSE_TIMEOUT_SECONDS="${PDF_PARSE_TIMEOUT_SECONDS:-120}"
+# Microsoft Entra sign-in (#100) and the sign-in security settings, as
+# NAME=default. These are not secret and go in the ConfigMap. A variable that
+# is not set keeps the value already in the live ConfigMap (see
+# resolve_auth_settings), so a redeploy without them cannot reopen
+# registration, drop Secure cookies or turn Microsoft sign-in off. Set one,
+# even to an empty value, to change it. The client secret lives only in the
+# separate Secret spending-tracker-entra (key ENTRA_CLIENT_SECRET), which this
+# script checks but never creates, changes, or prints.
+AUTH_SETTING_DEFAULTS=(
+  ENTRA_ENABLED=false
+  ENTRA_TENANT_ID=
+  ENTRA_CLIENT_ID=
+  ENTRA_AUTHORITY=
+  ENTRA_REDIRECT_URI=
+  ENTRA_POST_LOGOUT_REDIRECT_URI=
+  ENTRA_ALLOWED_OBJECT_IDS=
+  LOCAL_REGISTRATION_ENABLED=true
+  SESSION_COOKIE_SECURE=false
+)
 BATCH_STORAGE_SIZE="${BATCH_STORAGE_SIZE:-5Gi}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
 POSTGRES_UID="${POSTGRES_UID:-70}"
@@ -74,6 +93,13 @@ Optional environment variables:
   AUDIT_LOG_RETENTION_DAYS=365
   STATEMENT_RETENTION_DAYS=0
   PDF_PARSE_TIMEOUT_SECONDS=120
+  Sign-in settings below keep their live ConfigMap value when not set;
+  the defaults shown apply only on a first deploy. See docs/entra-auth.md.
+  ENTRA_ENABLED=false   Microsoft sign-in
+  ENTRA_TENANT_ID= ENTRA_CLIENT_ID= ENTRA_AUTHORITY= ENTRA_REDIRECT_URI=
+  ENTRA_POST_LOGOUT_REDIRECT_URI= ENTRA_ALLOWED_OBJECT_IDS=   comma-separated Entra object ids
+  LOCAL_REGISTRATION_ENABLED=true   false stops new username/password accounts
+  SESSION_COOKIE_SECURE=false   true when the app is served over https
   POSTGRES_IMAGE=postgres:16-alpine
   POSTGRES_UID=70   postgres user in -alpine images; Debian-based postgres:16 uses 999 (must not be 0)
   POSTGRES_STORAGE_CLASS=local-path
@@ -167,6 +193,66 @@ resolve_llm_settings_encryption_key() {
 
   LLM_SETTINGS_ENCRYPTION_KEY="$DEFAULT_LLM_SETTINGS_ENCRYPTION_KEY"
   _using_default_llm_settings_encryption_key=1
+}
+
+# Fill each unset sign-in setting from the live ConfigMap, else its default.
+# Stops the deploy if the ConfigMap exists but cannot be read, rather than
+# falling back to defaults that are less safe than what is running.
+resolve_auth_settings() {
+  local live_found=0 read_error="" entry name value
+  local kept=()
+  if read_error="$("${KUBECTL_CMD[@]}" -n "$NAMESPACE" get configmap spending-tracker-config \
+    -o name 2>&1 >/dev/null)"; then
+    live_found=1
+  elif [[ "$read_error" != *NotFound* ]]; then
+    echo "Could not read ConfigMap spending-tracker-config to keep its sign-in settings:" >&2
+    echo "$read_error" >&2
+    exit 1
+  fi
+
+  for entry in "${AUTH_SETTING_DEFAULTS[@]}"; do
+    name="${entry%%=*}"
+    if [[ -n "${!name+set}" ]]; then
+      continue
+    fi
+    value=""
+    if [[ "$live_found" == "1" ]]; then
+      value="$("${KUBECTL_CMD[@]}" -n "$NAMESPACE" get configmap spending-tracker-config \
+        -o "jsonpath={.data.$name}")"
+    fi
+    if [[ -n "$value" ]]; then
+      kept+=("$name")
+    else
+      value="${entry#*=}"
+    fi
+    printf -v "$name" '%s' "$value"
+  done
+
+  if [[ "${#kept[@]}" -gt 0 ]]; then
+    echo "Keeping live ConfigMap values for: ${kept[*]}"
+  fi
+  echo "Sign-in settings: ENTRA_ENABLED=$ENTRA_ENABLED" \
+    "LOCAL_REGISTRATION_ENABLED=$LOCAL_REGISTRATION_ENABLED" \
+    "SESSION_COOKIE_SECURE=$SESSION_COOKIE_SECURE"
+}
+
+# Warn (never fail, never print the value) when Microsoft sign-in is turned on
+# but cannot work. The backend then logs why it kept Microsoft sign-in off;
+# password sign-in is unaffected.
+check_entra_secret() {
+  if [[ "$ENTRA_ENABLED" != "true" ]]; then
+    return
+  fi
+  local encoded=""
+  encoded="$("${KUBECTL_CMD[@]}" -n "$NAMESPACE" get secret spending-tracker-entra \
+    -o jsonpath='{.data.ENTRA_CLIENT_SECRET}' 2>/dev/null || true)"
+  if [[ -z "$encoded" ]]; then
+    echo "Warning: ENTRA_ENABLED=true but Secret spending-tracker-entra has no ENTRA_CLIENT_SECRET;" \
+      "Microsoft sign-in stays off. See docs/entra-auth.md." >&2
+  fi
+  if [[ "$SESSION_COOKIE_SECURE" != "true" ]]; then
+    echo "Warning: ENTRA_ENABLED=true without SESSION_COOKIE_SECURE=true; serve the app over https." >&2
+  fi
 }
 
 init_ctr_cmd() {
@@ -375,6 +461,8 @@ if [[ "$_using_default_llm_settings_encryption_key" == "1" ]]; then
   echo "Using default LLM_SETTINGS_ENCRYPTION_KEY. Set LLM_SETTINGS_ENCRYPTION_KEY to override."
 fi
 
+resolve_auth_settings
+
 echo "Applying config map"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" create configmap spending-tracker-config \
   --from-literal=APP_ENV="$APP_ENV" \
@@ -390,7 +478,18 @@ echo "Applying config map"
   --from-literal=AUDIT_LOG_RETENTION_DAYS="$AUDIT_LOG_RETENTION_DAYS" \
   --from-literal=STATEMENT_RETENTION_DAYS="$STATEMENT_RETENTION_DAYS" \
   --from-literal=PDF_PARSE_TIMEOUT_SECONDS="$PDF_PARSE_TIMEOUT_SECONDS" \
+  --from-literal=ENTRA_ENABLED="$ENTRA_ENABLED" \
+  --from-literal=ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
+  --from-literal=ENTRA_CLIENT_ID="$ENTRA_CLIENT_ID" \
+  --from-literal=ENTRA_AUTHORITY="$ENTRA_AUTHORITY" \
+  --from-literal=ENTRA_REDIRECT_URI="$ENTRA_REDIRECT_URI" \
+  --from-literal=ENTRA_POST_LOGOUT_REDIRECT_URI="$ENTRA_POST_LOGOUT_REDIRECT_URI" \
+  --from-literal=ENTRA_ALLOWED_OBJECT_IDS="$ENTRA_ALLOWED_OBJECT_IDS" \
+  --from-literal=LOCAL_REGISTRATION_ENABLED="$LOCAL_REGISTRATION_ENABLED" \
+  --from-literal=SESSION_COOKIE_SECURE="$SESSION_COOKIE_SECURE" \
   --dry-run=client -o yaml | "${KUBECTL_CMD[@]}" apply -f -
+
+check_entra_secret
 
 echo "Applying secrets"
 "${KUBECTL_CMD[@]}" -n "$NAMESPACE" create secret generic spending-tracker-secrets \

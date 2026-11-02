@@ -202,6 +202,7 @@ def test_migrations_apply_on_empty_database(database_url: str) -> None:
         "005_transaction_original_base_amounts",
         "006_one_selected_ai_provider",
         "007_transaction_source_key",
+        "008_entra_identities",
     ]
 
 

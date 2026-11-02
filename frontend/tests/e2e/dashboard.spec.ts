@@ -1,5 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
+import { mockProviders } from "./support/session";
+
 type DashboardQuery = {
   range: string;
   search: string;
@@ -74,6 +76,7 @@ const SAMPLE_UPLOAD = {
 };
 
 async function mockAuthenticatedSession(page: Page) {
+  await mockProviders(page);
   await page.route("**/api/auth/session", async (route) => {
     await fulfillJson(route, {
       authenticated: true,

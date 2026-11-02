@@ -27,6 +27,27 @@ type SessionResponse = {
   claimed_legacy_uploads: number;
 };
 
+type LogoutResponse = SessionResponse & {
+  // Microsoft sign-out page, for a user who signed in with Microsoft (#100).
+  logout_url?: string | null;
+};
+
+type AuthProvidersResponse = {
+  local_registration_enabled: boolean;
+  entra_enabled: boolean;
+};
+
+export type AuthProviders = {
+  localRegistrationEnabled: boolean;
+  entraEnabled: boolean;
+};
+
+// Until /auth/providers answers, offer what every server supports.
+const DEFAULT_PROVIDERS: AuthProviders = {
+  localRegistrationEnabled: true,
+  entraEnabled: false,
+};
+
 type AuthPayload = {
   email: string;
   password: string;
@@ -38,6 +59,7 @@ type AuthContextValue = {
   claimedLegacyUploads: number;
   login: (payload: AuthPayload) => Promise<void>;
   logout: () => Promise<void>;
+  providers: AuthProviders;
   refreshSession: () => Promise<void>;
   register: (payload: AuthPayload) => Promise<void>;
   status: "loading" | "authenticated" | "unauthenticated";
@@ -62,6 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [claimedLegacyTransactions, setClaimedLegacyTransactions] = useState(0);
   const [claimedLegacyUploads, setClaimedLegacyUploads] = useState(0);
+  const [providers, setProviders] = useState<AuthProviders>(DEFAULT_PROVIDERS);
 
   const applySession = useCallback((session: SessionResponse) => {
     const nextState = toSessionState(session);
@@ -106,6 +129,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refreshSession();
   }, [refreshSession]);
 
+  useEffect(() => {
+    let cancelled = false;
+    apiFetchJson<AuthProvidersResponse>("/auth/providers", "Failed to load sign-in options.")
+      .then((response) => {
+        if (!cancelled) {
+          setProviders({
+            localRegistrationEnabled: response.local_registration_enabled,
+            entraEnabled: response.entra_enabled,
+          });
+        }
+      })
+      .catch(() => {
+        // Keep the defaults: password sign-in still works.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const authenticate = useCallback(
     async (path: "/auth/login" | "/auth/register", payload: AuthPayload) => {
       const session = await apiFetchJson<SessionResponse>(
@@ -137,12 +179,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    const session = await apiFetchJson<SessionResponse>(
+    const session = await apiFetchJson<LogoutResponse>(
       "/auth/logout",
       "Failed to sign out.",
       { method: "POST" }
     );
     applySession(session);
+    // The app session is already revoked; also sign out of Microsoft.
+    if (session.logout_url?.startsWith("https://")) {
+      window.location.assign(session.logout_url);
+    }
   }, [applySession]);
 
   const value = useMemo<AuthContextValue>(
@@ -151,6 +197,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       claimedLegacyUploads,
       login,
       logout,
+      providers,
       refreshSession,
       register,
       status,
@@ -161,6 +208,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       claimedLegacyUploads,
       login,
       logout,
+      providers,
       refreshSession,
       register,
       status,
