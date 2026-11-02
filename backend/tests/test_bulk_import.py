@@ -199,3 +199,151 @@ def test_bulk_import_still_accepts_normal_amounts() -> None:
         '[{"date": "2026-05-13", "merchant": "Cafe", "amount": 1000000000}]'
     )
     assert [r.amount for r in rows] == [1_000_000_000.0]
+
+
+SPLIT_AMOUNT_HINT = (
+    'the amount looks like it was split at a comma. Quote it ("1,234") or remove '
+    "the thousands comma (1234); use a dot for decimals (12.50)."
+)
+
+
+def test_quoted_amount_with_thousands_separator() -> None:
+    rows = parse_import_content('2026-05-13,IKEA,"1,234"', format="text")
+    assert [(r.merchant_raw, r.amount) for r in rows] == [("IKEA", 1234.0)]
+
+
+def test_quoted_merchant_and_amount_with_category() -> None:
+    rows = parse_import_content(
+        '2026-05-13,"IKEA, Taipei",Shopping,"1,234.50"', format="text"
+    )
+    assert [(r.merchant_raw, r.category, r.amount) for r in rows] == [
+        ("IKEA, Taipei", "Shopping", 1234.5)
+    ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "2026-05-13,IKEA,1,234",
+        "2026-05-13,IKEA,Shopping,1,234",
+        "2026-05-13,IKEA,1,234.00",
+        "2026-05-13,IKEA,-1,234",
+        "2026-05-13,IKEA,$1,234",
+        "2026-05-13,IKEA,1,234,567",
+        # A decimal comma or other split must not become category + amount.
+        "2026-05-13,Cafe,12,50",
+        "2026-05-13,Cafe,1,5",
+        "2026-05-13,Cafe,1,2345",
+        "2026-05-13,Cafe,1.234,56",
+    ],
+)
+def test_unquoted_thousands_separator_is_rejected(content: str) -> None:
+    with pytest.raises(BulkImportParseError, match="(?i)quote"):
+        parse_import_content(content, format="text")
+
+
+def test_thousands_error_names_the_pasted_line_and_the_fix() -> None:
+    content = "# my card\n\n2026-05-12,Cafe,80\n2026-05-13,IKEA,1,234"
+    with pytest.raises(BulkImportParseError) as raised:
+        parse_import_content(content, format="text")
+    assert str(raised.value) == f"Line 4: {SPLIT_AMOUNT_HINT}"
+
+
+def test_tab_and_space_separated_thousands_still_work() -> None:
+    assert [
+        r.amount for r in parse_import_content("2026-05-13\tIKEA\t1,234", format="text")
+    ] == [1234.0]
+    assert [
+        r.amount for r in parse_import_content("2026-05-13 IKEA 1,234", format="text")
+    ] == [1234.0]
+
+
+def test_plain_category_and_amount_still_work() -> None:
+    rows = parse_import_content("2026-05-13,IKEA,Shopping,234", format="text")
+    assert [(r.category, r.amount) for r in rows] == [("Shopping", 234.0)]
+    rows = parse_import_content("2026-05-13, IKEA , Food , 1234", format="text")
+    assert [(r.merchant_raw, r.category, r.amount) for r in rows] == [
+        ("IKEA", "Food", 1234.0)
+    ]
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["date,merchant,category,amount", '"date","merchant","amount"', "Date, Merchant, Amount"],
+)
+def test_comma_header_line_is_still_skipped(header: str) -> None:
+    rows = parse_import_content(f"{header}\n2026-05-13,IKEA,234", format="text")
+    assert [(r.merchant_raw, r.amount) for r in rows] == [("IKEA", 234.0)]
+
+
+def test_escaped_quotes_inside_a_quoted_field() -> None:
+    rows = parse_import_content('2026-05-13,"IKEA ""Store""",10', format="text")
+    assert [r.merchant_raw for r in rows] == ['IKEA "Store"']
+
+
+@pytest.mark.parametrize(
+    "line",
+    ['2026-05-13,"IKEA,10', '2026-05-13,"IK"EA",10', '2026-05-13,IKEA,"1,234"x'],
+)
+def test_a_misplaced_quote_is_an_error_not_a_rewritten_field(line: str) -> None:
+    with pytest.raises(BulkImportParseError) as raised:
+        parse_import_content(f"2026-05-12,Cafe,80\n{line}", format="text")
+    assert str(raised.value).startswith("Line 2 has a misplaced or unmatched quote.")
+
+
+
+@pytest.mark.parametrize(
+    ("content", "content_format"),
+    [
+        ('2026-05-13,Cafe,"12,50"', "text"),
+        ("2026-05-13\tCafe\t12,50", "text"),
+        ("2026-05-13 Cafe 12,50", "text"),
+        ('[{"date": "2026-05-13", "merchant": "Cafe", "amount": "12,50"}]', "json"),
+    ],
+)
+def test_a_decimal_comma_is_rejected_not_multiplied_by_100(
+    content: str, content_format: str
+) -> None:
+    with pytest.raises(BulkImportParseError) as raised:
+        parse_import_content(content, format=content_format)
+    assert str(raised.value) == (
+        "Row 1: amount '12,50' has a comma that is not a thousands separator. "
+        "Use a dot for decimals (12.50)."
+    )
+
+
+@pytest.mark.parametrize("amount", ["1,23,456", "12,3456", "1,234,56", ",123"])
+def test_a_comma_that_is_not_thousands_grouping_is_rejected(amount: str) -> None:
+    with pytest.raises(BulkImportParseError, match="not a thousands separator"):
+        parse_import_content(f'2026-05-13,Cafe,"{amount}"', format="text")
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [("1,234", 1234.0), ("-1,234.50", -1234.5), ("1,234,567.89", 1234567.89)],
+)
+def test_valid_thousands_grouping_still_parses_in_every_format(
+    amount: str, expected: float
+) -> None:
+    for content, content_format in (
+        (f'2026-05-13,Cafe,"{amount}"', "text"),
+        (f"2026-05-13\tCafe\t{amount}", "text"),
+        (f"2026-05-13 Cafe {amount}", "text"),
+        (
+            f'[{{"date": "2026-05-13", "merchant": "Cafe", "amount": "{amount}"}}]',
+            "json",
+        ),
+    ):
+        rows = parse_import_content(content, format=content_format)
+        assert [r.amount for r in rows] == [expected], content
+
+
+@pytest.mark.parametrize(
+    ("category", "expected"),
+    [("Groceries", "Groceries"), ("Food 2", "Food 2"), ("7-Eleven", "7-Eleven")],
+)
+def test_categories_containing_digits_are_not_treated_as_split_amounts(
+    category: str, expected: str
+) -> None:
+    rows = parse_import_content(f"2026-05-13,Cafe,{category},85", format="text")
+    assert [(r.category, r.amount) for r in rows] == [(expected, 85.0)]
