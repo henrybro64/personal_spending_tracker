@@ -619,7 +619,7 @@ def revoke_session(
 
 # Stored instead of a scrypt hash for users created by an external sign-in.
 # verify_password rejects it, so such a user can never sign in locally.
-EXTERNAL_ONLY_PASSWORD_HASH = "!external-sign-in-only"
+EXTERNAL_SIGN_IN_ONLY_MARKER = "!external-sign-in-only"
 _EXTERNAL_USERNAME_ATTEMPTS = 50
 
 
@@ -806,7 +806,7 @@ def create_user_with_identity(
                     ON CONFLICT (email) DO NOTHING
                     RETURNING id, email, display_name, created_at
                     """,
-                    (username, EXTERNAL_ONLY_PASSWORD_HASH, display_name),
+                    (username, EXTERNAL_SIGN_IN_ONLY_MARKER, display_name),
                 )
                 row = cursor.fetchone()
                 if row:

@@ -186,7 +186,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
     applySession(session);
     // The app session is already revoked; also sign out of Microsoft.
-    if (session.logout_url && session.logout_url.startsWith("https://")) {
+    if (session.logout_url?.startsWith("https://")) {
       window.location.assign(session.logout_url);
     }
   }, [applySession]);

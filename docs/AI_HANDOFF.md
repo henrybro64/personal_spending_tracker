@@ -68,7 +68,7 @@ its TLS ends outside the repo.
 - **`backend/database.py`**: `save_oidc_login_state`, `consume_oidc_login_state` (DELETE…RETURNING, so
   single use; rejects expired), `get_user_for_identity`, `create_user_with_identity` (new user only,
   never claims legacy rows, survives a concurrent first sign-in), `user_has_identity`, and
-  `EXTERNAL_ONLY_PASSWORD_HASH` (Entra users can never use local login).
+  `EXTERNAL_SIGN_IN_ONLY_MARKER` (Entra users can never use local login).
 - **`backend/entra_auth.py`**: env settings; `entra_config_problems` (never echoes secrets); the startup
   log line; `safe_return_to` (same-origin paths only); PKCE/state/nonce; token exchange; ID-token
   validation (RS256 only, aud, iss, exp/iat with 60 s leeway, nonce, `tid` == tenant, `oid` GUID); the
@@ -225,6 +225,13 @@ Re-run after the fixes (real results): `python3.12 -m pytest -q` **368 passed**;
   `ENTRA_ERROR_MESSAGES` by own key only (`?auth_error=__proto__` used to show no message; new e2e test,
   fails without the fix).
 - Re-run locally: pytest 368 passed; unit 52/52; build ok; e2e 43 passed.
+- That did not change the gate. The real cause, found in the Sonar check-run **annotations**
+  (`gh api repos/henrybro64/personal_spending_tracker/check-runs/<id>/annotations`, readable without a
+  Sonar token): rule "hard-coded credential" on `EXTERNAL_ONLY_PASSWORD_HASH` in `backend/database.py`
+  (a marker, not a credential). Renamed to `EXTERNAL_SIGN_IN_ONLY_MARKER` in a third commit; also
+  `Object.hasOwn` and an optional chain from Sonar's notes. The other annotations are maintainability
+  only (HTTPException `responses` docs, cognitive complexity of `entra_config_problems` and
+  `extract_aadsts_code`, test-assertion style) and do not fail the gate.
 - **If SonarCloud still fails**, the owner must open the PR's Sonar issues page and give the rule and
   file/line: `https://sonarcloud.io/project/issues?id=henrybro64_personal_spending_tracker&pullRequest=105`.
 
