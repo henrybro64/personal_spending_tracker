@@ -1,6 +1,16 @@
 from hashlib import sha256
+from pathlib import Path
 
-from backend.batch_import.merge import _batch_statement_fingerprint
+import pytest
+
+from backend.batch_import.category import CategoryEngine
+from backend.batch_import.importer import parse_statement_with_fallback
+from backend.batch_import.merge import (
+    _batch_statement_fingerprint,
+    batch_transaction_to_upload,
+)
+from backend.batch_import.parsers import resolve_parser
+from backend.parser import parse_transactions
 from backend.transaction_exclusions import PAYMENT_CATEGORY
 from backend.transaction_source import (
     card_last4_from_statement,
@@ -225,3 +235,78 @@ def test_legacy_fingerprint_falls_back_to_transaction_payload() -> None:
     ]
     other = [{**rows[0], "merchant_raw": "IKEA", "amount": 80.0}]
     assert _batch_statement_fingerprint(rows) != _batch_statement_fingerprint(other)
+
+
+BATCH_FIXTURES = Path(__file__).parent / "fixtures" / "batch_import"
+
+
+# amex_statement.txt is left out: resolve_parser returns None for it today.
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "chase_statement.txt",
+        "dbs_statement.txt",
+        "ctbc_card_statement.txt",
+        "ctbc_daily_statement.txt",
+    ],
+)
+def test_upload_and_batch_give_the_same_source_keys(fixture_name: str) -> None:
+    path = BATCH_FIXTURES / fixture_name
+    text = path.read_text(encoding="utf-8")
+    scope = statement_content_fingerprint(text)
+
+    upload_rows = with_statement_card_last4(
+        parse_transactions(text, file_name=path.name), text, file_name=path.name
+    )
+
+    parser = resolve_parser(path.name, text)
+    assert parser is not None
+    batch = parse_statement_with_fallback(
+        parser,
+        source_path=path,
+        statement_text=text,
+        category_engine=CategoryEngine(),
+    )
+    batch_rows = [
+        batch_transaction_to_upload(
+            {
+                "transaction_date": t.transaction_date,
+                "merchant_raw": t.merchant_raw,
+                "amount": t.amount,
+                "category": t.category,
+                "currency": t.currency,
+                "card_last4": t.card_last4,
+            }
+        )
+        for t in batch
+    ]
+
+    assert upload_rows
+    assert sorted(source_keys_for_transactions(upload_rows, statement_scope=scope)) == sorted(
+        source_keys_for_transactions(batch_rows, statement_scope=scope)
+    )
+
+
+def test_batch_import_drops_a_line_ending_in_a_reference_number(tmp_path: Path) -> None:
+    text = (BATCH_FIXTURES / "chase_statement.txt").read_text(encoding="utf-8")
+    text = text.replace(
+        "New Balance", "01/14 01/15 REF 4111111111111111\nNew Balance"
+    )
+    path = tmp_path / "chase_statement.txt"
+    path.write_text(text, encoding="utf-8")
+    parser = resolve_parser(path.name, text)
+    assert parser is not None
+    # The bank parser alone still matches the line; the shared step drops it.
+    assert any(
+        t.merchant_raw == "REF"
+        for t in parser.parse(
+            source_path=path, statement_text=text, category_engine=CategoryEngine()
+        )
+    )
+    rows = parse_statement_with_fallback(
+        parser,
+        source_path=path,
+        statement_text=text,
+        category_engine=CategoryEngine(),
+    )
+    assert sorted(t.merchant_raw for t in rows) == ["AMAZON MARKETPLACE", "REFUND AMAZON"]

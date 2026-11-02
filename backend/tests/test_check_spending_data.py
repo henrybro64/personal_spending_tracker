@@ -274,6 +274,118 @@ def test_report_finds_each_problem(database_url: str, reset_database) -> None:
     text = format_report(report)
     assert "Possible duplicates: 1 (1 from a batch merge)" in text
     assert "Payments stored as spending: 1" in text
+    assert report.date_prefixed_merchants == ()
+    assert "Upload rows with a date in the merchant: 0" in text
+
+
+def _add_merchant_row(
+    database_url: str,
+    *,
+    user_id: int,
+    merchant: str,
+    file_name: str,
+) -> int:
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO transactions (
+                    user_id, date, merchant, amount, currency,
+                    category, file_name
+                )
+                VALUES (%s, '2024-01-05', %s, 42.10, 'USD', 'Shopping', %s)
+                RETURNING id
+                """,
+                (user_id, merchant, file_name),
+            )
+            row_id = int(cursor.fetchone()[0])
+        connection.commit()
+    return row_id
+
+
+def test_report_lists_upload_rows_with_a_posting_date_in_the_merchant(
+    database_url: str,
+    reset_database,
+) -> None:
+    del reset_database
+    seeded = _seed(database_url)
+    user_id = seeded["user_id"]
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO users (email, password_hash, display_name)
+                VALUES ('other@example.com', 'x', 'Other')
+                RETURNING id
+                """
+            )
+            other_user_id = int(cursor.fetchone()[0])
+        connection.commit()
+
+    flagged = [
+        _add_merchant_row(
+            database_url,
+            user_id=user_id,
+            merchant="01/06 AMAZON MARKETPLACE",
+            file_name="chase.pdf",
+        ),
+        _add_merchant_row(
+            database_url,
+            user_id=user_id,
+            merchant="01/06/24 REFUND AMAZON",
+            file_name="chase.pdf",
+        ),
+        _add_merchant_row(
+            database_url,
+            user_id=user_id,
+            merchant="2024-01-06 AMAZON MARKETPLACE",
+            file_name="chase-iso.pdf",
+        ),
+    ]
+    other_flagged = _add_merchant_row(
+        database_url,
+        user_id=other_user_id,
+        merchant="12/31 TARGET",
+        file_name="other.pdf",
+    )
+    # Not upload parser output, or not a leading posting date.
+    for merchant, file_name in (
+        ("01/06 AMAZON MARKETPLACE", "batch-import/chase.txt"),
+        ("01/06 TYPED BY HAND", "manual-entry"),
+        ("AMAZON 01/06 MARKETPLACE", "chase.pdf"),
+        ("7/4 BBQ", "chase.pdf"),
+        ("01/06AMAZON", "chase.pdf"),
+    ):
+        _add_merchant_row(
+            database_url,
+            user_id=user_id,
+            merchant=merchant,
+            file_name=file_name,
+        )
+
+    report = report_spending_data(user_id=user_id, database_url=database_url)
+    assert [row.transaction_id for row in report.date_prefixed_merchants] == flagged
+    assert report.date_prefixed_merchants[0].label == "01/06 AMAZON MARKETPLACE"
+    assert report.date_prefixed_merchants[0].detail == "chase.pdf"
+    assert report.date_prefixed_merchant_counts == ((user_id, 3),)
+
+    everyone = report_spending_data(database_url=database_url)
+    assert [row.transaction_id for row in everyone.date_prefixed_merchants] == [
+        *flagged,
+        other_flagged,
+    ]
+    assert everyone.date_prefixed_merchant_counts == (
+        (user_id, 3),
+        (other_user_id, 1),
+    )
+    text = format_report(everyone)
+    assert "Upload rows with a date in the merchant: 4" in text
+    assert f"  user_id={user_id}: 3" in text
+    assert f"  user_id={other_user_id}: 1" in text
+    assert (
+        f"  id={flagged[0]} merchant=01/06 AMAZON MARKETPLACE upload=chase.pdf"
+        in text
+    )
 
 
 def test_repairs_change_nothing_without_apply(

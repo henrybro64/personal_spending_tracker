@@ -56,8 +56,15 @@ DATABASE_URL=postgresql://... python scripts/check-spending-data.py
 
 Add `--user-id 1` to limit the report to one account. The report is
 read-only. It lists possible duplicates, batch-merged uploads, card
-payments still categorized as spending, dates after today, and dates that
-are not `YYYY-MM-DD`.
+payments still categorized as spending, dates after today, dates that
+are not `YYYY-MM-DD`, and uploaded rows whose merchant starts with a date
+(a posting date stored by uploads before #98, with counts per user). Those
+rows keep their old merchant and source key. A batch merge of the same
+statement would add a second copy, and so would a later upload of an
+overlapping statement for the same card (for example a monthly statement
+after the daily ones), because same-card keys are shared across statements.
+There is no automatic repair for them; review the listed rows before
+importing overlapping statements again.
 
 Repairs are separate and opt-in. Without `--apply` they only print what
 would change. `--apply` is refused unless `--i-have-a-backup` is also set.

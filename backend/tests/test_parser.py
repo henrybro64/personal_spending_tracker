@@ -215,3 +215,41 @@ def test_payment_phrases_do_not_match_merchant_names_that_contain_payment():
             name,
             category="Other Spending",
         )
+
+
+def test_posting_date_is_not_part_of_the_merchant() -> None:
+    text = (
+        "CHASE\nOpening/Closing Date 12/20/23 - 01/19/24\n"
+        "Account ending in 6814\nACCOUNT ACTIVITY\n"
+        "01/05 01/06 AMAZON MARKETPLACE 42.10\n"
+        "01/12 01/13 REFUND AMAZON -15.00\n"
+        "01/14 TRADER JOE S 9.99\n"
+    )
+    rows = parse_transactions(text)
+    assert [(r["date"], r["merchant"], r["amount"]) for r in rows] == [
+        ("2024-01-05", "AMAZON MARKETPLACE", 42.10),
+        ("2024-01-12", "REFUND AMAZON", -15.00),
+        ("2024-01-14", "TRADER JOE S", 9.99),
+    ]
+
+
+def test_iso_posting_date_is_not_part_of_the_merchant() -> None:
+    rows = parse_transactions("2024-01-05 2024-01-06 AMAZON MARKETPLACE 42.10\n")
+    assert [(r["date"], r["merchant"], r["amount"]) for r in rows] == [
+        ("2024-01-05", "AMAZON MARKETPLACE", 42.10),
+    ]
+
+
+def test_a_line_ending_in_a_reference_number_is_not_a_transaction() -> None:
+    text = (
+        "CHASE\nOpening/Closing Date 12/20/23 - 01/19/24\n"
+        "01/05 01/06 AMAZON MARKETPLACE 42.10\n"
+        "01/07 ACCOUNT 4111111111111111\n"
+        "01/08 REFERENCE NUMBER 1000000000.01\n"
+        "01/09 LARGEST ALLOWED 1000000000.00\n"
+    )
+    rows = parse_transactions(text)
+    assert [(r["merchant"], r["amount"]) for r in rows] == [
+        ("AMAZON MARKETPLACE", 42.10),
+        ("LARGEST ALLOWED", 1_000_000_000.0),
+    ]

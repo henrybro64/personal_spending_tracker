@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date
 from typing import Any, Literal
@@ -13,7 +14,10 @@ from backend.batch_import.category import (
     transaction_type_for_category,
 )
 from backend.batch_import.models import NormalizedTransaction, TransactionType
-from backend.currency import normalize_supported_currency_code
+from backend.currency import (
+    MAX_TRANSACTION_AMOUNT,
+    normalize_supported_currency_code,
+)
 
 ImportDestination = Literal["batch", "dashboard"]
 ImportFormat = Literal["auto", "json", "text"]
@@ -127,9 +131,21 @@ def _resolve_format(content: str, format: ImportFormat) -> Literal["json", "text
     return "text"
 
 
+def _json_float(text: str) -> float | str:
+    # Keep 1e400 as its own text so the row error quotes what was typed.
+    value = float(text)
+    return value if math.isfinite(value) else text
+
+
 def _parse_json_payload(content: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     try:
-        payload = json.loads(content)
+        # json.loads accepts NaN, Infinity and -Infinity; keep them as text
+        # too. _parse_amount_value rejects them with the row number.
+        payload = json.loads(
+            content,
+            parse_float=_json_float,
+            parse_constant=lambda text: text,
+        )
     except json.JSONDecodeError as exc:
         raise BulkImportParseError(f"Invalid JSON: {exc.msg}") from exc
 
@@ -295,7 +311,8 @@ def _normalize_row(
     merchant = " ".join(merchant.split())
 
     amount = _parse_amount_value(raw_row.get("amount"))
-    if amount == 0:
+    # Amounts are stored as NUMERIC(12, 2); below half a cent rounds to 0.00.
+    if abs(amount) < 0.005:
         raise BulkImportParseError("amount must be non-zero.")
 
     posted_date = raw_row.get("posted_date")
@@ -399,14 +416,28 @@ def _parse_amount_value(value: Any) -> float:
     if value is None:
         raise BulkImportParseError("amount is required.")
     if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value).strip().replace(",", "")
-    if not text:
-        raise BulkImportParseError("amount is required.")
-    try:
-        return float(text)
-    except ValueError as exc:
-        raise BulkImportParseError(f"Invalid amount: {value!r}.") from exc
+        try:
+            amount = float(value)
+        except OverflowError as exc:
+            # A JSON integer with hundreds of digits does not fit a float.
+            raise BulkImportParseError("Amount is too large.") from exc
+    else:
+        text = str(value).strip().replace(",", "")
+        if not text:
+            raise BulkImportParseError("amount is required.")
+        try:
+            amount = float(text)
+        except ValueError as exc:
+            raise BulkImportParseError(f"Invalid amount: {value!r}.") from exc
+    # float() accepts "NaN", "inf" and "1e400".
+    if not math.isfinite(amount):
+        raise BulkImportParseError(
+            f"amount must be a finite number, got {value!r}."
+        )
+    if abs(amount) > MAX_TRANSACTION_AMOUNT:
+        # Same text as manual entry (#97).
+        raise BulkImportParseError("Amount is too large.")
+    return amount
 
 
 def _normalize_source_name(source_name: str) -> str:

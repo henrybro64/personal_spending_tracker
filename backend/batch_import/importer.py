@@ -4,11 +4,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
+from backend.currency import is_plausible_statement_amount
 from backend.transaction_source import statement_content_fingerprint
 
 from .category import CategoryEngine
 from .models import BatchImportResult, NormalizedTransaction
-from .parsers import resolve_parser
+from .parsers import BaseStatementParser, resolve_parser
 from .paths import (
     default_csv_output_path,
     default_pdf_source_dir,
@@ -22,6 +23,57 @@ from .upload_fallback import (
     transactions_from_upload_parser,
     upload_fallback_supported,
 )
+
+
+def parse_statement_with_fallback(
+    parser: BaseStatementParser,
+    *,
+    source_path: Path,
+    statement_text: str,
+    category_engine: CategoryEngine,
+) -> list[NormalizedTransaction]:
+    """Rows for one statement: the bank parser, merged with the upload parser."""
+    # A line ending in a long reference number is not a transaction.
+    return [
+        transaction
+        for transaction in _parse_with_upload_fallback(
+            parser,
+            source_path=source_path,
+            statement_text=statement_text,
+            category_engine=category_engine,
+        )
+        if is_plausible_statement_amount(transaction.amount)
+    ]
+
+
+def _parse_with_upload_fallback(
+    parser: BaseStatementParser,
+    *,
+    source_path: Path,
+    statement_text: str,
+    category_engine: CategoryEngine,
+) -> list[NormalizedTransaction]:
+    parsed_transactions = parser.parse(
+        source_path=source_path,
+        statement_text=statement_text,
+        category_engine=category_engine,
+    )
+    if not upload_fallback_supported(parser.name):
+        return parsed_transactions
+    fallback_transactions = transactions_from_upload_parser(
+        source_path,
+        statement_text,
+        category_engine,
+        bank=parser.bank,
+    )
+    if not parsed_transactions:
+        return fallback_transactions
+    if fallback_transactions:
+        return merge_normalized_transactions(
+            parsed_transactions,
+            fallback_transactions,
+        )
+    return parsed_transactions
 
 
 class StatementImporter:
@@ -78,25 +130,12 @@ class StatementImporter:
                     )
                     continue
 
-                parsed_transactions = parser.parse(
+                parsed_transactions = parse_statement_with_fallback(
+                    parser,
                     source_path=source_path,
                     statement_text=statement_text,
                     category_engine=category_engine,
                 )
-                if upload_fallback_supported(parser.name):
-                    fallback_transactions = transactions_from_upload_parser(
-                        source_path,
-                        statement_text,
-                        category_engine,
-                        bank=parser.bank,
-                    )
-                    if not parsed_transactions:
-                        parsed_transactions = fallback_transactions
-                    elif fallback_transactions:
-                        parsed_transactions = merge_normalized_transactions(
-                            parsed_transactions,
-                            fallback_transactions,
-                        )
                 if not parsed_transactions:
                     skipped_files.append(
                         {
