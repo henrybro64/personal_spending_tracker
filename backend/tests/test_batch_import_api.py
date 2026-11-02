@@ -905,3 +905,35 @@ def test_failed_second_statement_rolls_back_the_whole_merge(
         rows = client.get("/transactions").json()["transactions"]
         assert len(rows) == 4
         assert calls["n"] >= 3
+
+
+def test_upload_skips_a_line_ending_in_a_reference_number(
+    client: TestClient,
+    api_main,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.parser import parse_transactions
+
+    # Before the fix this amount overflowed NUMERIC(12, 2) and the upload
+    # returned 500.
+    text = (
+        "CHASE\nOpening/Closing Date 12/20/23 - 01/19/24\n"
+        "01/05 01/06 AMAZON MARKETPLACE 42.10\n"
+        "01/07 ACCOUNT 4111111111111111\n"
+    )
+    _register(client, "alice")
+
+    def fake_load(path, password=None, **_kwargs):
+        del path, password
+        return text, list(parse_transactions(text))
+
+    monkeypatch.setattr(api_main, "_load_uploaded_statement", fake_load)
+    uploaded = client.post(
+        "/upload",
+        files={"file": ("statement.pdf", b"%PDF-1.4 synthetic", "application/pdf")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    rows = client.get("/transactions").json()["transactions"]
+    assert [(row["merchant"], row["amount"]) for row in rows] == [
+        ("AMAZON MARKETPLACE", 42.10)
+    ]

@@ -33,6 +33,10 @@ BACKUP_REMINDER = (
 )
 _EXAMPLE_LIMIT = 5
 _DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+# A posting date the upload parser used to keep in the merchant (#98).
+_DATE_PREFIXED_MERCHANT_PATTERN = (
+    r"^([0-9]{2}/[0-9]{2}(/[0-9]{2,4})?|[0-9]{4}-[0-9]{2}-[0-9]{2})[[:space:]]"
+)
 
 
 class RepairRefused(Exception):
@@ -63,6 +67,9 @@ class SpendingDataReport:
     payments_stored_as_spending: tuple[FlaggedRow, ...]
     future_dated_rows: tuple[FlaggedRow, ...]
     unreadable_dates: tuple[FlaggedRow, ...]
+    date_prefixed_merchants: tuple[FlaggedRow, ...]
+    # (user_id, row count), ordered by user_id; None is a legacy unowned row.
+    date_prefixed_merchant_counts: tuple[tuple[int | None, int], ...]
 
     @property
     def batch_duplicate_groups(self) -> int:
@@ -98,12 +105,17 @@ def report_spending_data(
             payments = _payment_rows(cursor, user_id=user_id)
             future_rows = _future_rows(cursor, user_id=user_id, today=as_of)
             unreadable = _unreadable_dates(cursor, user_id=user_id)
+            date_prefixed, date_prefixed_counts = _date_prefixed_merchants(
+                cursor, user_id=user_id
+            )
     return SpendingDataReport(
         duplicate_groups=tuple(duplicates),
         batch_uploads=tuple(batch_uploads),
         payments_stored_as_spending=tuple(payments),
         future_dated_rows=tuple(future_rows),
         unreadable_dates=tuple(unreadable),
+        date_prefixed_merchants=tuple(date_prefixed),
+        date_prefixed_merchant_counts=tuple(date_prefixed_counts),
     )
 
 
@@ -135,6 +147,16 @@ def format_report(report: SpendingDataReport) -> str:
     lines.append(f"Unreadable dates: {len(report.unreadable_dates)}")
     for row in report.unreadable_dates[:_EXAMPLE_LIMIT]:
         lines.append(f"  id={row.transaction_id} date={row.label}")
+    lines.append(
+        "Upload rows with a date in the merchant: "
+        f"{len(report.date_prefixed_merchants)}"
+    )
+    for row_user_id, count in report.date_prefixed_merchant_counts:
+        lines.append(f"  user_id={row_user_id}: {count}")
+    for row in report.date_prefixed_merchants[:_EXAMPLE_LIMIT]:
+        lines.append(
+            f"  id={row.transaction_id} merchant={row.label} upload={row.detail}"
+        )
     return "\n".join(lines)
 
 
@@ -544,6 +566,51 @@ def _unreadable_dates(
         )
         for row_id, row_date in cursor.fetchall()
     ]
+
+
+def _date_prefixed_merchants(
+    cursor: psycopg.Cursor[Any],
+    *,
+    user_id: int | None,
+) -> tuple[list[FlaggedRow], list[tuple[int | None, int]]]:
+    """Upload rows stored before #98 with the posting date in the merchant.
+
+    Report only: their merchant and source key no longer match a batch merge
+    of the same statement. Batch-merged and manual rows are not upload output.
+    """
+    user_sql, params = _user_filter(user_id, "t.user_id")
+    cursor.execute(
+        f"""
+        SELECT
+            t.id,
+            t.user_id,
+            t.merchant,
+            COALESCE(u.stored_file_name, t.file_name, '')
+        FROM transactions t
+        LEFT JOIN statement_uploads u
+          ON u.id = t.statement_upload_id
+        WHERE t.merchant ~ %s
+          AND COALESCE(t.file_name, '') NOT LIKE 'batch-import/%%'
+          AND COALESCE(t.file_name, '') <> 'manual-entry'
+        {user_sql}
+        ORDER BY t.user_id NULLS LAST, t.id
+        """,
+        [_DATE_PREFIXED_MERCHANT_PATTERN, *params],
+    )
+    flagged: list[FlaggedRow] = []
+    counts: dict[int | None, int] = {}
+    for row_id, row_user_id, merchant, upload_name in cursor.fetchall():
+        flagged.append(
+            FlaggedRow(
+                transaction_id=int(row_id),
+                label=str(merchant),
+                detail=str(upload_name),
+            )
+        )
+        owner = None if row_user_id is None else int(row_user_id)
+        counts[owner] = counts.get(owner, 0) + 1
+    # Rows arrive ordered by user, so insertion order is already sorted.
+    return flagged, list(counts.items())
 
 
 def _imported_rows_for_source_keys(

@@ -1,6 +1,7 @@
 import asyncio
 import heapq
 import logging
+import math
 import os
 import sys
 import threading
@@ -118,6 +119,9 @@ from backend.batch_import import (  # noqa: E402
 )
 from backend.currency import (  # noqa: E402
     DEFAULT_BASE_CURRENCY,
+    MAX_BASE_AMOUNT,
+    MAX_EXCHANGE_RATE,
+    MAX_TRANSACTION_AMOUNT,
     DisplayCurrency,
     SupportedCurrency,
     SUPPORTED_CURRENCY_CODES,
@@ -722,8 +726,14 @@ def _parse_manual_transaction_fields(
     )
     if not merchant:
         raise ValueError("Merchant is required.")
-    if original_amount is None or original_amount <= 0:
+    # NaN <= 0 is False, so check finiteness before the sign (#97).
+    if original_amount is not None and not math.isfinite(original_amount):
+        raise ValueError("Amount must be a finite number.")
+    # Stored as NUMERIC(12, 2): below half a cent would be saved as 0.00.
+    if original_amount is None or original_amount < 0.005:
         raise ValueError("Amount must be positive.")
+    if original_amount > MAX_TRANSACTION_AMOUNT:
+        raise ValueError("Amount is too large.")
     try:
         date.fromisoformat(transaction_date)
     except ValueError as exc:
@@ -744,17 +754,26 @@ def _parse_manual_transaction_fields(
         field_name="Exchange rate date",
     )
 
-    if payload.exchange_rate is not None and payload.exchange_rate <= 0:
-        raise ValueError("Exchange rate must be greater than zero when provided.")
+    if payload.exchange_rate is not None:
+        if not math.isfinite(payload.exchange_rate):
+            raise ValueError("Exchange rate must be a finite number.")
+        if payload.exchange_rate <= 0:
+            raise ValueError(
+                "Exchange rate must be greater than zero when provided."
+            )
+        if payload.exchange_rate > MAX_EXCHANGE_RATE:
+            raise ValueError("Exchange rate is too large.")
     if original_currency == base_currency or payload.exchange_rate is not None:
         exchange_rate_date = exchange_rate_date or transaction_date
 
-    derive_base_money_fields(
+    base_amount, _, _ = derive_base_money_fields(
         original_amount=original_amount,
         original_currency=original_currency,
         base_currency=base_currency,
         exchange_rate=payload.exchange_rate,
     )
+    if base_amount is not None and abs(base_amount) > MAX_BASE_AMOUNT:
+        raise ValueError("Amount is too large.")
 
     return {
         "transaction_date": transaction_date,

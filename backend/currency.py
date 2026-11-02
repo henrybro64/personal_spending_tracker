@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal, cast
@@ -35,6 +36,21 @@ DEFAULT_BASE_CURRENCY: SupportedCurrency = "TWD"
 DEFAULT_USD_TWD_RATE = 32.0
 RATE_SOURCE = "static_env"
 MONEY_QUANT = Decimal("0.01")
+# Upper bounds for user-entered money (#97). amount and original_amount are
+# NUMERIC(12, 2), base_amount NUMERIC(14, 2), exchange_rate NUMERIC(18, 8).
+# The amount bound is far below the column limit and catches pasted card
+# numbers; the others keep a converted manual entry inside its columns.
+MAX_TRANSACTION_AMOUNT = 1_000_000_000
+MAX_EXCHANGE_RATE = 1_000_000
+MAX_BASE_AMOUNT = 999_999_999_999.99
+
+
+def is_plausible_statement_amount(amount: float) -> bool:
+    """False for a parsed "amount" that is really a reference or card number.
+
+    Such a row would overflow NUMERIC(12, 2) and fail the whole import.
+    """
+    return math.isfinite(amount) and abs(amount) <= MAX_TRANSACTION_AMOUNT
 
 
 def get_usd_twd_exchange_rate() -> float:

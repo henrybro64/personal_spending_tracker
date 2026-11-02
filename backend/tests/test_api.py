@@ -1,3 +1,4 @@
+import json
 from io import BytesIO
 from datetime import date, timedelta
 from pathlib import Path
@@ -348,6 +349,137 @@ def test_manual_transaction_rejects_negative_amount(client: TestClient) -> None:
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Amount must be positive."}
+
+
+def _post_manual_raw_json(client: TestClient, payload: dict):
+    # httpx refuses NaN in json=; json.dumps writes the NaN / Infinity
+    # literals that a hand-crafted request would send.
+    return client.post(
+        "/transactions/manual",
+        content=json.dumps(payload),
+        headers={"Content-Type": "application/json"},
+    )
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("field", ["amount", "original_amount"])
+def test_manual_transaction_rejects_non_finite_amount(
+    client: TestClient, bad: float, field: str
+) -> None:
+    _register_user(client)
+    response = _post_manual_raw_json(
+        client,
+        {"date": "2024-04-20", "merchant": "Coffee Project", field: bad},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Amount must be a finite number."}
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_manual_transaction_rejects_non_finite_exchange_rate(
+    client: TestClient, bad: float
+) -> None:
+    _register_user(client)
+    response = _post_manual_raw_json(
+        client,
+        {
+            "date": "2024-04-20",
+            "merchant": "Coffee Project",
+            "original_amount": 10,
+            "original_currency": "USD",
+            "base_currency": "TWD",
+            "exchange_rate": bad,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Exchange rate must be a finite number."}
+
+
+def test_manual_transaction_rejects_a_too_large_amount(client: TestClient) -> None:
+    _register_user(client)
+    for amount in (1_000_000_000.01, 4111111111111111):
+        response = client.post(
+            "/transactions/manual",
+            json={"date": "2024-04-20", "merchant": "Coffee Project", "amount": amount},
+        )
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Amount is too large."}
+
+    largest = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2024-04-20",
+            "merchant": "Coffee Project",
+            "amount": 1_000_000_000,
+        },
+    )
+    assert largest.status_code == 201
+    assert largest.json()["transaction"]["amount"] == pytest.approx(1_000_000_000)
+
+
+def test_manual_transaction_rejects_a_rate_that_overflows_the_base_amount(
+    client: TestClient,
+) -> None:
+    _register_user(client)
+    too_large_rate = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2024-04-20",
+            "merchant": "Coffee Project",
+            "original_amount": 10,
+            "original_currency": "USD",
+            "base_currency": "TWD",
+            "exchange_rate": 1e12,
+        },
+    )
+    assert too_large_rate.status_code == 400
+    assert too_large_rate.json() == {"detail": "Exchange rate is too large."}
+
+    too_large_base = client.post(
+        "/transactions/manual",
+        json={
+            "date": "2024-04-20",
+            "merchant": "Coffee Project",
+            "original_amount": 1_000_000_000,
+            "original_currency": "USD",
+            "base_currency": "TWD",
+            "exchange_rate": 1_000_000,
+        },
+    )
+    assert too_large_base.status_code == 400
+    assert too_large_base.json() == {"detail": "Amount is too large."}
+
+
+def test_manual_transaction_rejects_an_amount_that_rounds_to_zero(
+    client: TestClient,
+) -> None:
+    _register_user(client)
+    response = client.post(
+        "/transactions/manual",
+        json={"date": "2024-04-20", "merchant": "Coffee Project", "amount": 0.004},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Amount must be positive."}
+
+    half_cent = client.post(
+        "/transactions/manual",
+        json={"date": "2024-04-20", "merchant": "Coffee Project", "amount": 0.005},
+    )
+    assert half_cent.status_code == 201
+    assert half_cent.json()["transaction"]["amount"] == pytest.approx(0.01)
+
+
+def test_dashboard_totals_stay_numeric_after_rejected_nan(client: TestClient) -> None:
+    _register_user(client)
+    rejected = _post_manual_raw_json(
+        client,
+        {"date": "2024-04-20", "merchant": "Coffee Project", "amount": float("nan")},
+    )
+    assert rejected.status_code == 400
+    summary = client.get("/summary")
+    assert summary.status_code == 200
+    assert summary.json()["total_spending"] == 0
+    assert summary.json()["number_of_transactions"] == 0
 
 
 def test_manual_twd_transaction_sets_base_fields(client: TestClient) -> None:

@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import {
+  describeFetchFailure,
+  forwardableRequestHeaders,
+  redactBackendHost,
+} from "../proxy-helpers";
+
 const BACKEND =
   process.env.API_PROXY_TARGET?.replace(/\/$/, "") ?? "http://localhost:8000";
 
@@ -41,8 +47,7 @@ async function proxyRequest(
   const pathname = path.join("/");
   const url = `${BACKEND}/${pathname}${request.nextUrl.search}`;
 
-  const headers = new Headers(request.headers);
-  headers.delete("host");
+  const headers = forwardableRequestHeaders(request.headers);
 
   const hasBody = !["GET", "HEAD"].includes(request.method);
   const timeoutMs = pathname.startsWith("batch-imports/")
@@ -61,12 +66,14 @@ async function proxyRequest(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "API proxy request failed";
-    console.error(`[api proxy] ${request.method} ${url} failed:`, message);
+    const reason = describeFetchFailure(error, { timeoutMs });
+    // The target URL goes to the server log only, never to the browser.
+    console.error(
+      `[api proxy] API proxy to backend failed: ${reason} (${request.method} ${url})`
+    );
     return NextResponse.json(
       {
-        detail: `API proxy to backend failed: ${message}`,
+        detail: `API proxy to backend failed: ${redactBackendHost(reason, BACKEND)}`,
       },
       { status: 502 }
     );

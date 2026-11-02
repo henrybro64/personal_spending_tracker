@@ -2,6 +2,7 @@ from datetime import date, datetime
 import re
 from typing import NotRequired, TypedDict
 
+from backend.currency import is_plausible_statement_amount
 from backend.statement_parse_utils import (
     MERCHANT_MISSING_FROM_PDF_CATEGORY,
     MERCHANT_NOT_IN_PDF,
@@ -440,6 +441,9 @@ TRANSACTION_PATTERN = re.compile(
     r"^\s*"
     r"(?P<date>\d{2}/\d{2}(?:/\d{2,4})?)"
     r"\s+"
+    # US statements often print a posting date after the transaction date
+    # (#98). Keep it out of the merchant so upload and batch import agree.
+    r"(?:(?P<posted_date>\d{2}/\d{2}(?:/\d{2,4})?)\s+)?"
     r"(?P<merchant>.+?)"
     r"\s+"
     r"(?P<amount>\(?-?\$?\d[\d,]*(?:\.\d{2})?\)?)"
@@ -450,6 +454,7 @@ TRANSACTION_PATTERN_ISO = re.compile(
     r"^\s*"
     r"(?P<date>\d{4}-\d{2}-\d{2})"
     r"\s+"
+    r"(?:(?P<posted_date>\d{4}-\d{2}-\d{2})\s+)?"
     r"(?P<merchant>.+?)"
     r"\s+"
     r"(?P<amount>\(?-?\$?\d[\d,]*(?:\.\d{2})?\)?)"
@@ -937,4 +942,9 @@ def parse_transactions(text: str, *, file_name: str = "") -> list[Transaction]:
         if ctbc_transaction:
             transactions.append(ctbc_transaction)
 
-    return transactions
+    # A line ending in a long reference number is not a transaction.
+    return [
+        transaction
+        for transaction in transactions
+        if is_plausible_statement_amount(transaction["amount"])
+    ]

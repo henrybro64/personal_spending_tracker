@@ -1,6 +1,8 @@
 import json
 import unittest
 
+import pytest
+
 from backend.bulk_import import BulkImportParseError, parse_import_content
 
 
@@ -128,3 +130,72 @@ class BulkImportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "2026-05-13,Cafe,NaN",
+        "2026-05-13,Cafe,inf",
+        "2026-05-13\tCafe\t-Infinity",
+        '[{"date": "2026-05-13", "merchant": "Cafe", "amount": NaN}]',
+        '[{"date": "2026-05-13", "merchant": "Cafe", "amount": Infinity}]',
+        '[{"date": "2026-05-13", "merchant": "Cafe", "amount": 1e400}]',
+        '[{"date": "2026-05-13", "merchant": "Cafe", "amount": "nan"}]',
+        "2026-05-13,Cafe,4111111111111111",
+        '[{"date": "2026-05-13", "merchant": "Cafe", "amount": 1000000000.01}]',
+        # An integer this long does not fit a float at all.
+        '[{"date": "2026-05-13", "merchant": "Cafe", "amount": 1' + "0" * 400 + "}]",
+    ],
+)
+def test_bulk_import_rejects_non_finite_or_huge_amounts(content: str) -> None:
+    with pytest.raises(BulkImportParseError):
+        parse_import_content(content)
+
+
+def test_bulk_import_names_the_row_and_value_of_a_non_finite_amount() -> None:
+    with pytest.raises(BulkImportParseError) as raised:
+        parse_import_content("2026-05-13,Cafe,10\n2026-05-14,Cafe,NaN")
+    assert str(raised.value) == "Row 2: amount must be a finite number, got 'NaN'."
+
+    with pytest.raises(BulkImportParseError) as raised:
+        parse_import_content("2026-05-13,Cafe,4111111111111111")
+    assert str(raised.value) == "Row 1: Amount is too large."
+
+
+@pytest.mark.parametrize(
+    ("literal", "quoted"),
+    [("NaN", "'NaN'"), ("Infinity", "'Infinity'"), ("-Infinity", "'-Infinity'"), ("1e400", "'1e400'")],
+)
+def test_bulk_import_json_error_quotes_the_amount_as_typed(literal: str, quoted: str) -> None:
+    content = (
+        '[{"date": "2026-05-13", "merchant": "Cafe", "amount": 12.5},'
+        f' {{"date": "2026-05-14", "merchant": "Cafe", "amount": {literal}}}]'
+    )
+    with pytest.raises(BulkImportParseError) as raised:
+        parse_import_content(content)
+    assert str(raised.value) == f"Row 2: amount must be a finite number, got {quoted}."
+
+
+@pytest.mark.parametrize("amount", ["0.001", "-0.004", "0.0049"])
+def test_bulk_import_rejects_amounts_that_round_to_zero_cents(amount: str) -> None:
+    with pytest.raises(BulkImportParseError) as raised:
+        parse_import_content(f"2026-05-13,Cafe,{amount}")
+    assert str(raised.value) == "Row 1: amount must be non-zero."
+
+
+def test_bulk_import_keeps_half_a_cent_and_normal_json_floats() -> None:
+    rows = parse_import_content(
+        '[{"date": "2026-05-13", "merchant": "Cafe", "amount": 0.005},'
+        ' {"date": "2026-05-14", "merchant": "Cafe", "amount": 12.5}]'
+    )
+    assert [r.amount for r in rows] == [0.005, 12.5]
+
+
+def test_bulk_import_still_accepts_normal_amounts() -> None:
+    rows = parse_import_content("2026-05-13,Cafe,-12.50")
+    assert [r.amount for r in rows] == [-12.5]
+    rows = parse_import_content(
+        '[{"date": "2026-05-13", "merchant": "Cafe", "amount": 1000000000}]'
+    )
+    assert [r.amount for r in rows] == [1_000_000_000.0]

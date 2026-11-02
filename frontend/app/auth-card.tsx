@@ -17,6 +17,7 @@ import {
   tokens,
 } from "@fluentui/react-components";
 
+import { ApiError } from "./api";
 import { useAuth } from "./auth-provider";
 
 const useStyles = makeStyles({
@@ -63,6 +64,28 @@ const useStyles = makeStyles({
   },
 });
 
+// The proxy answers 502 when it cannot reach the backend; 503 and 504 also
+// mean the server, not the credentials, is the problem (#96).
+const SERVER_UNAVAILABLE_STATUSES = new Set([502, 503, 504]);
+
+type AuthErrorMessage = {
+  title: string;
+  body: string;
+};
+
+function authErrorMessage(error: unknown): AuthErrorMessage {
+  if (error instanceof ApiError && SERVER_UNAVAILABLE_STATUSES.has(error.status)) {
+    return {
+      title: "Server unavailable",
+      body: "The app server is not responding. Try again in a moment.",
+    };
+  }
+  return {
+    title: "Authentication error",
+    body: error instanceof Error ? error.message : "Authentication failed.",
+  };
+}
+
 type AuthPageProps = {
   children: ReactNode;
 };
@@ -89,12 +112,12 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
   const [displayName, setDisplayName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState<AuthErrorMessage | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   async function onSubmit() {
     setSubmitting(true);
-    setError("");
+    setError(null);
     try {
       if (mode === "register") {
         await register({
@@ -107,7 +130,7 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
       }
       setPassword("");
     } catch (authError) {
-      setError(authError instanceof Error ? authError.message : "Authentication failed.");
+      setError(authErrorMessage(authError));
     } finally {
       setSubmitting(false);
     }
@@ -129,8 +152,8 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
       {error ? (
         <MessageBar intent="error">
           <MessageBarBody>
-            <MessageBarTitle>Authentication error</MessageBarTitle>
-            {error}
+            <MessageBarTitle>{error.title}</MessageBarTitle>
+            {error.body}
           </MessageBarBody>
         </MessageBar>
       ) : null}
@@ -170,7 +193,7 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
         <Button
           disabled={submitting}
           onClick={() => {
-            setError("");
+            setError(null);
             setMode((currentMode) => (currentMode === "login" ? "register" : "login"));
           }}
         >
