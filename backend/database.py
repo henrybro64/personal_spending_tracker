@@ -616,6 +616,252 @@ def revoke_session(
         connection.commit()
 
 
+
+# Stored instead of a scrypt hash for users created by an external sign-in.
+# verify_password rejects it, so such a user can never sign in locally.
+EXTERNAL_ONLY_PASSWORD_HASH = "!external-sign-in-only"
+_EXTERNAL_USERNAME_ATTEMPTS = 50
+
+
+class OidcLoginState(TypedDict):
+    browser_binding_hash: str
+    nonce: str
+    code_verifier: str
+    return_to: str
+
+
+def save_oidc_login_state(
+    *,
+    state_hash: str,
+    browser_binding_hash: str,
+    nonce: str,
+    code_verifier: str,
+    return_to: str,
+    expires_at: datetime,
+    max_pending: int,
+    database_url: str | None = None,
+) -> bool:
+    """Store a login state. False, and nothing stored, at ``max_pending``.
+
+    Starting a sign-in needs no account, so the cap keeps repeated calls from
+    growing the table without limit.
+    """
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with db_connection(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            # Abandoned logins never reach the callback; drop them here.
+            cursor.execute("DELETE FROM oidc_login_states WHERE expires_at <= NOW()")
+            cursor.execute(
+                """
+                INSERT INTO oidc_login_states (
+                    state_hash,
+                    browser_binding_hash,
+                    nonce,
+                    code_verifier,
+                    return_to,
+                    expires_at
+                )
+                SELECT %s, %s, %s, %s, %s, %s
+                WHERE (SELECT COUNT(*) FROM oidc_login_states) < %s
+                """,
+                (
+                    state_hash,
+                    browser_binding_hash,
+                    nonce,
+                    code_verifier,
+                    return_to,
+                    expires_at,
+                    max_pending,
+                ),
+            )
+            stored = cursor.rowcount == 1
+        connection.commit()
+    return stored
+
+
+def consume_oidc_login_state(
+    state_hash: str,
+    database_url: str | None = None,
+) -> OidcLoginState | None:
+    """Delete and return an unexpired login state. Each state works once."""
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with db_connection(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM oidc_login_states
+                WHERE state_hash = %s
+                RETURNING
+                    browser_binding_hash,
+                    nonce,
+                    code_verifier,
+                    return_to,
+                    expires_at > NOW()
+                """,
+                (state_hash,),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+
+    if not row or not row[4]:
+        return None
+    browser_binding_hash, nonce, code_verifier, return_to, _unexpired = row
+    return {
+        "browser_binding_hash": str(browser_binding_hash),
+        "nonce": str(nonce),
+        "code_verifier": str(code_verifier),
+        "return_to": str(return_to),
+    }
+
+
+def _user_record_from_row(row: tuple[Any, ...]) -> UserRecord:
+    user_id, email, display_name, created_at = row
+    return {
+        "id": int(user_id),
+        "email": str(email),
+        "display_name": str(display_name),
+        "created_at": _iso_datetime(created_at),
+    }
+
+
+def _user_for_identity(
+    cursor: psycopg.Cursor[Any],
+    *,
+    provider: str,
+    issuer: str,
+    subject: str,
+) -> UserRecord | None:
+    cursor.execute(
+        """
+        UPDATE user_identities
+        SET last_login_at = NOW()
+        FROM users
+        WHERE users.id = user_identities.user_id
+          AND user_identities.provider = %s
+          AND user_identities.issuer = %s
+          AND user_identities.subject = %s
+        RETURNING users.id, users.email, users.display_name, users.created_at
+        """,
+        (provider, issuer, subject),
+    )
+    row = cursor.fetchone()
+    return _user_record_from_row(row) if row else None
+
+
+def get_user_for_identity(
+    *,
+    provider: str,
+    issuer: str,
+    subject: str,
+    database_url: str | None = None,
+) -> UserRecord | None:
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with db_connection(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            user = _user_for_identity(
+                cursor, provider=provider, issuer=issuer, subject=subject
+            )
+        connection.commit()
+    return user
+
+
+def create_user_with_identity(
+    *,
+    username_base: str,
+    display_name: str,
+    provider: str,
+    issuer: str,
+    subject: str,
+    tenant_id: str | None,
+    object_id: str | None,
+    database_url: str | None = None,
+) -> UserRecord:
+    """Create a new, empty user for an external identity in one transaction.
+
+    Never attaches to an existing user and never claims legacy rows. If the
+    same identity was created concurrently, returns that user instead.
+    """
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with db_connection(resolved_database_url) as connection:
+        with connection.cursor() as cursor:
+            existing = _user_for_identity(
+                cursor, provider=provider, issuer=issuer, subject=subject
+            )
+            if existing:
+                connection.commit()
+                return existing
+
+            row = None
+            for attempt in range(_EXTERNAL_USERNAME_ATTEMPTS):
+                suffix = "" if attempt == 0 else f"-{attempt + 1}"
+                username = f"{username_base[: 80 - len(suffix)]}{suffix}"
+                cursor.execute(
+                    """
+                    INSERT INTO users (email, password_hash, display_name)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (email) DO NOTHING
+                    RETURNING id, email, display_name, created_at
+                    """,
+                    (username, EXTERNAL_ONLY_PASSWORD_HASH, display_name),
+                )
+                row = cursor.fetchone()
+                if row:
+                    break
+            if not row:
+                raise DuplicateUsernameError(username_base)
+            user = _user_record_from_row(row)
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO user_identities (
+                        user_id, provider, issuer, subject,
+                        tenant_id, object_id, last_login_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    """,
+                    (user["id"], provider, issuer, subject, tenant_id, object_id),
+                )
+            except psycopg.errors.UniqueViolation:
+                # Another request created this identity first; keep that user.
+                connection.rollback()
+                existing = _user_for_identity(
+                    cursor, provider=provider, issuer=issuer, subject=subject
+                )
+                connection.commit()
+                if existing is None:
+                    raise
+                return existing
+        connection.commit()
+    return user
+
+
+def user_has_identity(
+    user_id: int,
+    *,
+    provider: str,
+    database_url: str | None = None,
+) -> bool:
+    resolved_database_url = _resolve_database_url(database_url)
+
+    with (
+        db_connection(resolved_database_url) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            """
+            SELECT 1 FROM user_identities
+            WHERE user_id = %s AND provider = %s
+            LIMIT 1
+            """,
+            (user_id, provider),
+        )
+        return cursor.fetchone() is not None
+
+
 def record_audit_event(
     *,
     action: str,

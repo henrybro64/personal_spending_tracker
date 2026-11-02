@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { mockProviders } from "./support/session";
 
 const sampleRun = {
   id: 7,
@@ -49,6 +50,7 @@ const sampleTransactions = [
 ];
 
 async function mockAuthenticatedSession(page: Page) {
+  await mockProviders(page);
   await page.route("**/api/auth/session", async (route) => {
     await route.fulfill({
       status: 200,

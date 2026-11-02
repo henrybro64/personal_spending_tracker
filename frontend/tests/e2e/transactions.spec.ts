@@ -1,7 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { mockProviders } from "./support/session";
 
 async function mockAuthenticatedSession(page: Page) {
+  await mockProviders(page);
   await page.route("**/api/auth/session", async (route) => {
     await route.fulfill({
       status: 200,

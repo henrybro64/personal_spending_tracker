@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
 
+import { mockProviders } from "./support/session";
 
 const samplePdfPath = path.join(
   process.cwd(),
@@ -12,6 +13,7 @@ const samplePdfPath = path.join(
 );
 
 async function mockAuthenticatedSession(page: Page) {
+  await mockProviders(page);
   await page.route("**/api/auth/session", async (route) => {
     await route.fulfill({
       status: 200,

@@ -6,3 +6,4 @@ psycopg-pool
 pytest
 python-multipart
 uvicorn[standard]
+PyJWT[crypto]

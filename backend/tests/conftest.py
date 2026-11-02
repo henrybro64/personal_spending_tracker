@@ -260,6 +260,7 @@ def reset_database(database_url: str) -> None:
                 """
                 TRUNCATE TABLE
                     audit_logs,
+                    oidc_login_states,
                     user_sessions,
                     transactions,
                     statement_uploads,

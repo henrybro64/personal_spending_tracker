@@ -10,6 +10,11 @@ import {
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
+/** Absolute API URL for a full-page navigation, such as Microsoft sign-in. */
+export function apiUrl(path: string): string {
+  return `${apiBaseUrl}${path}`;
+}
+
 /**
  * The Next.js proxy waits up to 120s and then returns 502. This budget aborts
  * the in-flight GET so three hung attempts cannot stack into several minutes.

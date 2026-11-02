@@ -159,6 +159,30 @@ def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
 
 
+def attach_oidc_binding_cookie(
+    response: Response, *, name: str, token: str, max_age: int
+) -> None:
+    """Ties a Microsoft sign-in to the browser that started it (#100).
+
+    SameSite=Lax is still sent on Microsoft's top-level redirect back.
+    """
+    response.set_cookie(
+        key=name,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+        max_age=max_age,
+        path="/",
+    )
+
+
+def clear_oidc_binding_cookie(response: Response, *, name: str) -> None:
+    response.delete_cookie(
+        key=name, path="/", httponly=True, samesite="lax", secure=_cookie_secure()
+    )
+
+
 def get_audit_request_context(request: Request) -> AuditRequestContext:
     forwarded_for = request.headers.get("x-forwarded-for", "").strip()
     ip_address = (

@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Body1,
   Button,
@@ -17,7 +17,7 @@ import {
   tokens,
 } from "@fluentui/react-components";
 
-import { ApiError } from "./api";
+import { ApiError, apiUrl } from "./api";
 import { useAuth } from "./auth-provider";
 
 const useStyles = makeStyles({
@@ -86,6 +86,52 @@ function authErrorMessage(error: unknown): AuthErrorMessage {
   };
 }
 
+// ?auth_error=<code> set by the backend's Microsoft sign-in callback (#100).
+const ENTRA_ERROR_MESSAGES: Record<string, AuthErrorMessage> = {
+  entra_not_allowed: {
+    title: "Microsoft account not allowed",
+    body: "This Microsoft account is not allowed to use this app.",
+  },
+  entra_state_invalid: {
+    title: "Microsoft sign-in expired",
+    body: "The sign-in took too long or was started in another browser. Try again.",
+  },
+  entra_signin_failed: {
+    title: "Microsoft sign-in failed",
+    body: "Microsoft sign-in did not complete. Try again.",
+  },
+  entra_unavailable: {
+    title: "Microsoft sign-in unavailable",
+    body: "Microsoft sign-in is not reachable right now. Try again in a moment.",
+  },
+};
+
+// Only a real object id is echoed, so a crafted link cannot show other text.
+const OBJECT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Read and remove the sign-in error the callback put in the address bar. */
+function takeEntraErrorFromUrl(): AuthErrorMessage | null {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("auth_error");
+  if (!code) {
+    return null;
+  }
+  const objectId = url.searchParams.get("entra_object_id") ?? "";
+  url.searchParams.delete("auth_error");
+  url.searchParams.delete("entra_object_id");
+  window.history.replaceState(window.history.state, "", url.toString());
+
+  const message = ENTRA_ERROR_MESSAGES[code] ?? ENTRA_ERROR_MESSAGES.entra_signin_failed;
+  if (code === "entra_not_allowed" && OBJECT_ID_PATTERN.test(objectId)) {
+    return {
+      ...message,
+      body: `${message.body} Ask the administrator to allow object ID ${objectId.toLowerCase()}.`,
+    };
+  }
+  return message;
+}
+
 type AuthPageProps = {
   children: ReactNode;
 };
@@ -106,6 +152,7 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
     claimedLegacyTransactions,
     claimedLegacyUploads,
     login,
+    providers,
     register,
   } = useAuth();
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -114,6 +161,26 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<AuthErrorMessage | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    const entraError = takeEntraErrorFromUrl();
+    if (entraError) {
+      setError(entraError);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!providers.localRegistrationEnabled) {
+      setMode("login");
+    }
+  }, [providers.localRegistrationEnabled]);
+
+  function signInWithMicrosoft() {
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    window.location.assign(
+      apiUrl(`/auth/entra/login?return_to=${encodeURIComponent(returnTo)}`)
+    );
+  }
 
   async function onSubmit() {
     setSubmitting(true);
@@ -190,16 +257,25 @@ export function AuthPanel({ title, body }: AuthPanelProps) {
         >
           {mode === "register" ? "Create account" : "Sign in"}
         </Button>
-        <Button
-          disabled={submitting}
-          onClick={() => {
-            setError(null);
-            setMode((currentMode) => (currentMode === "login" ? "register" : "login"));
-          }}
-        >
-          {mode === "register" ? "Use existing account" : "Create account"}
-        </Button>
+        {providers.localRegistrationEnabled ? (
+          <Button
+            disabled={submitting}
+            onClick={() => {
+              setError(null);
+              setMode((currentMode) => (currentMode === "login" ? "register" : "login"));
+            }}
+          >
+            {mode === "register" ? "Use existing account" : "Create account"}
+          </Button>
+        ) : null}
       </div>
+      {providers.entraEnabled && mode === "login" ? (
+        <div className={styles.actions}>
+          <Button disabled={submitting} onClick={signInWithMicrosoft}>
+            Sign in with Microsoft
+          </Button>
+        </div>
+      ) : null}
       <Body1 className={styles.quietText}>
         {mode === "register"
           ? "The first account created here automatically claims any legacy single-user data."
