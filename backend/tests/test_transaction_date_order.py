@@ -51,14 +51,22 @@ def test_transactions_api_orders_by_date_before_limit_and_breaks_ties_by_id(
     same_day = [item for item in rows if item["date"] == "2026-10-03"]
     assert [item["id"] for item in same_day] == sorted(item["id"] for item in same_day)
 
+    # Limited requests retain the newest records, then present oldest-first.
+    # Otherwise ascending ORDER BY before LIMIT would hide recent spending.
     limited = client.get("/transactions?range=all&limit=3")
     assert limited.status_code == 200
+    expected_recent = rows[-3:]
     assert [item["id"] for item in limited.json()["transactions"]] == [
-        item["id"] for item in rows[:3]
+        item["id"] for item in expected_recent
     ]
     assert [item["id"] for item in get_transactions(
         user_id=user_id, limit=3, date_order="asc", database_url=database_url
-    )] == [item["id"] for item in rows[:3]]
+    )] == [item["id"] for item in expected_recent]
+
+    # Other consumers still receive descending dates with the same limit.
+    assert [item["id"] for item in get_transactions(
+        user_id=user_id, limit=3, database_url=database_url
+    )] == [item["id"] for item in reversed(rows[-3:])]
 
     # Existing backend streaming/dashboard consumers retain descending order.
     streamed = list(iter_transactions(user_id=user_id, database_url=database_url))
