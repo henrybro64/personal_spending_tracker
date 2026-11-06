@@ -57,7 +57,7 @@ def test_transactions_api_orders_by_date_before_limit_and_breaks_ties_by_id(
         item["id"] for item in rows[:3]
     ]
     assert [item["id"] for item in get_transactions(
-        user_id=user_id, limit=3, database_url=database_url
+        user_id=user_id, limit=3, date_order="asc", database_url=database_url
     )] == [item["id"] for item in rows[:3]]
 
     # Existing backend streaming/dashboard consumers retain descending order.
