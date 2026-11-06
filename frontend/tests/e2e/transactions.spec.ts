@@ -157,6 +157,7 @@ test("transactions show chronological dates by default with deterministic same-d
 
   await page.goto("/transactions");
   const merchants = page.getByRole("table", { name: "Transactions table" }).getByRole("textbox");
+  await expect(page.locator('select:has(option[value="date"])')).toHaveValue("date");
   const expected = ["OCT 1", "OCT 3", "OCT 5", "OCT 6", "OCT 9 A", "OCT 9 B"];
   await expect(merchants).toHaveCount(expected.length);
   for (let i = 0; i < expected.length; i += 1) {
