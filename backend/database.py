@@ -2432,7 +2432,11 @@ def _transactions_query(
     user_id: int,
     range_key: TimeRange,
     limit: int | None,
+    date_order: Literal["asc", "desc"] = "desc",
 ) -> tuple[str, tuple[object, ...]]:
+    # Backend streaming consumers retain newest-first; the Transactions API
+    # explicitly requests oldest-first ordering before applying LIMIT.
+    direction = "ASC" if date_order == "asc" else "DESC"
     date_filter_clause, range_params = _build_user_date_filter_clause(user_id, range_key)
     transaction_query = f"""
         SELECT
@@ -2444,8 +2448,8 @@ def _transactions_query(
                 WHEN date ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
                     THEN date::date
                 ELSE NULL
-            END DESC,
-            id DESC
+            END {direction} NULLS LAST,
+            id {direction}
         """
     query_params: tuple[object, ...] = range_params
     if limit is not None:
@@ -2491,6 +2495,7 @@ def get_transactions(
         user_id=user_id,
         range_key=range_key,
         limit=limit,
+        date_order="asc",
     )
     with (
         db_connection(resolved_database_url) as connection,
