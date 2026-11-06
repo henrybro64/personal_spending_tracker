@@ -2488,6 +2488,7 @@ def get_transactions(
     user_id: int,
     range_key: TimeRange = "all",
     limit: int | None = 5000,
+    date_order: Literal["asc", "desc"] = "desc",
     database_url: str | None = None,
 ) -> list[StoredTransaction]:
     resolved_database_url = _resolve_database_url(database_url)
@@ -2495,7 +2496,7 @@ def get_transactions(
         user_id=user_id,
         range_key=range_key,
         limit=limit,
-        date_order="asc",
+        date_order=date_order,
     )
     with (
         db_connection(resolved_database_url) as connection,
