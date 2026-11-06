@@ -1624,6 +1624,7 @@ def transactions(
             user_id=current_user["id"],
             range_key=resolved_range,
             limit=limit,
+            date_order="asc",
         )
     }
 
