@@ -135,3 +135,75 @@ test("transactions retry automatically and do not show a false zero balance", as
   ).toHaveValue("RECOVERED CAFE", { timeout: 15_000 });
   await expect(page.getByTestId("transactions-initial-recovery")).toHaveCount(0);
 });
+
+test("transactions show chronological dates by default with deterministic same-date ordering", async ({ page }) => {
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/transactions?range=all&limit=5000", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        transactions: [
+          { id: 9, date: "2026-10-09", merchant: "OCT 9 B", amount: 900, category: "Shopping", currency: "TWD" },
+          { id: 4, date: "2026-10-03", merchant: "OCT 3", amount: 300, category: "Shopping", currency: "TWD" },
+          { id: 8, date: "2026-10-09", merchant: "OCT 9 A", amount: 800, category: "Shopping", currency: "TWD" },
+          { id: 1, date: "2026-10-01", merchant: "OCT 1", amount: 100, category: "Shopping", currency: "TWD" },
+          { id: 6, date: "2026-10-06", merchant: "OCT 6", amount: 600, category: "Shopping", currency: "TWD" },
+          { id: 5, date: "2026-10-05", merchant: "OCT 5", amount: 500, category: "Shopping", currency: "TWD" },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/transactions");
+  const merchants = page.getByRole("table", { name: "Transactions table" }).getByRole("textbox");
+  await expect(page.locator('select:has(option[value="date"])')).toHaveValue("date");
+  const expected = ["OCT 1", "OCT 3", "OCT 5", "OCT 6", "OCT 9 A", "OCT 9 B"];
+  await expect(merchants).toHaveCount(expected.length);
+  for (let i = 0; i < expected.length; i += 1) {
+    await expect(merchants.nth(i)).toHaveValue(expected[i]);
+  }
+
+  // Other sorts still work; clear restores the default.
+  const sortSelector = page.locator('select:has(option[value="date"])');
+  await sortSelector.selectOption("amount_desc");
+  await expect(merchants.first()).toHaveValue("OCT 9 B");
+  await page.getByRole("button", { name: "Clear slicers" }).click();
+  await expect(sortSelector).toHaveValue("date");
+  await expect(merchants.first()).toHaveValue("OCT 1");
+
+  // Search filters preserve ascending dates, including same-day ID ties.
+  await page.getByRole("textbox", { name: "Search" }).fill("OCT 9");
+  await expect(merchants).toHaveCount(2);
+  await expect(merchants.nth(0)).toHaveValue("OCT 9 A");
+  await expect(merchants.nth(1)).toHaveValue("OCT 9 B");
+});
+
+test("year and month navigation stay newest-first while selected month rows ascend", async ({ page }) => {
+  await mockAuthenticatedSession(page);
+  await page.route("**/api/transactions?range=all&limit=5000", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        transactions: [
+          { id: 3, date: "2026-10-08", merchant: "OCT 8", amount: 80, category: "Shopping", currency: "TWD" },
+          { id: 1, date: "2025-12-03", merchant: "OLDER YEAR", amount: 10, category: "Shopping", currency: "TWD" },
+          { id: 2, date: "2026-10-01", merchant: "OCT 1", amount: 20, category: "Shopping", currency: "TWD" },
+          { id: 4, date: "2026-09-30", merchant: "SEPT 30", amount: 30, category: "Shopping", currency: "TWD" },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/transactions");
+  const merchants = page.getByRole("table", { name: "Transactions table" }).getByRole("textbox");
+  await expect(merchants).toHaveCount(2);
+  await expect(merchants.nth(0)).toHaveValue("OCT 1");
+  await expect(merchants.nth(1)).toHaveValue("OCT 8");
+  await page.getByRole("button", { name: /September 2026/i }).click();
+  await expect(merchants).toHaveCount(1);
+  await expect(merchants.first()).toHaveValue("SEPT 30");
+  await page.getByRole("button", { name: "2025", exact: true }).click();
+  await expect(merchants.first()).toHaveValue("OLDER YEAR");
+});

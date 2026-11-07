@@ -510,7 +510,7 @@ export default function TransactionsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const [amountFilter, setAmountFilter] = useState<AmountFilter>("all");
-  const [sortOption, setSortOption] = useState<SortOption>("amount_desc");
+  const [sortOption, setSortOption] = useState<SortOption>("date");
   const [selectedMerchant, setSelectedMerchant] = useState<string | null>(null);
   const [selectedYear, setSelectedYear] = useState<string | null>(null);
   const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
@@ -628,7 +628,7 @@ export default function TransactionsPage() {
     } else if (sortOption === "merchant") {
       sorted.sort((a, b) => a.merchant.localeCompare(b.merchant));
     } else if (sortOption === "date") {
-      sorted.sort((a, b) => a.date.localeCompare(b.date));
+      sorted.sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id);
     } else {
       sorted.sort((a, b) => b.amount - a.amount);
     }
@@ -987,7 +987,7 @@ export default function TransactionsPage() {
                   setSearchQuery("");
                   setTimeRange("all");
                   setAmountFilter("all");
-                  setSortOption("amount_desc");
+                  setSortOption("date");
                   setSelectedMerchant(null);
                 }}
               >

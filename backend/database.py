@@ -2432,25 +2432,42 @@ def _transactions_query(
     user_id: int,
     range_key: TimeRange,
     limit: int | None,
+    date_order: Literal["asc", "desc"] = "desc",
 ) -> tuple[str, tuple[object, ...]]:
     date_filter_clause, range_params = _build_user_date_filter_clause(user_id, range_key)
+    date_expr = """CASE
+                WHEN date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                    THEN date::date
+                ELSE NULL
+            END"""
+    # Select the latest records when applying a limit. Ordering directly
+    # ASC before LIMIT would silently exclude the newest transactions.
+    selection_direction = "DESC" if limit is not None else (
+        "ASC" if date_order == "asc" else "DESC"
+    )
     transaction_query = f"""
         SELECT
             {STORED_TRANSACTION_SELECT_COLUMNS}
         FROM transactions
         {date_filter_clause}
-        ORDER BY
-            CASE
-                WHEN date ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
-                    THEN date::date
-                ELSE NULL
-            END DESC,
-            id DESC
+        ORDER BY {date_expr} {selection_direction} NULLS LAST,
+            id {selection_direction}
         """
     query_params: tuple[object, ...] = range_params
     if limit is not None:
         transaction_query += "\n        LIMIT %s"
         query_params = (*range_params, limit)
+        if date_order == "asc":
+            # Present the selected latest N chronologically.
+            transaction_query = f"""
+                SELECT * FROM ({transaction_query}) AS recent
+                ORDER BY CASE
+                    WHEN recent.date ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
+                        THEN recent.date::date
+                    ELSE NULL
+                END ASC NULLS LAST,
+                recent.id ASC
+            """
     return transaction_query, query_params
 
 
@@ -2484,6 +2501,7 @@ def get_transactions(
     user_id: int,
     range_key: TimeRange = "all",
     limit: int | None = 5000,
+    date_order: Literal["asc", "desc"] = "desc",
     database_url: str | None = None,
 ) -> list[StoredTransaction]:
     resolved_database_url = _resolve_database_url(database_url)
@@ -2491,6 +2509,7 @@ def get_transactions(
         user_id=user_id,
         range_key=range_key,
         limit=limit,
+        date_order=date_order,
     )
     with (
         db_connection(resolved_database_url) as connection,
